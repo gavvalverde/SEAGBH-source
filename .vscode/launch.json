@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "SEAGBH (PyQt6)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/src/main_qt.py",
+            "cwd": "${workspaceFolder}/src",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}

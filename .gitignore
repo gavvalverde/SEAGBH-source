@@ -1,0 +1,50 @@
+# Ambiente virtual
+.venv/
+venv/
+env/
+
+# Segredos e vari�veis de ambiente
+.env
+.env.*
+!.env.example
+
+# Estado local do Visual Studio
+.vs/
+
+# Configura��o SFTP espec�fica da m�quina
+.vscode/sftp.json
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Testes e ferramentas
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Builds e artefatos gerados
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# Banco de dados local
+*.db
+*.db-shm
+*.db-wal
+*.db.lock
+
+# Backups locais
+Backups/
+*.backup
+
+# Dados locais de licença
+src/.licenca.dat

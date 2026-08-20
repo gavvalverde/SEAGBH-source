@@ -1,0 +1,11 @@
+[
+  {
+    "id": "d8176fa1c0d9",
+    "cliente": "Teste Gabriel",
+    "plano": "vitalicio",
+    "emissao": "2026-03-19",
+    "expira": "9999-12-31",
+    "chave": "eyJpZCI6ImQ4MTc2ZmExYzBkOSIsImMiOiJUZXN0ZSBHYWJyaWVsIiwicCI6InZpdGFsaWNpbyIsImkiOiIyMDI2LTAzLTE5IiwiZSI6Ijk5OTktMTItMzEifQ==.1c6997e544ebb6de39d20182dfb77b910aaa2d7d",
+    "status": "ativa"
+  }
+]

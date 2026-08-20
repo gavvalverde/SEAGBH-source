@@ -1,0 +1,20 @@
+[
+  {
+    "id": "bef60c7232ea",
+    "cliente": "Gabriel",
+    "plano": "vitalicio",
+    "emissao": "2026-03-07",
+    "expira": "9999-12-31",
+    "chave": "eyJpZCI6ImJlZjYwYzcyMzJlYSIsImMiOiJHYWJyaWVsIiwicCI6InZpdGFsaWNpbyIsImkiOiIyMDI2LTAzLTA3IiwiZSI6Ijk5OTktMTItMzEifQ==.cf6bf781115b57f2cd99aade42c7c90dddfa6d26",
+    "status": "revogada"
+  },
+  {
+    "id": "c8b0167f83fd",
+    "cliente": "Tonin",
+    "plano": "mensal",
+    "emissao": "2026-03-20",
+    "expira": "2027-04-08",
+    "chave": "eyJpZCI6ImM4YjAxNjdmODNmZCIsImMiOiJUb25pbiIsInAiOiJtZW5zYWwiLCJpIjoiMjAyNi0wMy0yMCIsImUiOiIyMDI2LTA0LTE5In0=.95d378bf4786e2db11c86442551c0482c8bb60d4",
+    "status": "revogada"
+  }
+]

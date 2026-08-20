@@ -1,0 +1,127 @@
+MANUAL DE IMPLANTACAO V2 - SEAGBH COM POSTGRESQL (3 COMPUTADORES)
+
+Cenario
+- 1 computador sera servidor do banco.
+- 2 computadores serao clientes do sistema.
+- Todos na mesma rede local.
+
+PASSO 1 - Escolher o servidor
+1. Use o computador mais estavel (desktop, se possivel).
+2. Esse computador deve ficar ligado durante o expediente.
+3. Defina IP fixo para nao quebrar a conexao dos clientes.
+
+PASSO 2 - Instalar PostgreSQL no servidor
+1. Abra PowerShell como Administrador.
+2. Execute:
+winget install -e --id PostgreSQL.PostgreSQL.17 --accept-package-agreements --accept-source-agreements --override "--mode unattended --superpassword postgres --servicename postgresql-x64-17 --serverport 5432"
+3. Verifique status:
+Get-Service postgresql-x64-17
+4. Se necessario, inicie:
+Start-Service postgresql-x64-17
+
+PASSO 3 - Criar banco e usuario
+1. Defina senha de sessao:
+$env:PGPASSWORD='postgres'
+2. Criar banco:
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "CREATE DATABASE seagbh;"
+3. Criar usuario da aplicacao:
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "CREATE USER seagbh_app WITH PASSWORD 'SenhaForte@2026';"
+4. Dar permissao:
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE seagbh TO seagbh_app;"
+& "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d seagbh -c "GRANT ALL ON SCHEMA public TO seagbh_app;"
+
+PASSO 4 - Liberar acesso pela rede (EXPLICADO)
+Objetivo: permitir que os dois computadores clientes consigam conectar no banco do servidor.
+
+4.1 Descobrir IP do servidor
+1. No servidor, execute:
+ipconfig
+2. Anote o IPv4 da placa em uso (ex.: 192.168.0.10).
+3. Esse IP sera usado no arquivo .env de todos os PCs.
+
+4.2 Liberar porta 5432 no firewall do Windows (servidor)
+1. No servidor, PowerShell como Admin:
+New-NetFirewallRule -DisplayName "PostgreSQL 5432" -Direction Inbound -Protocol TCP -LocalPort 5432 -Action Allow
+2. Confirmar regra criada:
+Get-NetFirewallRule -DisplayName "PostgreSQL 5432"
+
+4.3 Testar se porta esta ouvindo no servidor
+1. Execute:
+netstat -ano | findstr :5432
+2. Deve aparecer LISTENING na porta 5432.
+
+4.4 Testar da estacao cliente
+1. Em um cliente, execute:
+Test-NetConnection 192.168.0.10 -Port 5432
+2. Se TcpTestSucceeded = True, a rede esta correta.
+3. Se False, revisar firewall, IP e se servidor esta ligado.
+
+PASSO 5 - Habilitar conexoes remotas no PostgreSQL (EXPLICADO COM CAMINHO)
+Objetivo: autorizar o PostgreSQL a aceitar conexao fora do proprio servidor.
+
+5.1 Descobrir pasta de dados real do PostgreSQL
+1. No servidor, execute:
+$env:PGPASSWORD='postgres'; & "C:\Program Files\PostgreSQL\17\bin\psql.exe" -h 127.0.0.1 -p 5432 -U postgres -d postgres -t -c "SHOW data_directory;"
+2. Resultado tipico:
+C:/Program Files/PostgreSQL/17/data
+
+5.2 Abrir postgresql.conf
+1. Caminho tipico:
+C:\Program Files\PostgreSQL\17\data\postgresql.conf
+2. Abrir no Bloco de Notas como Admin:
+notepad "C:\Program Files\PostgreSQL\17\data\postgresql.conf"
+3. Procurar linha:
+#listen_addresses = 'localhost'
+4. Alterar para:
+listen_addresses = '*'
+5. Salvar arquivo.
+
+5.3 Abrir pg_hba.conf
+1. Caminho tipico:
+C:\Program Files\PostgreSQL\17\data\pg_hba.conf
+2. Abrir:
+notepad "C:\Program Files\PostgreSQL\17\data\pg_hba.conf"
+3. Adicionar no final (ajuste para sua rede):
+host all all 192.168.0.0/24 md5
+4. Salvar arquivo.
+
+5.4 Reiniciar servico PostgreSQL
+1. Execute:
+Restart-Service postgresql-x64-17
+2. Confirmar que voltou como Running:
+Get-Service postgresql-x64-17
+
+5.5 Teste final apos passos 4 e 5
+1. No cliente:
+Test-NetConnection 192.168.0.10 -Port 5432
+2. Depois, teste no app:
+C:\Users\Gabriel\SEAGBH\.venv\Scripts\python.exe C:\Users\Gabriel\SEAGBH\tools\testar_conexao_postgres.py
+
+PASSO 6 - Configurar o app nos 3 computadores
+Em cada PC, configurar:
+SEAGBH_DB_ENGINE=postgres
+SEAGBH_DB_HOST=IP_DO_SERVIDOR
+SEAGBH_DB_PORT=5432
+SEAGBH_DB_NAME=seagbh
+SEAGBH_DB_USER=seagbh_app
+SEAGBH_DB_PASSWORD=SenhaForte@2026
+
+PASSO 7 - Migrar dados (uma unica vez)
+1. Executar somente no PC com base SQLite mais atual:
+C:\Users\Gabriel\SEAGBH\.venv\Scripts\python.exe C:\Users\Gabriel\SEAGBH\tools\migrar_sqlite_para_postgres.py --sqlite-path C:\Users\Gabriel\SEAGBH\src\seaghb.db --truncate
+
+PASSO 8 - Homologacao rapida
+1. Abrir app em 2 PCs ao mesmo tempo.
+2. Cadastrar no PC A e conferir no PC B.
+3. Criar evento no PC B e conferir no PC A.
+4. Validar retorno de equipamento.
+
+PASSO 9 - Operacao diaria
+1. Servidor ligado no horario de uso.
+2. Backup diario do banco.
+3. Monitorar servico postgresql-x64-17.
+
+CHECKLIST FINAL
+1. Porta 5432 acessivel dos clientes.
+2. test_conexao_postgres retornando Conexao OK.
+3. Escrita e leitura sincronizando entre PCs.
