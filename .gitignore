@@ -48,3 +48,6 @@ Backups/
 
 # Dados locais de licença
 src/.licenca.dat
+
+# Regras do Continue
+.continue/
