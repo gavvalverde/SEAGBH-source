@@ -290,7 +290,7 @@ def _firebase_put(path: str, data) -> bool:
     try:
         token = _get_id_token()
         if not token:
-            logger.error("Sess?o de autentica??o expirada ou inv?lida. Reinicie o Gerenciador de Clientes.")
+            logger.error("Sessão de autenticação expirada ou inválida. Reinicie o Gerenciador de Clientes.")
             return False
         base_url = f"{FIREBASE_URL}/{path}.json"
         sep = "&" if "?" in base_url else "?"
