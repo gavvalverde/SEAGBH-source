@@ -77,7 +77,7 @@ _load_env_file()
 # API key pública do Firebase (não é segredo), carregada do ambiente.
 # NUNCA colocar a chave diretamente no código-fonte.
 def _firebase_api_key() -> str:
-    """Retorna o valor atual da API key p?blica do Firebase a partir do ambiente."""
+    """Retorna o valor atual da API key pública do Firebase a partir do ambiente."""
     return os.environ.get("SEAGBH_FIREBASE_API_KEY", "")
 
 _FIREBASE_AUTH_URL = (
@@ -107,6 +107,7 @@ def _login_firebase(email: str, senha: str) -> bool:
         logger.error("SEAGBH_FIREBASE_API_KEY não configurada.")
         return False
 
+    _logout()
     body = json.dumps({
         "email": email,
         "password": senha,
@@ -595,10 +596,10 @@ class LoginDialog(QDialog):
 
     def closeEvent(self, event):
         if self._worker is not None and self._worker.isRunning():
-            # Autentica??o em andamento: n?o fechar o di?logo ? for?a.
+            # Autenticação em andamento: não fechar o diálogo à força.
             # A thread encerra sozinha (urlopen tem timeout) e emite _on_login_concluido.
             event.ignore()
-            self.lbl_erro.setText("Autentica??o em andamento. Aguarde...")
+            self.lbl_erro.setText("Autenticação em andamento. Aguarde...")
             return
         event.accept()
 
