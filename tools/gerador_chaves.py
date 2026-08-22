@@ -76,7 +76,9 @@ _load_env_file()
 
 # API key pública do Firebase (não é segredo), carregada do ambiente.
 # NUNCA colocar a chave diretamente no código-fonte.
-_FIREBASE_API_KEY = os.environ.get("SEAGBH_FIREBASE_API_KEY", "")
+def _firebase_api_key() -> str:
+    """Retorna o valor atual da API key p?blica do Firebase a partir do ambiente."""
+    return os.environ.get("SEAGBH_FIREBASE_API_KEY", "")
 
 _FIREBASE_AUTH_URL = (
     "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
@@ -101,7 +103,7 @@ def _login_firebase(email: str, senha: str) -> bool:
     import logging
     logger = logging.getLogger(__name__)
 
-    if not _FIREBASE_API_KEY:
+    if not _firebase_api_key():
         logger.error("SEAGBH_FIREBASE_API_KEY não configurada.")
         return False
 
@@ -113,7 +115,7 @@ def _login_firebase(email: str, senha: str) -> bool:
 
     try:
         req = Request(
-            f"{_FIREBASE_AUTH_URL}?key={_FIREBASE_API_KEY}",
+            f"{_FIREBASE_AUTH_URL}?key={_firebase_api_key()}",
             data=body,
             method="POST",
         )
@@ -149,7 +151,7 @@ def _refresh_token() -> bool:
     import logging
     logger = logging.getLogger(__name__)
 
-    if not _AUTH_SESSION["refresh_token"] or not _FIREBASE_API_KEY:
+    if not _AUTH_SESSION["refresh_token"] or not _firebase_api_key():
         return False
 
     body = urlencode({
@@ -159,7 +161,7 @@ def _refresh_token() -> bool:
 
     try:
         req = Request(
-            f"{_FIREBASE_TOKEN_URL}?key={_FIREBASE_API_KEY}",
+            f"{_FIREBASE_TOKEN_URL}?key={_firebase_api_key()}",
             data=body,
             method="POST",
         )
@@ -198,15 +200,6 @@ def _get_id_token() -> str | None:
         if not _refresh_token():
             return None
     return _AUTH_SESSION["id_token"]
-
-
-def _adicionar_autorizacao(req) -> bool:
-    """Adiciona 'Authorization: Bearer <id_token>'. Retorna False se não houver sessão."""
-    token = _get_id_token()
-    if not token:
-        return False
-    req.add_header("Authorization", f"Bearer {token}")
-    return True
 
 
 def _logout():
@@ -602,8 +595,11 @@ class LoginDialog(QDialog):
 
     def closeEvent(self, event):
         if self._worker is not None and self._worker.isRunning():
-            self._worker.terminate()
-            self._worker.wait(3000)
+            # Autentica??o em andamento: n?o fechar o di?logo ? for?a.
+            # A thread encerra sozinha (urlopen tem timeout) e emite _on_login_concluido.
+            event.ignore()
+            self.lbl_erro.setText("Autentica??o em andamento. Aguarde...")
+            return
         event.accept()
 
 
@@ -1861,7 +1857,7 @@ if __name__ == "__main__":
 
     # Garante que a API key do Firebase esteja disponível (via .env ou ambiente do SO).
     _load_env_file()
-    if not os.environ.get("SEAGBH_FIREBASE_API_KEY", ""):
+    if not _firebase_api_key():
         QMessageBox.critical(
             None,
             "Configuração ausente",
