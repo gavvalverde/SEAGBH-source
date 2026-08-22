@@ -290,7 +290,7 @@ def _firebase_put(path: str, data) -> bool:
     try:
         token = _get_id_token()
         if not token:
-            logger.error("Sessão de autenticação expirada ou inválida. Faça login novamente.")
+            logger.error("Sess?o de autentica??o expirada ou inv?lida. Reinicie o Gerenciador de Clientes.")
             return False
         base_url = f"{FIREBASE_URL}/{path}.json"
         sep = "&" if "?" in base_url else "?"
@@ -327,7 +327,7 @@ def _firebase_get(path: str):
     try:
         token = _get_id_token()
         if not token:
-            logger.error("Sessão de autenticação expirada ou inválida. Faça login novamente.")
+            logger.error("Sess?o de autentica??o expirada ou inv?lida. Reinicie o Gerenciador de Clientes.")
             return None
         base_url = f"{FIREBASE_URL}/{path}.json"
         sep = "&" if "?" in base_url else "?"
@@ -366,7 +366,7 @@ def _firebase_delete(path: str) -> bool:
     try:
         token = _get_id_token()
         if not token:
-            logger.error("Sessão de autenticação expirada ou inválida. Faça login novamente.")
+            logger.error("Sess?o de autentica??o expirada ou inv?lida. Reinicie o Gerenciador de Clientes.")
             return False
         base_url = f"{FIREBASE_URL}/{path}.json"
         sep = "&" if "?" in base_url else "?"
@@ -583,6 +583,7 @@ class LoginDialog(QDialog):
         self._set_autenticando(True)
         self._worker = _LoginWorker(email, senha, parent=self)
         self._worker.concluido.connect(self._on_login_concluido)
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     def _on_login_concluido(self, ok: bool, msg: str):
