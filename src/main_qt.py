@@ -42,14 +42,20 @@ def main():
         # Re-verificar após ativação
         valida, mensagem, payload = licenca_ativa()
 
-    # Extrair info de alerta de vencimento (se houver)
+        # Extrair info de alerta de vencimento (se houver)
     alerta = payload.get("_alerta") if payload else None
+
+    # Extrair info de alerta de revogação (grace period, se houver)
+    alerta_revogacao = payload.get("_alerta_revogacao") if payload else None
 
     # ── App principal ─────────────────────────────────────────────────
     window_ref = {"window": None}
 
     def on_splash_done():
-        window = MainWindow(alerta_vencimento=alerta)
+        window = MainWindow(
+            alerta_vencimento=alerta,
+            alerta_revogacao=alerta_revogacao,
+        )
         window_ref["window"] = window
         window.showMaximized()
 

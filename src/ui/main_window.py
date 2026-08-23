@@ -90,13 +90,17 @@ class MainWindow(QMainWindow):
         ("📊  Relatórios",    4),
     ]
 
-    def __init__(self, alerta_vencimento: dict | None = None):
+    def __init__(self, alerta_vencimento: dict | None = None,
+                 alerta_revogacao: dict | None = None):
         super().__init__()
         self.setWindowTitle("SEAGBH — Sistema de Almoxarifado")
         self.resize(1280, 720)
 
         # Info de alerta de pagamento (vindo de licenca_ativa)
         self._alerta_vencimento = alerta_vencimento
+
+        # Info de alerta de revogação (grace period de 24h)
+        self._alerta_revogacao = alerta_revogacao
 
         # Banco de dados
         self.db = Database()
@@ -209,6 +213,10 @@ class MainWindow(QMainWindow):
         # ── Alerta de vencimento de licença (2 s após abrir) ─────────────
         if self._alerta_vencimento:
             QTimer.singleShot(2000, self._mostrar_alerta_vencimento)
+
+        # ── Alerta de revogação de licença (1,5 s após abrir) ───────────
+        if self._alerta_revogacao:
+            QTimer.singleShot(1500, self._mostrar_alerta_revogacao)
 
     # ── Navegação ─────────────────────────────────────────────────────────
 
@@ -467,6 +475,44 @@ class MainWindow(QMainWindow):
         toast.show()
 
         QTimer.singleShot(10000, toast.deleteLater)
+
+    # ── Alerta de revogação de licença (grace period) ───────────────
+
+    def _mostrar_alerta_revogacao(self):
+        """Exibe toast de aviso quando a licença está em grace period (24h)."""
+        info = self._alerta_revogacao
+        if not info:
+            return
+
+        mensagem = info.get("mensagem", "Licença revogada/suspensa.")
+        prazo_fmt = info.get("prazo_fmt", "")
+
+        toast = QLabel(self)
+        toast.setObjectName("alerta-revogacao")
+        toast.setText(f"  ⚠️  {mensagem}  ")
+        toast.setStyleSheet(f"""
+            QLabel#alerta-revogacao {{
+                background-color: #7F1D1D;
+                color: #FCA5A5;
+                border: 1px solid #F87171;
+                border-radius: 8px;
+                font-size: 13px;
+                font-weight: 600;
+                padding: 12px 20px;
+            }}
+        """)
+        toast.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        toast.setWordWrap(True)
+        toast.setMinimumWidth(400)
+        toast.adjustSize()
+
+        # Posicionar no topo central da área de conteúdo
+        x = self.sidebar.width() + (self.stack.width() - toast.width()) // 2
+        toast.move(max(x, self.sidebar.width() + 10), 8)
+        toast.raise_()
+        toast.show()
+
+        QTimer.singleShot(15000, toast.deleteLater)
 
     # ── Atualização ───────────────────────────────────────────────────────
 
