@@ -487,9 +487,15 @@ class MainWindow(QMainWindow):
         mensagem = info.get("mensagem", "Licença revogada/suspensa.")
         prazo_fmt = info.get("prazo_fmt", "")
 
+        # Construir texto do toast usando prazo_fmt quando disponível
+        if prazo_fmt:
+            texto_toast = f"  ⚠️  Licença revogada/suspensa. Você tem 24 horas para regularizar.\n📅 Prazo: {prazo_fmt}  "
+        else:
+            texto_toast = f"  ⚠️  {mensagem}  "
+
         toast = QLabel(self)
         toast.setObjectName("alerta-revogacao")
-        toast.setText(f"  ⚠️  {mensagem}  ")
+        toast.setText(texto_toast)
         toast.setStyleSheet(f"""
             QLabel#alerta-revogacao {{
                 background-color: #7F1D1D;

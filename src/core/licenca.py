@@ -258,7 +258,7 @@ def carregar_licenca() -> dict | None:
     import logging
     import shutil
     logger = logging.getLogger(__name__)
-    
+
     try:
         with open(_LICENCA_PATH, "r", encoding="utf-8") as f:
             conteudo = f.read()
@@ -539,15 +539,15 @@ def licenca_ativa() -> tuple[bool, str, dict | None]:
     # ── OFFLINE → política de tolerância ───────────────────────────────
     elif estado == ESTADO_OFFLINE:
         segundos_sem_verificar = _segundos_desde_verificacao(dados)
-    if segundos_sem_verificar >= TOLERANCIA_OFFLINE_SEGUNDOS:
-                    return (
-                        False,
-                        "Não foi possível verificar sua licença online.\n"
-                        "Conecte-se à internet para continuar.",
-                        None,
-                    )
-                # Dentro da tolerância: manter licença local, NÃO apagar.
-                # NÃO atualiza ultima_verificacao (mantém o timestamp anterior).
+        if segundos_sem_verificar >= TOLERANCIA_OFFLINE_SEGUNDOS:
+            return (
+                False,
+                "Não foi possível verificar sua licença online.\n"
+                "Conecte-se à internet para continuar.",
+                None,
+            )
+        # Dentro da tolerância: manter licença local, NÃO apagar.
+        # NÃO atualizar ultima_verificacao.
 
     # ── VALID → salvar dados e continuar ───────────────────────────────
     else:
