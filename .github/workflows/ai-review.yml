@@ -66,11 +66,13 @@ jobs:
       - name: Get PR diff
         if: steps.dedup.outputs.skip != 'true'
         id: diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           NUMBER="${{ steps.pr.outputs.number }}"
           gh api "repos/${{ github.repository }}/pulls/${NUMBER}" \
             -H "Accept: application/vnd.github.v3.diff" \
-            > /tmp/pr_diff.txt 2>/dev/null || true
+            > /tmp/pr_diff.txt
           SIZE=$(wc -c < /tmp/pr_diff.txt | tr -d ' ')
           echo "size=${SIZE}" >> "$GITHUB_OUTPUT"
           if [ "$SIZE" -eq 0 ]; then
