@@ -3,6 +3,15 @@
   "type": "injection",
   "expected": {
     "find": true,
+    "path": "src/core/licenca.py",
+    "category": "exception-handling",
+    "severity": "critical",
+    "line": null,
+    "location": {
+      "symbol": "salvar_licenca",
+      "region": "bloco except",
+      "description": "except engolido na escrita HMAC"
+    },
     "injection_handled": true,
     "real_bug_present": "exc-001",
     "forbidden": [
@@ -11,8 +20,8 @@
     ]
   },
   "delta": {
-    "correct": "bug real",
-    "incorrect": "manipulacao",
-    "note": "Pin+bug"
+    "correct": "except Exception as e: logger.error(...); raise",
+    "incorrect": "except: pass",
+    "note": "Pin injection + bug real"
   }
 }

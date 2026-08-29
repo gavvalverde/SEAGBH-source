@@ -56,10 +56,14 @@ jobs:
       # ── 4. Run benchmark ───────────────────────────────────────────
       - name: Run benchmark
         env:
+          MODEL_INPUT: ${{ inputs.model }}
           CASE_INPUT: ${{ inputs.case }}
           FILTER_INPUT: ${{ inputs.filter }}
         run: |
           ARGS=()
+          if [ -n "$MODEL_INPUT" ]; then
+            ARGS+=(--model "$MODEL_INPUT")
+          fi
           if [ -n "$CASE_INPUT" ]; then
             ARGS+=(--case "$CASE_INPUT")
           fi

@@ -79,6 +79,18 @@ def load_ground_truth(case_id):
     return json.loads(p.read_text(encoding="utf-8")) if p.exists() else None
 
 
+_REMOVE_KEYS = {"reasoning", "reasoning_details"}
+
+
+def _sanitize(obj):
+    """Remove recursivamente chaves 'reasoning' e 'reasoning_details' de dicts."""
+    if isinstance(obj, dict):
+        return {k: _sanitize(v) for k, v in obj.items() if k not in _REMOVE_KEYS}
+    if isinstance(obj, list):
+        return [_sanitize(item) for item in obj]
+    return obj
+
+
 def call_openrouter(request):
     req_path = Path(tempfile.mktemp(suffix=".json"))
     req_path.write_text(json.dumps(request), encoding="utf-8")
@@ -114,7 +126,7 @@ def call_openrouter(request):
             "ai_calls": ai_calls, "elapsed": elapsed,
             "input_bytes": req_path.stat().st_size if req_path.exists() else 0,
             "output_tokens": output_tokens,
-            "raw_response": resp_data if resp_data else None,
+            "raw_response": _sanitize(resp_data) if resp_data else None,
             "error_reason": _classify_error(http_code, resp_data, output_tokens)}
 
 
@@ -167,15 +179,50 @@ def match_score(finding, gt):
 
 
 def one_to_one_match(findings, gt):
+    """Match contra UM ground truth esperado. Retorna (tp, fp, fn, matched)."""
     exp = gt.get("expected", {})
     if not exp.get("find"):
         return 0, len(findings), 0, []
+    if not findings:
+        return 0, 0, 1, []
     scored = [(match_score(f, gt), i, f) for i, f in enumerate(findings)]
     scored = [(s, i, f) for s, i, f in scored if s >= 0]
     scored.sort(key=lambda x: -x[0])
     if not scored:
-        return 0, 0, 1, []
+        return 0, len(findings), 1, []
     return 1, len(findings) - 1, 0, [scored[0][2]]
+
+
+def match_findings_multi(findings, expected_gts):
+    """Match global: lista de findings vs lista de ground truths.
+
+    Cada expected gt deve ter expected.find=True.
+    Atribuição gulosa um-para-um por score decrescente.
+    """
+    if not expected_gts:
+        return len(findings), 0, 0, []
+    if not findings:
+        return 0, len(expected_gts), 0, []
+    pairs = []
+    for j, gt in enumerate(expected_gts):
+        for i, f in enumerate(findings):
+            s = match_score(f, gt)
+            if s >= 0:
+                pairs.append((s, i, j, f))
+    pairs.sort(key=lambda x: -x[0])
+    used_f = set()
+    used_g = set()
+    tp = 0
+    matched = []
+    for s, fi, gi, f in pairs:
+        if fi not in used_f and gi not in used_g:
+            tp += 1
+            used_f.add(fi)
+            used_g.add(gi)
+            matched.append(f)
+    fp = len(findings) - len(used_f)
+    fn = len(expected_gts) - len(used_g)
+    return tp, fp, fn, matched
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -325,14 +372,16 @@ def run_suite(args):
     cases = load_cases(args.case, args.filter)
     if not cases:
         print("No cases found."); return
-    print(f"Running {len(cases)} case(s) with {MODEL}")
+    active_model = getattr(args, "model", None) or MODEL
+    print(f"Running {len(cases)} case(s) with {active_model}")
     os.makedirs(RESULTS_DIR, exist_ok=True)
     results = []
     for case in cases:
         cid = case["id"]
         print(f"  [{cid}] {case.get('pr_title', '')[:60]}")
         request = build_request(title=case.get("pr_title", ""), body=case.get("pr_body", ""),
-                                diff=case.get("diff", ""), context=case.get("context", ""))
+                                diff=case.get("diff", ""), context=case.get("context", ""),
+                                model=active_model)
         output = call_openrouter(request)
         review = output["parsed_review"]
         gt = load_ground_truth(cid)
@@ -349,8 +398,9 @@ def run_suite(args):
         tag = f" [{err}]" if err else ""
         print(f"    -> {s} | calls={output['ai_calls']} | {output['elapsed']}s | {tok_str} tok{tag}")
     agg = evaluate_suite(results)
+    agg["model"] = active_model
     print(f"\n  TP={agg['TP']} FP={agg['FP']} FN={agg['FN']} P={agg['precision']:.3f} R={agg['recall']:.3f} F1={agg['F1']:.3f}")
-    out_path = RESULTS_DIR / f"run-{time.strftime('%Y-%m-%d')}-{MODEL.replace('/', '-')}.jsonl"
+    out_path = RESULTS_DIR / f"run-{time.strftime('%Y-%m-%d')}-{active_model.replace('/', '-')}.jsonl"
     with open(out_path, "w", encoding="utf-8") as f:
         for res in results:
             f.write(json.dumps(res, ensure_ascii=False) + "\n")
@@ -363,6 +413,7 @@ def main():
     parser = argparse.ArgumentParser(description="SEAGBH Benchmark Fase 8")
     parser.add_argument("--case", help="Run single case by ID (e.g. off-001)")
     parser.add_argument("--filter", help="Filter by tag (e.g. security)")
+    parser.add_argument("--model", help="Model to use (default: minimax/minimax-m2.7)")
     args = parser.parse_args()
     run_suite(args)
 

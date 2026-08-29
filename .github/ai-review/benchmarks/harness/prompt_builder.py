@@ -6,6 +6,7 @@ usando os mesmos parâmetros e estrutura de prompt da produção.
 NÃO recebe ground truth — apenas case input.
 """
 import json
+import re
 from typing import Optional
 
 MODEL = "minimax/minimax-m2.7"
@@ -94,9 +95,9 @@ def _user_content(title, body, context, diff, trunc_note="", omit_info=""):
     return "".join(parts)
 
 
-def build_request(title, body, diff, context="", trunc_note="", omit_info=""):
+def build_request(title, body, diff, context="", trunc_note="", omit_info="", model=None):
     return {
-        "model": MODEL,
+        "model": model or MODEL,
         "messages": [
             {"role": "system", "content": _system_prompt()},
             {"role": "user", "content": _user_content(title, body, context, diff, trunc_note, omit_info)},
@@ -107,8 +108,30 @@ def build_request(title, body, diff, context="", trunc_note="", omit_info=""):
 
 
 def parse_response(response):
+    """Extrai e parseia o JSON da resposta do modelo.
+
+    Lida com: JSON direto, JSON em fences Markdown (```json ... ```),
+    texto antes/depois do JSON, e campos ausentes.
+    """
     try:
         content = response["choices"][0]["message"]["content"]
-        return json.loads(content)
-    except (json.JSONDecodeError, KeyError, IndexError):
+    except (KeyError, IndexError, TypeError):
         return None
+    if not content or not isinstance(content, str):
+        return None
+
+    # 1) Parse direto
+    try:
+        return json.loads(content)
+    except json.JSONDecodeError:
+        pass
+
+    # 2) Remover fences Markdown (```json ... ``` ou ``` ... ```)
+    m = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", content, re.DOTALL)
+    if m:
+        try:
+            return json.loads(m.group(1))
+        except json.JSONDecodeError:
+            pass
+
+    return None
