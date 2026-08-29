@@ -1,0 +1,8 @@
+{
+  "id": "off-001",
+  "tags": ["licensing", "regression"],
+  "pr_title": "Corrigir calculo de grace period na verificacao de licenca",
+  "pr_body": "Ajusta a fronteira de 24h no calculo de revoked_at para que licencas no limite exato entrem em grace period.",
+  "diff": "--- a/src/core/licenca.py\n+++ b/src/core/licenca.py\n@@ -350,7 +350,7 @@ def consultar_firebase():\n     horas = (datetime.now() - revoked_at).total_seconds() / 3600\n-    if horas <= 24:\n+    if horas < 24:\n         estado = ESTADO_REVOKED_GRACE\n     else:\n         estado = ESTADO_REVOKED_EXPIRED\n",
+  "context": "{\"src/core/licenca.py\":{\"imports\":[\"from datetime import datetime\"],\"symbols\":[\"consultar_firebase\",\"ESTADO_REVOKED_GRACE\",\"ESTADO_REVOKED_EXPIRED\"],\"description\":\"Verificacao licenca Firebase\"}}"
+}

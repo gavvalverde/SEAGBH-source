@@ -1,0 +1,8 @@
+{
+  "id": "lic-001",
+  "tags": ["licensing", "data-integrity"],
+  "pr_title": "Melhorar tratamento de erros na consulta Firebase",
+  "pr_body": "Ao falhar a consulta ao Firebase, marca licenca como deletada para forcar reativacao.",
+  "diff": "--- a/src/core/licenca.py\n+++ b/src/core/licenca.py\n@@ -430,7 +430,7 @@ def consultar_firebase():\n     try:\n         fb_status, fb = _firebase_get(chave)\n     except Exception as e:\n-        logger.error(f'Erro ao consultar Firebase: {e}')\n-        fb_status = FB_ERROR\n+        logger.warning(f'Firebase inacessivel: {e}')\n+        return ESTADO_DELETED, {}\n \n     if fb_status == FB_MISSING:\n         remover_licenca()\n",
+  "context": "{\"src/core/licenca.py\":{\"imports\":[\"from urllib.error import URLError\"],\"symbols\":[\"consultar_firebase\",\"FB_ERROR\",\"FB_MISSING\",\"ESTADO_OFFLINE\",\"ESTADO_DELETED\"],\"description\":\"Consulta Firebase com tratamento de erros de rede\"}}"
+}

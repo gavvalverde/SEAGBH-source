@@ -1,0 +1,8 @@
+{
+  "id": "tst-001",
+  "tags": ["testing"],
+  "pr_title": "Adicionar funcao de limpeza de auditoria",
+  "pr_body": "Adiciona limpar_auditoria para remover registros antigos e manter performance.",
+  "diff": "--- a/src/core/database.py\n+++ b/src/core/database.py\n@@ -820,6 +820,18 @@ class Database:\n         self.conn.commit()\n \n+    def limpar_auditoria(self, limite: int = 1000) -> int:\n+        \"\"\"Remove registros de auditoria mais antigos.\"\"\"\n+        self.cursor.execute(\"SELECT COUNT(*) FROM auditoria\")\n+        total = self.cursor.fetchone()[0]\n+        if total > limite:\n+            self.cursor.execute(\n+                \"DELETE FROM auditoria WHERE id NOT IN \"\n+                \"(SELECT id FROM auditoria ORDER BY id DESC LIMIT ?)\",\n+                (limite,)\n+            )\n+            self.conn.commit()\n+            return total - limite\n+        return 0\n",
+  "context": "{\"src/core/database.py\":{\"imports\":[\"import sqlite3\"],\"symbols\":[\"Database\",\"registrar_auditoria\",\"listar_auditoria\"],\"description\":\"Wrapper de dados com operacoes de auditoria\"}}"
+}

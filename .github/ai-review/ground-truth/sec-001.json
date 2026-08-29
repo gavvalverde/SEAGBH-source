@@ -1,0 +1,23 @@
+{
+  "id": "sec-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "critical",
+    "category": "security",
+    "path": "tools/gerador_chaves.py",
+    "line": null,
+    "location": {
+      "symbol": "FIREBASE_TOKEN",
+      "region": "constante modulo",
+      "description": "token Firebase hardcoded"
+    },
+    "confidence_expected": "high",
+    "behavior": "Credencial exposta."
+  },
+  "delta": {
+    "correct": "env var",
+    "incorrect": "hardcoded",
+    "note": "Secret"
+  }
+}

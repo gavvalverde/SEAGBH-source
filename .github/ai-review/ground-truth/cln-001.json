@@ -1,0 +1,12 @@
+{
+  "id": "cln-001",
+  "type": "clean",
+  "expected": {
+    "find": false
+  },
+  "delta": {
+    "correct": "inalterado",
+    "incorrect": "ws",
+    "note": "Clean"
+  }
+}

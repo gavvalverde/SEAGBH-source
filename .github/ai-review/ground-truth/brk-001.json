@@ -1,0 +1,23 @@
+{
+  "id": "brk-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "broken-api",
+    "path": "src/core/licenca.py",
+    "line": null,
+    "location": {
+      "symbol": "validar_chave",
+      "region": "retorno",
+      "description": "None -> {}"
+    },
+    "confidence_expected": "high",
+    "behavior": "API break."
+  },
+  "delta": {
+    "correct": "return None",
+    "incorrect": "return {}",
+    "note": "Break"
+  }
+}

@@ -1,0 +1,280 @@
+# =============================================================================
+# AI Pull Request Review — SEAGBH
+# =============================================================================
+# Envia o diff do PR para MiniMax M2.7 via OpenRouter e publica uma
+# review COMMENT no próprio PR.
+#
+# Runner: ubuntu-latest — mais barato (~0.008 USD/min), boot rápido,
+# jq/curl/gh pré-instalados. Windows custaria ~2x e exigiria extras.
+#
+# Secret necessário: OPENROUTER_API_KEY (Settings → Secrets → Actions)
+# =============================================================================
+
+name: AI PR Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      # ── 1. Metadados do PR ──────────────────────────────────────────────
+      - name: Get PR metadata
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          PR_JSON=$(gh api "repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}")
+          echo "number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          echo "title=$(echo "$PR_JSON" | jq -r '.title')"            >> "$GITHUB_OUTPUT"
+          echo "head_sha=$(echo "$PR_JSON" | jq -r '.head.sha')"      >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(echo "$PR_JSON" | jq -r '.base.sha')"      >> "$GITHUB_OUTPUT"
+          echo "$PR_JSON" | jq -r '.body // ""' | head -c 2000 > /tmp/pr_body.txt
+
+      # ── 2. Deduplicação ─────────────────────────────────────────────────
+      - name: Check for existing review
+        if: always() && steps.pr.outcome == 'success'
+        id: dedup
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          HEAD_SHA="${{ steps.pr.outputs.head_sha }}"
+          NUMBER="${{ steps.pr.outputs.number }}"
+          REVIEWS=$(gh api "repos/${{ github.repository }}/pulls/${NUMBER}/reviews" \
+            --paginate 2>/dev/null || echo "[]")
+          MATCHES=$(echo "$REVIEWS" | jq --arg sha "$HEAD_SHA" '
+            [.[] | select(.body != null)
+                 | select(.body | contains("seaghb-ai-review:minimax-m2.7"))
+                 | select(.body | contains("head-sha:" + $sha))
+            ] | length')
+          if [ "$MATCHES" -gt 0 ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "✅ Review already exists for ${HEAD_SHA:0:7}. Skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # ── 3. Diff ─────────────────────────────────────────────────────────
+      - name: Get PR diff
+        if: steps.dedup.outputs.skip != 'true'
+        id: diff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NUMBER="${{ steps.pr.outputs.number }}"
+          gh api "repos/${{ github.repository }}/pulls/${NUMBER}" \
+            -H "Accept: application/vnd.github.v3.diff" \
+            > /tmp/pr_diff.txt
+          SIZE=$(wc -c < /tmp/pr_diff.txt | tr -d ' ')
+          echo "size=${SIZE}" >> "$GITHUB_OUTPUT"
+          if [ "$SIZE" -eq 0 ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+            echo "📥 Diff: ${SIZE} bytes"
+          fi
+
+      # ── 4. Chamar MiniMax M2.7 via OpenRouter ───────────────────────────
+      - name: AI Review
+        if: steps.dedup.outputs.skip != 'true' && steps.diff.outputs.empty != 'true'
+        id: review
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+          ORIG_SIZE: ${{ steps.diff.outputs.size }}
+        run: |
+          head -c 80000 /tmp/pr_diff.txt > /tmp/pr_diff_cut.txt
+          CUT_SIZE=$(wc -c < /tmp/pr_diff_cut.txt | tr -d ' ')
+          TRUNCATED="false"
+          TRUNC_NOTE=""
+          if [ "$CUT_SIZE" -lt "$ORIG_SIZE" ] 2>/dev/null; then
+            TRUNCATED="true"
+            TRUNC_NOTE=" [NOTE: diff was truncated from ${ORIG_SIZE} to ${CUT_SIZE} bytes — review is partial]"
+            echo "⚠️  Diff truncated: ${ORIG_SIZE} → ${CUT_SIZE} bytes"
+          fi
+
+          jq -n \
+            --arg model "minimax/minimax-m2.7" \
+            --arg title "$PR_TITLE" \
+            --arg trunc_note "$TRUNC_NOTE" \
+            --rawfile body /tmp/pr_body.txt \
+            --rawfile diff /tmp/pr_diff_cut.txt \
+            '{
+              model: $model,
+              messages: [
+                {
+                  role: "system",
+                  content: (
+                    "You are an expert code reviewer for SEAGBH, "
+                    + "a warehouse management system (PyQt6, Python, Firebase, PostgreSQL).\n\n"
+                    + "Review the pull request diff and return ONLY a valid JSON object. "
+                    + "No markdown, no code fences, no extra text.\n\n"
+                    + "Required format:\n"
+                    + "{\"summary\":\"Brief summary\","
+                    + "\"findings\":[{\"severity\":\"critical|important|minor|informational\","
+                    + "\"path\":\"file.py\",\"line\":123,"
+                    + "\"title\":\"title\",\"body\":\"explanation with suggested fix\"}]}\n\n"
+                    + "Severity:\n"
+                    + "- critical: security, data loss, DB corruption, auth bypass\n"
+                    + "- important: bugs, logic errors, broken APIs, race conditions\n"
+                    + "- minor: code smells, style, naming, dead code\n"
+                    + "- informational: optimizations, best practices\n\n"
+                    + "If no issues: {\"summary\":\"Changes look good.\",\"findings\":[]}\n"
+                    + "Do NOT fabricate issues not present in the diff.\n"
+                    + "If the diff says it was truncated, acknowledge the review is partial."
+                  )
+                },
+                {
+                  role: "user",
+                  content: ("PR Title: " + $title + "\n\nDescription:\n" + $body + "\n\nDiff:\n```diff\n" + $diff + "\n```" + $trunc_note)
+                }
+              ],
+              temperature: 0.3,
+              max_tokens: 4096
+            }' > /tmp/request.json
+
+          curl -s -w "\n%{http_code}" \
+            -X POST "https://openrouter.ai/api/v1/chat/completions" \
+            -H "Authorization: Bearer ${OPENROUTER_API_KEY}" \
+            -H "Content-Type: application/json" \
+            -d @/tmp/request.json > /tmp/response_raw.txt
+
+          HTTP_CODE=$(tail -1 /tmp/response_raw.txt)
+          sed '$d' /tmp/response_raw.txt > /tmp/response.json
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "error_msg=HTTP ${HTTP_CODE}" >> "$GITHUB_OUTPUT"
+            echo "❌ OpenRouter error: HTTP ${HTTP_CODE}"
+            exit 0
+          fi
+
+          CONTENT=$(jq -r '.choices[0].message.content // ""' /tmp/response.json)
+          if [ -z "$CONTENT" ]; then
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "error_msg=Empty response" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Remover fences markdown se presente
+          CLEANED=$(echo "$CONTENT" | sed '/^```/d')
+
+          # Validar JSON e schema
+          if echo "$CLEANED" | jq '
+            .summary as $s |
+            .findings as $f |
+            (type == "object") and
+            ($s | type == "string") and
+            ($f | type == "array") and
+            ([$f[] |
+              (.severity | IN("critical","important","minor","informational")) and
+              (.path | type == "string") and
+              (.line | type == "number") and
+              (.title | type == "string") and
+              (.body | type == "string")
+            ] | all)
+          ' > /dev/null 2>&1; then
+            echo "$CLEANED" > /tmp/review.json
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+            echo "error_msg=Invalid JSON or schema" >> "$GITHUB_OUTPUT"
+            echo "$CLEANED" > /tmp/review_raw.txt
+          fi
+
+      # ── 5. Publicar review COMMENT ───────────────────────────────────────
+      - name: Post review
+        if: steps.dedup.outputs.skip != 'true' && steps.review.outputs.ok == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+        run: |
+          SUMMARY=$(jq -r '.summary' /tmp/review.json)
+          COUNT=$(jq '.findings | length' /tmp/review.json)
+
+          {
+            echo "## 🤖 AI Review (MiniMax M2.7)"
+            echo ""
+            echo "**Summary:** ${SUMMARY}"
+            echo ""
+
+            if [ "$COUNT" -gt 0 ]; then
+              echo "### Findings (${COUNT})"
+              echo ""
+              echo "| # | Severity | File | Line | Title |"
+              echo "|---|----------|------|------|-------|"
+              for i in $(seq 0 $((COUNT - 1))); do
+                SEV=$(jq -r ".findings[$i].severity" /tmp/review.json)
+                FP=$(jq  -r ".findings[$i].path"     /tmp/review.json)
+                FL=$(jq  -r ".findings[$i].line"     /tmp/review.json)
+                FT=$(jq  -r ".findings[$i].title"    /tmp/review.json)
+                echo "| $((i+1)) | \`${SEV}\` | \`${FP}\` | ${FL} | ${FT} |"
+              done
+              echo ""
+              echo "<details><summary>Detalhes</summary>"
+              echo ""
+              for i in $(seq 0 $((COUNT - 1))); do
+                SEV=$(jq -r ".findings[$i].severity" /tmp/review.json)
+                FP=$(jq  -r ".findings[$i].path"     /tmp/review.json)
+                FL=$(jq  -r ".findings[$i].line"     /tmp/review.json)
+                FT=$(jq  -r ".findings[$i].title"    /tmp/review.json)
+                FB=$(jq  -r ".findings[$i].body"     /tmp/review.json)
+                echo "#### ${SEV}: ${FT}"
+                echo "**File:** \`${FP}\` (line ${FL})"
+                echo ""
+                echo "${FB}"
+                echo ""
+                echo "---"
+                echo ""
+              done
+              echo "</details>"
+            else
+              echo "✅ Nenhum problema relevante encontrado."
+            fi
+
+            echo ""
+            echo "<!-- seaghb-ai-review:minimax-m2.7 -->"
+            echo "<!-- head-sha:${HEAD_SHA} -->"
+          } > /tmp/review_body.md
+
+          gh api "repos/${{ github.repository }}/pulls/${NUMBER}/reviews" \
+            --method POST \
+            -f body="$(cat /tmp/review_body.md)" \
+            -f event="COMMENT"
+
+          echo "✅ Review posted for #${NUMBER}."
+
+      # ── 6. Fallback em caso de erro ──────────────────────────────────────
+      - name: Post error fallback
+        if: >-
+          steps.dedup.outputs.skip != 'true'
+          && steps.review.outputs.ok != 'true'
+          && steps.diff.outputs.empty != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          NUMBER: ${{ steps.pr.outputs.number }}
+          ERROR_MSG: ${{ steps.review.outputs.error_msg }}
+        run: |
+          echo "## 🤖 AI Review (MiniMax M2.7)" > /tmp/error_body.md
+          echo "" >> /tmp/error_body.md
+          echo "⚠️ Review não pôde ser gerada. Revisão manual recomendada." >> /tmp/error_body.md
+          echo "" >> /tmp/error_body.md
+          echo "<!-- seaghb-ai-review:minimax-m2.7 -->" >> /tmp/error_body.md
+          echo "<!-- head-sha:${HEAD_SHA} -->" >> /tmp/error_body.md
+
+          gh api "repos/${{ github.repository }}/pulls/${NUMBER}/reviews" \
+            --method POST \
+            -f body="$(cat /tmp/error_body.md)" \
+            -f event="COMMENT"
+
+          echo "⚠️  Error fallback posted for #${NUMBER}."

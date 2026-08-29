@@ -1,0 +1,23 @@
+{
+  "id": "grn-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "insufficient-test",
+    "path": "tests/unit/core/test_database_ext.py",
+    "line": null,
+    "location": {
+      "symbol": "test_limpar_auditoria",
+      "region": "falso verde",
+      "description": "assert True"
+    },
+    "confidence_expected": "high",
+    "behavior": "Teste verde."
+  },
+  "delta": {
+    "correct": "valida",
+    "incorrect": "assert True",
+    "note": "False green"
+  }
+}

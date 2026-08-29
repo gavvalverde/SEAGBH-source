@@ -1,0 +1,8 @@
+{
+  "id": "txn-001",
+  "tags": ["data-integrity", "transaction"],
+  "pr_title": "Simplificar criacao de evento",
+  "pr_body": "Remove tratamento de erro redundante na criacao de evento.",
+  "diff": "--- a/src/core/database.py\n+++ b/src/core/database.py\n@@ -300,20 +300,15 @@ class Database:\n     def criar_evento(self, nome, local, resp, inicio, fim, equipamentos_ids, notas=\"\"):\n         \"\"\"Cria evento + movimentacoes em uma transacao.\"\"\"\n-        try:\n             self.cursor.execute(\n                 \"INSERT INTO eventos (nome_evento, local, responsavel, \"\n                 \"data_inicio, data_fim, notas, status) \"\n                 \"VALUES (?, ?, ?, ?, ?, ?, 'Agendado')\",\n                 (nome, local, resp, inicio, fim, notas),\n             )\n             evento_id = self.cursor.lastrowid\n             for eid in equipamentos_ids:\n                 self.cursor.execute(\n                     \"INSERT INTO movimentacoes (equipamento_id, evento_id, tipo, data_saida) \"\n                     \"VALUES (?, ?, 'saida', ?)\",\n                     (eid, evento_id, inicio),\n                 )\n             self.conn.commit()\n-        except Exception as e:\n-            self.conn.rollback()\n-            raise\n         return evento_id\n",
+  "context": "{\"src/core/database.py\":{\"imports\":[\"import sqlite3\"],\"symbols\":[\"Database\",\"criar_evento\"],\"description\":\"Criacao de evento com movimentacoes em transacao\"}}"
+}

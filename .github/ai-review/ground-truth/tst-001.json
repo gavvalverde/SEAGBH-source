@@ -1,0 +1,23 @@
+{
+  "id": "tst-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "minor",
+    "category": "insufficient-test",
+    "path": "src/core/database.py",
+    "line": null,
+    "location": {
+      "symbol": "limpar_auditoria",
+      "region": "funcao nova",
+      "description": "sem teste"
+    },
+    "confidence_expected": "high",
+    "behavior": "No test."
+  },
+  "delta": {
+    "correct": "nao existe",
+    "incorrect": "sem teste",
+    "note": "No test"
+  }
+}

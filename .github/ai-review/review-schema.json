@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/seaghb/ai-review/review-schema.json",
+  "title": "SEAGBH AI PR Review Output",
+  "description": "Schema de saída do revisor automático de Pull Requests do SEAGBH. Validado antes de publicar como COMMENT no PR.",
+  "type": "object",
+  "required": ["summary", "findings"],
+  "additionalProperties": false,
+  "properties": {
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1500,
+      "description": "Resumo da revisão. Deve refletir honestamente o escopo (ver reviewer-rules.md seção H)."
+    },
+    "reviewed_scope": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Descrição do que foi efetivamente analisado. Citar manifest de omissões quando houver."
+    },
+    "confidence_overall": {
+      "enum": ["high", "medium", "low"],
+      "description": "Confiança geral do reviewer na revisão. low = contexto limitado ou diffs parciais."
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 25,
+      "description": "Lista de findings. Array vazio = nenhum problema encontrado.",
+      "items": {
+        "type": "object",
+        "required": [
+          "severity",
+          "category",
+          "path",
+          "line",
+          "title",
+          "body",
+          "confidence",
+          "evidence"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "Identificador estável do finding (ex: 'SEC-001', 'REG-003'). Usado para deduplicação entre revisões."
+          },
+          "severity": {
+            "enum": ["critical", "important", "minor", "informational"],
+            "description": "Severidade. Ver severity.md para definição precisa."
+          },
+          "category": {
+            "enum": [
+              "regression",
+              "edge-case",
+              "unhandled-state",
+              "exception-handling",
+              "race",
+              "security",
+              "data-integrity",
+              "broken-api",
+              "insufficient-test",
+              "out-of-scope",
+              "other"
+            ],
+            "description": "Categoria do problema. Ver reviewer-rules.md seção B."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Caminho do arquivo (relativo à raiz do repositório)."
+          },
+          "line": {
+            "type": ["integer", "null"],
+            "minimum": 1,
+            "description": "Número da linha no arquivo. null quando o finding é sobre o arquivo como um todo (ex: arquivo ausente)."
+          },
+          "title": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 160,
+            "description": "Título conciso do finding."
+          },
+          "body": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 1500,
+            "description": "Descrição detalhada: o que é o problema, por que importa, qual a consequência."
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 2000,
+            "description": "Trecho verbatim do código ou referência precisa ao contexto que sustenta o finding."
+          },
+          "confidence": {
+            "enum": ["high", "medium", "low"],
+            "description": "Confiança do reviewer neste finding específico."
+          },
+          "suggested_fix": {
+            "type": "string",
+            "maxLength": 1000,
+            "description": "Sugestão opcional de correção."
+          },
+          "out_of_diff": {
+            "type": "boolean",
+            "default": false,
+            "description": "true quando a linha apontada não está no diff mas é justificada por contexto cruzado."
+          },
+          "out_of_diff_justification": {
+            "type": "string",
+            "minLength": 10,
+            "maxLength": 500,
+            "description": "Justificativa obrigatória quando out_of_diff=true. Deve referenciar linha alterada ou dependência cruzada."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": { "out_of_diff": { "const": true } },
+              "required": ["out_of_diff"]
+            },
+            "then": {
+              "required": ["out_of_diff_justification"]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
