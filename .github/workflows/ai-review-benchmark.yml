@@ -26,7 +26,8 @@ on:
         required: false
         default: ""
 
-permissions: {}
+permissions:
+  contents: read
 
 jobs:
   benchmark:
@@ -39,6 +40,8 @@ jobs:
       # ── 1. Checkout ────────────────────────────────────────────────
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       # ── 2. Setup Python ────────────────────────────────────────────
       - name: Setup Python
