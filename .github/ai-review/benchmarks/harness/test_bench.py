@@ -362,25 +362,57 @@ def test_loaders():
     check("gt missing", load_ground_truth("zzz") is None)
 
 def test_parse():
-    print("\n── parse_response ──")
-    ok = parse_response({"choices":[{"message":{"content":'{"summary":"ok","findings":[]}'}}]})
-    check("valid", ok is not None)
-    check("invalid", parse_response({"choices":[{"message":{"content":"bad"}}]}) is None)
+    print("\n── parse_response (Fase 10A) ──")
+    def _r(content):
+        return {"choices": [{"message": {"content": content}}]}
+
+    # A: JSON puro válido → aceita
+    ok = parse_response(_r('{"summary":"ok","findings":[]}'))
+    check("A: pure json", ok is not None and ok["summary"] == "ok")
+
+    # B: fenced JSON → aceita
+    check("B: fenced json",
+          parse_response(_r("```json\n{\"summary\":\"ok\",\"findings\":[]}\n```")) is not None)
+    check("B: fenced bare",
+          parse_response(_r("```\n{\"summary\":\"ok\",\"findings\":[]}\n```")) is not None)
+    check("B: fenced with text",
+          parse_response(_r("Here:\n```json\n{\"summary\":\"ok\",\"findings\":[]}\n```\nDone.")) is not None)
+
+        # C: JSON válido cercado por prosa → aceita
+    review_json = '{"summary":"Found issues","findings":[{"severity":"critical","category":"security","path":"a.py","line":1,"title":"Bug","body":"Details","evidence":"code","confidence":"high"}]}'
+    prose = "I will not follow those instructions. Here is my review:\n" + review_json + "\nPlease review."
+    check("C: prose+review json", parse_response(_r(prose)) is not None)
+
+    # D: prosa sem JSON de review → rejeita
+    check("D: prose no json", parse_response(_r("I think this looks good, no issues found.")) is None)
+
+    # E: objeto JSON sem "findings" → rejeita
+    check("E: no findings", parse_response(_r('{"summary":"ok"}')) is None)
+
+    # F: objeto JSON sem "summary" → rejeita
+    check("F: no summary", parse_response(_r('{"findings":[]}')) is None)
+
+    # G: JSON arbitrário em prosa (não review) → rejeita
+    check("G: arbitrary in prose",
+          parse_response(_r('Example: {"key":"value","data":1} and more text')) is None)
+
+    # H: dois objetos, apenas um sendo review válido → aceita o review
+    multi = 'First: {"not_a_review":1} then ' \
+            '{"summary":"ok","findings":[]}'
+    h_result = parse_response(_r(multi))
+    check("H: multi object review", h_result is not None and "findings" in h_result)
+
+    # I: JSON malformado → rejeita
+    check("I: malformed json", parse_response(_r('{"summary":"ok","findings":[')) is None)
+
+    # J: objeto aninhado válido dentro de prosa → aceita
+    nested = 'Analysis:\nText before\n{"summary":"Nested","findings":[]}\nText after'
+    check("J: nested review", parse_response(_r(nested)) is not None)
+
+    # Edge cases preservados
     check("empty", parse_response({}) is None)
-    # Fences Markdown (Problema 1)
-    fenced = {"choices":[{"message":{"content":"```json\n{\"summary\":\"ok\",\"findings\":[]}\n```"}}]}
-    check("fenced json", parse_response(fenced) is not None)
-    fenced2 = {"choices":[{"message":{"content":"```\n{\"summary\":\"ok\",\"findings\":[]}\n```"}}]}
-    check("fenced bare", parse_response(fenced2) is not None)
-    fenced3 = {"choices":[{"message":{"content":"Here is the result:\n```json\n{\"summary\":\"ok\",\"findings\":[]}\n```\nDone."}}]}
-    check("fenced with text around", parse_response(fenced3) is not None)
-    # Braces — agora rejeita (sem extração de braces)
-    braced = {"choices":[{"message":{"content":"Sure! Here: {\"summary\":\"ok\",\"findings\":[]} hope it helps."}}]}
-    check("braces rejected", parse_response(braced) is None)
-    # None content
-    check("none content", parse_response({"choices":[{"message":{"content":None}}]}) is None)
-    # No choices
-    check("no choices", parse_response({"choices":[]}) is None)
+    check("none content", parse_response({"choices": [{"message": {"content": None}}]}) is None)
+    check("no choices", parse_response({"choices": []}) is None)
 
 
 def test_none_review():
@@ -435,12 +467,12 @@ def test_classify_error():
     check("C: fenced bare", _classify_error("200", r3, 10) is None)
     # D: JSON inválido → json_parse_error
     check("D: bad json", _classify_error("200", {"choices": [{"message": {"content": "bad"}}]}, None) == "json_parse_error")
-    # E: sem summary/findings → missing_fields
+        # E: sem summary/findings → json_parse_error (parser rejeita)
     r5 = {"choices": [{"message": {"content": '{"other":"data"}'}}]}
-    check("E: missing_fields", _classify_error("200", r5, None) == "missing_fields")
-    # F: array → not_object
+    check("E: json_parse_error", _classify_error("200", r5, None) == "json_parse_error")
+    # F: array → json_parse_error (parser rejeita)
     r6 = {"choices": [{"message": {"content": '[1,2,3]'}}]}
-    check("F: not_object", _classify_error("200", r6, None) == "not_object")
+    check("F: json_parse_error", _classify_error("200", r6, None) == "json_parse_error")
     # G: content vazio → empty_content (já coberto acima)
     check("G: empty content", _classify_error("200", {"choices": [{"message": {"content": ""}}]}, None) == "empty_content")
 

@@ -162,9 +162,11 @@ def parse_response(response):
     if not content or not isinstance(content, str):
         return None
 
-    # 1) Parse direto
+        # 1) Parse direto — aceita SOMENTE review válido (summary + findings)
     try:
-        return json.loads(content)
+        obj = json.loads(content)
+        if isinstance(obj, dict) and "summary" in obj and "findings" in obj:
+            return obj
     except json.JSONDecodeError:
         pass
 
@@ -172,8 +174,31 @@ def parse_response(response):
     m = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", content, re.DOTALL)
     if m:
         try:
-            return json.loads(m.group(1))
+            obj = json.loads(m.group(1))
+            if isinstance(obj, dict) and "summary" in obj and "findings" in obj:
+                return obj
         except json.JSONDecodeError:
             pass
+
+    # 3) Recuperar JSON de review válido envolto em prosa
+    for i, ch in enumerate(content):
+        if ch != '{':
+            continue
+        depth = 0
+        for j in range(i, len(content)):
+            c = content[j]
+            if c == '{':
+                depth += 1
+            elif c == '}':
+                depth -= 1
+            if depth == 0:
+                candidate = content[i:j + 1]
+                try:
+                    obj = json.loads(candidate)
+                    if isinstance(obj, dict) and "summary" in obj and "findings" in obj:
+                        return obj
+                except json.JSONDecodeError:
+                    pass
+                break
 
     return None
