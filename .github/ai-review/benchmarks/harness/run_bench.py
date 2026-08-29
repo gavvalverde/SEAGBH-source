@@ -39,21 +39,20 @@ def _classify_error(http_code, resp_data, output_tokens):
         return "empty_response"
     if "error" in resp_data:
         return "api_error"
-    content = ""
-    try:
-        content = resp_data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        return "invalid_schema"
-    if not content:
-        return "empty_content"
-    try:
-        parsed = json.loads(content)
-        if not isinstance(parsed, dict):
-            return "not_object"
-        if "summary" not in parsed and "findings" not in parsed:
-            return "missing_fields"
-    except json.JSONDecodeError:
+    parsed = parse_response(resp_data)
+    if parsed is None:
+        # Verificar se content existe para distinguir de schema inválido
+        try:
+            content = resp_data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            return "invalid_schema"
+        if not content:
+            return "empty_content"
         return "json_parse_error"
+    if not isinstance(parsed, dict):
+        return "not_object"
+    if "summary" not in parsed and "findings" not in parsed:
+        return "missing_fields"
     return None  # ok
 CATEGORY_EQUIV = {
     "broken-api": {"regression"}, "regression": {"broken-api"},
