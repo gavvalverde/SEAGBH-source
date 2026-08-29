@@ -52,15 +52,18 @@ jobs:
 
       # ── 4. Run benchmark ───────────────────────────────────────────
       - name: Run benchmark
+        env:
+          CASE_INPUT: ${{ inputs.case }}
+          FILTER_INPUT: ${{ inputs.filter }}
         run: |
-          ARGS=""
-          if [ -n "${{ github.event.inputs.case }}" ]; then
-            ARGS="--case ${{ github.event.inputs.case }}"
+          ARGS=()
+          if [ -n "$CASE_INPUT" ]; then
+            ARGS+=(--case "$CASE_INPUT")
           fi
-          if [ -n "${{ github.event.inputs.filter }}" ]; then
-            ARGS="$ARGS --filter ${{ github.event.inputs.filter }}"
+          if [ -n "$FILTER_INPUT" ]; then
+            ARGS+=(--filter "$FILTER_INPUT")
           fi
-          python .github/ai-review/benchmarks/harness/run_bench.py $ARGS
+          python .github/ai-review/benchmarks/harness/run_bench.py "${ARGS[@]}"
 
       # ── 5. Upload results ──────────────────────────────────────────
       - name: Upload results
