@@ -107,6 +107,43 @@ def test_match():
     check("o2o no-match fn=1", no_match[2] == 1)
 
 
+def test_detection():
+    print("\n── detection (Fase 8.2) ──")
+    gt = _gt(symbol="func")
+    # A: mesmo bug + mesma categoria → TP
+    f_same = _f(evidence="func broken", category="regression")
+    check("A: same cat", match_score(f_same, gt) > 0)
+    # B: mesmo bug + categoria diferente → TP, mas score menor
+    f_diff_cat = _f(evidence="func broken", category="edge-case")
+    s = match_score(f_diff_cat, gt)
+    check("B: diff cat still detected", s > 0)
+    # C: mesmo bug + severidade diferente → TP
+    f_diff_sev = _f(evidence="func broken", severity="minor")
+    s2 = match_score(f_diff_sev, gt)
+    check("C: diff sev still detected", s2 > 0)
+    # D: mesmo path + região + problema diferente → não casar
+    f_diff_prob = _f(evidence="completely unrelated stuff here")
+    check("D: diff problem", match_score(f_diff_prob, gt) == -1)
+    # E: path diferente → não casar
+    check("E: diff path", match_score(_f(path="b.py", evidence="func broken"), gt) == -1)
+    # F: evidência semanticamente compatível sem category match → casar
+    f_sem = _f(evidence="func called with wrong args", category="security")
+    check("F: semantic ok no cat", match_score(f_sem, gt) > 0)
+    # G: finding completamente diferente → FP + FN via one_to_one
+    tp, fp, fn, _ = one_to_one_match([_f(evidence="totally unrelated")], gt)
+    check("G: fp+fn", tp == 0 and fp == 1 and fn == 1)
+    # H: clean case + finding → FP
+    tp2, fp2, fn2, _ = one_to_one_match([_f(evidence="func broken")], _gt(find=False))
+    check("H: clean fp", tp2 == 0 and fp2 == 1 and fn2 == 0)
+    # I: esperado + nenhum finding → FN
+    tp3, fp3, fn3, _ = one_to_one_match([], gt)
+    check("I: empty fn", tp3 == 0 and fp3 == 0 and fn3 == 1)
+    # J: dois findings, um correto + um diferente → TP=1 FP=1
+    tp4, fp4, fn4, _ = one_to_one_match(
+        [_f(evidence="func broken"), _f(evidence="totally unrelated")], gt)
+    check("J: mixed", tp4 == 1 and fp4 == 1 and fn4 == 0)
+
+
 def test_fpfn_counting():
     print("\n── FP/FN counting (Problema 3) ──")
     from run_bench import match_findings_multi

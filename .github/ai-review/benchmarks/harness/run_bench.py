@@ -251,7 +251,11 @@ def _semantic_match(finding, loc):
 
 
 def match_score(finding, gt):
-    """Score de detecção. Rejeita apenas por path/line/semantic mismatch."""
+    """Score de detecção. Rejeita apenas por path/line/semantic mismatch.
+
+    Category/severidade afetam o score mas NÃO rejeitam —
+    classificação incorreta ≠ falha de detecção.
+    """
     exp = gt.get("expected", {})
     if not exp.get("find"):
         return -1
@@ -264,14 +268,14 @@ def match_score(finding, gt):
     loc = exp.get("location", {})
     if not _semantic_match(finding, loc):
         return -1
-    # Base: detected
+    # Base: detected (same problem, path, location)
     score = 1
-    # Bonus: category match
+    # Bonus: category match (classification accuracy)
     if finding.get("category") == exp.get("category"):
         score += 2
     elif _category_match(finding.get("category", ""), exp.get("category", "")):
         score += 1
-    # Bonus: line match
+    # Bonus: line match (location accuracy)
     if gt_line is not None and f_line is not None:
         score += 4 if f_line == gt_line else (2 if _line_close(f_line, gt_line) else 0)
     # Bonus: severity match
