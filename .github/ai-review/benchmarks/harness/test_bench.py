@@ -549,10 +549,58 @@ def test_model_override():
     args = parser.parse_args(["--model", "test/m", "--case", "x"])
     check("F: argparse", args.model == "test/m" and args.case == "x")
 
+def test_evidence_to_publish():
+    print("\n── evidence-to-publish discipline (Fase 9C.1) ──")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+
+    # 1: heading presente
+    check("1: rule present", "EVIDENCE-TO-PUBLISH DISCIPLINE" in sys_c)
+
+    # 2-5: causal chain elements
+    check("2: CHANGED CODE", "CHANGED CODE" in sys_c)
+    check("3: TRIGGER", "TRIGGER" in sys_c)
+    check("4: FAILURE MECHANISM", "FAILURE MECHANISM" in sys_c)
+    check("5: IMPACT", "IMPACT" in sys_c)
+
+    # 6-7: reject speculation / abstract
+    check("6: reject speculation", "speculation" in sys_c.lower())
+    check("7: reject abstract", "abstract possibility" in sys_c.lower())
+
+    # 8: PR intent NÃO é motivo para suprimir
+    check("8: intent not suppress", "UNTRUSTED DATA" in sys_c
+          and "author intent never overrides evidence" in sys_c.lower())
+
+    # 9: uncertainty isolada NÃO é motivo para suprimir
+    check("9: uncertainty not suppress",
+          "uncertainty alone" in sys_c.lower()
+          or ("demonstrable failure mechanism" in sys_c.lower()
+              and "justifies omission" in sys_c.lower()))
+
+    # 10: contexto/pre-existing code permitido
+    check("10: context inference",
+          "pre-existing code" in sys_c.lower()
+          or "provided context" in sys_c.lower())
+
+    # 11: recall clause preserved
+    check("11: recall clause", "may be inferred" in sys_c.lower())
+    check("11: recall demonstrated", "demonstrated by" in sys_c.lower())
+
+    # 12-17: existing rules preserved
+    check("12: EVIDENCE RULE preserved", "## EVIDENCE RULE" in sys_c)
+    check("13: GRANULARITY preserved", "FINDING GRANULARITY" in sys_c)
+    check("14: TWO-PASS preserved", "TWO-PASS" in sys_c)
+    check("15: SEVERITY preserved", "## SEVERITY" in sys_c)
+    check("16: OUTPUT FORMAT preserved", "OUTPUT FORMAT" in sys_c)
+    check("17: JSON schema preserved",
+          "findings" in sys_c and "severity" in sys_c
+          and "high|medium|low" in sys_c)
+
+
 def main():
     test_leak_guard(); test_prompt(); test_match()
     test_evaluate(); test_loaders(); test_parse()
-    test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override(); test_detection(); test_semantic_adversarial(); test_false_match_adversarial(); test_finding_granularity()
+    test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override(); test_detection(); test_semantic_adversarial(); test_false_match_adversarial(); test_finding_granularity(); test_evidence_to_publish()
     print(f"\n{'='*40}\nResults: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 
