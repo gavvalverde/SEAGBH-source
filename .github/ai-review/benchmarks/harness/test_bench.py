@@ -48,6 +48,32 @@ def test_prompt():
     usr_c = r["messages"][1]["content"]
     check("PR METADATA", "PR METADATA" in usr_c)
     check("DIFF", "DIFF" in usr_c)
+    # Granularity rule present
+    check("GRANULARITY", "FINDING GRANULARITY" in sys_c)
+    check("GRANULARITY rule", "at most ONE finding per independent root cause" in sys_c)
+    check("GRANULARITY preserve existing", "TWO-PASS" in sys_c and "EVIDENCE" in sys_c
+          and "SEVERITY" in sys_c)
+
+
+def test_finding_granularity():
+    print("\n── finding granularity (Fase 9B) ──")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+
+    # A: regra está no prompt
+    check("A: rule present", "FINDING GRANULARITY" in sys_c)
+    check("A: root cause language", "root cause" in sys_c.lower())
+    check("A: one finding rule", "ONE finding" in sys_c or "one finding" in sys_c.lower())
+    check("A: merge consequence", "merge" in sys_c.lower() or "consequence" in sys_c.lower())
+    check("A: omit secondary", "omit" in sys_c.lower() or "OMIT" in sys_c)
+
+    # B-F: verify prompt doesn't contradict existing rules
+    check("B: preserves TWO-PASS", "TWO-PASS" in sys_c)
+    check("C: preserves EVIDENCE", "EVIDENCE" in sys_c)
+    check("D: preserves SEVERITY", "SEVERITY" in sys_c)
+    check("E: preserves OUTPUT FORMAT", "OUTPUT FORMAT" in sys_c)
+    check("F: preserves JSON schema", "findings" in sys_c and "severity" in sys_c)
+
 
 def test_match():
     print("\n── matching ──")
@@ -106,6 +132,179 @@ def test_fpfn_counting():
     # F: expected=2, produced=3, 1 correto + 2 incorretos => TP=1 FP=2 FN=1
     tp,fp,fn,_ = match_findings_multi([good, bad, _f(path="z.py", evidence="zzz")], [g1, g2])
     check("F: 2exp/3mix", tp == 1 and fp == 2 and fn == 1)
+
+
+def test_detection():
+    print("\n── detection (Fase 8.2) ──")
+    gt = _gt(symbol="func")
+    f_same = _f(evidence="func broken", category="regression")
+    check("A: same cat", match_score(f_same, gt) > 0)
+    f_diff_cat = _f(evidence="func broken", category="edge-case")
+    check("B: diff cat still detected", match_score(f_diff_cat, gt) > 0)
+    f_diff_sev = _f(evidence="func broken", severity="minor")
+    check("C: diff sev still detected", match_score(f_diff_sev, gt) > 0)
+    f_diff_prob = _f(evidence="completely unrelated stuff here")
+    check("D: diff problem", match_score(f_diff_prob, gt) == -1)
+    check("E: diff path", match_score(_f(path="b.py", evidence="func broken"), gt) == -1)
+    f_sem = _f(evidence="func called with wrong args", category="security")
+    check("F: semantic ok no cat", match_score(f_sem, gt) > 0)
+    tp, fp, fn, _ = one_to_one_match([_f(evidence="totally unrelated")], gt)
+    check("G: fp+fn", tp == 0 and fp == 1 and fn == 1)
+    tp2, fp2, fn2, _ = one_to_one_match([_f(evidence="func broken")], _gt(find=False))
+    check("H: clean fp", tp2 == 0 and fp2 == 1 and fn2 == 0)
+    tp3, fp3, fn3, _ = one_to_one_match([], gt)
+    check("I: empty fn", tp3 == 0 and fp3 == 0 and fn3 == 1)
+    tp4, fp4, fn4, _ = one_to_one_match(
+        [_f(evidence="func broken"), _f(evidence="totally unrelated")], gt)
+    check("J: mixed", tp4 == 1 and fp4 == 1 and fn4 == 0)
+
+
+def test_semantic_adversarial():
+    print("\n── semantic adversarial (Fase 9A.1) ──")
+    from run_bench import _semantic_match, _normalize_tokens
+    # Helper: build loc with specific description
+    def loc(desc, symbol="", region=""):
+        return {"symbol": symbol, "region": region, "description": desc}
+
+    # A: mesmo problema, redação diferente → MATCH
+    f_a = _f(evidence="removes try-except-rollback from event creation transaction")
+    check("A: same problem diff wording",
+          _semantic_match(f_a, loc("sem rollback", symbol="criar_evento")))
+
+    # B: tokens técnicos compartilhados (PT/EN) → MATCH quando evidência suficiente
+    f_b = _f(evidence="user input directly interpolated into SQL query without sanitization")
+    check("B: cross-language technical tokens",
+          _semantic_match(f_b, loc("f-string interpolando input na query SQL",
+                                   symbol="buscar_equipamento")))
+
+    # C: palavras genéricas em comum, problema diferente → NÃO MATCH
+    f_c = _f(evidence="the system creates new events with proper validation checks")
+    check("C: generic overlap rejected",
+          not _semantic_match(f_c, loc("sem rollback", symbol="criar_evento")))
+
+    # D: GT curto "sem teste", finding "teste alterado" → NÃO MATCH
+    # (50% threshold causa FP aqui — 1/2 tokens)
+    f_d = _f(evidence="teste unitario foi alterado para cobrir mais caminhos")
+    result_d = _semantic_match(f_d, loc("sem teste"))
+    # Este teste EXPÕE a limitação do threshold 50%
+    check("D: short GT false positive", not result_d)
+
+    # E: GT "sem rollback", finding "rollback removido" → MATCH
+    # (symbol "criar_evento" na evidence garante match via symbol)
+    f_e = _f(evidence="rollback removido from criar_evento transaction handler")
+    check("E: rollback via symbol", _semantic_match(f_e, loc("sem rollback",
+                                                              symbol="criar_evento")))
+
+    # F: GT "SQL injection", finding "input interpolado na SQL" → MATCH
+    f_f = _f(evidence="input interpolado na SQL query sem sanitizacao")
+    check("F: partial overlap technical",
+          _semantic_match(f_f, loc("f-string interpolando input na query SQL",
+                                   symbol="buscar_equipamento")))
+
+    # G: GT "remove limpeza", finding "cleanup removido" → NÃO MATCH
+    # (cross-language sem tokens compartilhados suficientes)
+    f_g = _f(evidence="cleanup removido from update verification")
+    result_g = _semantic_match(f_g, loc("remove limpeza", symbol="verificar_atualizacao"))
+    # Se symbol "verificar_atualizacao" não está no evidence → depende de description
+    # "remove limpeza" vs "cleanup removido" → tokens {"remove","limpeza"} vs {"cleanup","removido"}
+    # overlap = 0/2 = 0% → NÃO MATCH (correto)
+    check("G: cross-language no shared tokens", not result_g)
+
+    # H: evidência com apenas uma palavra genérica compartilhada → NÃO MATCH
+    f_h = _f(evidence="the code is generally well structured and clean")
+    check("H: single generic word",
+          not _semantic_match(f_h, loc("sem rollback", symbol="criar_evento")))
+
+    # I: categoria diferente + mesma detecção → MATCH (category é bônus, não rejeição)
+    f_i = _f(evidence="rollback missing in criar_evento", category="edge-case")
+    check("I: diff cat still detected",
+          _semantic_match(f_i, loc("sem rollback", symbol="criar_evento")))
+
+    # J: path diferente → (path check é em match_score, não em _semantic_match)
+    f_j = _f(path="outro.py", evidence="rollback missing in criar_evento")
+    check("J: path separate from semantic",
+          _semantic_match(f_j, loc("sem rollback", symbol="criar_evento")))
+
+    # K: finding completamente diferente → NÃO MATCH
+    f_k = _f(evidence="interface layout looks great with good color scheme")
+    check("K: completely different",
+          not _semantic_match(f_k, loc("sem rollback", symbol="criar_evento")))
+
+
+def test_false_match_adversarial():
+    print("\n── false-match adversarial (Fase 9A.3) ──")
+    from run_bench import _semantic_match, _normalize_tokens, _match_tokens, _GENERIC_TOKENS
+    def loc(desc, symbol="", region=""):
+        return {"symbol": symbol, "region": region, "description": desc}
+
+    # 1: except engolido vs except pass — mesma escrita HMAC → MATCH
+    f1 = _f(evidence="except pass na escrita HMAC signature validation")
+    check("1: same HMAC context",
+          _semantic_match(f1, loc("except engolido na escrita HMAC")))
+
+    # 2: except engolido vs except corretamente tratado — problema oposto → NÃO MATCH
+    f2 = _f(evidence="except corretamente tratado na validacao HMAC")
+    check("2: opposite behavior",
+          not _semantic_match(f2, loc("except engolido na escrita HMAC")))
+
+    # 3: except engolido vs HMAC em outro fluxo — contexto diferente → NÃO MATCH
+    f3 = _f(evidence="HMAC falhou em outro fluxo de autenticacao do servidor")
+    check("3: different HMAC flow",
+          not _semantic_match(f3, loc("except engolido na escrita HMAC")))
+
+    # 4: sem rollback vs rollback removido — mesmo problema → MATCH
+    f4 = _f(evidence="rollback removido da transacao criar_evento")
+    check("4: rollback removed",
+          _semantic_match(f4, loc("sem rollback", symbol="criar_evento")))
+
+    # 5: sem rollback vs rollback adicionado — limitação: symbol match
+    # "criar_evento" na evidence dispara match via símbolo.
+    # Resolver exigiria verificação semântica de negação (fora do escopo).
+    f5 = _f(evidence="rollback adicionado a transacao criar_evento")
+    check("5: rollback added (known limitation: symbol match)",
+          _semantic_match(f5, loc("sem rollback", symbol="criar_evento")))
+
+    # 6: SQL injection vs parameterized — limitação: tokens técnicos compartilhados
+    # "input", "query", "sql" são termos que casam mesmo em contexto oposto.
+    # Resolver exigiria compreensão semântica de "parameterized" vs "interpolated".
+    f6 = _f(evidence="SQL query uses parameterized input for safety")
+    check("6: parameterized (known limitation: shared technical tokens)",
+          _semantic_match(f6, loc("f-string interpolando input na query SQL",
+                                  symbol="buscar_equipamento")))
+
+    # 7: SQL injection vs interpolated input — mesmo problema → MATCH
+    f7 = _f(evidence="user input interpolated into SQL query without sanitization")
+    check("7: injection via interpolation",
+          _semantic_match(f7, loc("f-string interpolando input na query SQL",
+                                  symbol="buscar_equipamento")))
+
+    # 8: termos genéricos sozinhos NÃO produzem match
+    generic_tests = [
+        ("erro", "erro encontrado no sistema"),
+        ("consulta", "consulta feita ao banco"),
+        ("funcao", "funcao executada corretamente"),
+        ("arquivo", "arquivo processado com sucesso"),
+        ("codigo", "codigo revisado e aprovado"),
+    ]
+    for gen_word, evidence in generic_tests:
+        f_gen = _f(evidence=evidence)
+        gt_tokens = _normalize_tokens(gen_word)
+        _, relevant = _match_tokens(gt_tokens, _normalize_tokens(evidence))
+        # Se todos os tokens são genéricos, relevant deve ser vazio
+        check(f"8: '{gen_word}' solo no match", not _semantic_match(f_gen, loc(gen_word)))
+
+    # 9: três palavras genéricas compartilhadas — NÃO MATCH
+    f9 = _f(evidence="funcao com erro de consulta no arquivo")
+    check("9: all generic",
+          not _semantic_match(f9, loc("funcao erro consulta")))
+
+    # 10: mix genérico + técnico — limitação: symbol match
+    # "rollback" é token técnico que casa, e "criar_evento" não está na evidence,
+    # mas "rollback" sozinho satisfaz threshold 100% para 1 token relevante.
+    # Resolver exigiria verificação semântica de negação.
+    f10 = _f(evidence="rollback adicionado em funcao de consulta")
+    check("10: generic + opposite (known limitation: token overlap)",
+          _semantic_match(f10, loc("sem rollback")))
 
 def test_evaluate():
     print("\n── evaluate ──")
@@ -316,7 +515,7 @@ def test_model_override():
 def main():
     test_leak_guard(); test_prompt(); test_match()
     test_evaluate(); test_loaders(); test_parse()
-    test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override()
+    test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override(); test_detection(); test_semantic_adversarial(); test_false_match_adversarial(); test_finding_granularity()
     print(f"\n{'='*40}\nResults: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
 
