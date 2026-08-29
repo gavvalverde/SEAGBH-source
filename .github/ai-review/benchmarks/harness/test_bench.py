@@ -189,8 +189,24 @@ def test_classify_error():
     check("empty resp", _classify_error("200", {}, None) == "empty_response")
     check("api error", _classify_error("200", {"error": "msg"}, None) == "api_error")
     check("no content", _classify_error("200", {"choices": [{"message": {"content": ""}}]}, None) == "empty_content")
-    check("bad json", _classify_error("200", {"choices": [{"message": {"content": "bad"}}]}, None) == "json_parse_error")
-    check("ok", _classify_error("200", {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}, 10) is None)
+    # A: JSON puro válido → None
+    check("A: pure json", _classify_error("200", {"choices": [{"message": {"content": '{"summary":"ok","findings":[]}'}}]}, 10) is None)
+    # B: fenced ```json → None
+    r2 = {"choices": [{"message": {"content": "```json\n{\"summary\":\"ok\",\"findings\":[]}\n```"}}]}
+    check("B: fenced json", _classify_error("200", r2, 10) is None)
+    # C: fenced ``` → None
+    r3 = {"choices": [{"message": {"content": "```\n{\"summary\":\"ok\",\"findings\":[]}\n```"}}]}
+    check("C: fenced bare", _classify_error("200", r3, 10) is None)
+    # D: JSON inválido → json_parse_error
+    check("D: bad json", _classify_error("200", {"choices": [{"message": {"content": "bad"}}]}, None) == "json_parse_error")
+    # E: sem summary/findings → missing_fields
+    r5 = {"choices": [{"message": {"content": '{"other":"data"}'}}]}
+    check("E: missing_fields", _classify_error("200", r5, None) == "missing_fields")
+    # F: array → not_object
+    r6 = {"choices": [{"message": {"content": '[1,2,3]'}}]}
+    check("F: not_object", _classify_error("200", r6, None) == "not_object")
+    # G: content vazio → empty_content (já coberto acima)
+    check("G: empty content", _classify_error("200", {"choices": [{"message": {"content": ""}}]}, None) == "empty_content")
 
 
 def test_sanitize():
