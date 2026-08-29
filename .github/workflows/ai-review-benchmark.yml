@@ -1,0 +1,75 @@
+# =============================================================================
+# AI Review Benchmark — SEAGBH Fase 8
+# =============================================================================
+# Executa a suite de benchmark contra o modelo configurado.
+# Gatilho: workflow_dispatch (manual), NUNCA pull_request.
+#
+# Secret necessário: OPENROUTER_API_KEY
+# Resultados: artifacts (não versionados).
+# =============================================================================
+
+name: AI Review Benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Modelo para testar (default: minimax/minimax-m2.7)"
+        required: false
+        default: "minimax/minimax-m2.7"
+      case:
+        description: "Rodar caso individual por ID (ex: off-001)"
+        required: false
+        default: ""
+      filter:
+        description: "Filtrar por tag (ex: security, licensing, injection)"
+        required: false
+        default: ""
+
+permissions: {}
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+
+    steps:
+      # ── 1. Checkout ────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Setup Python ────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── 3. Leak guard ──────────────────────────────────────────────
+      - name: Run leak guard
+        run: python .github/ai-review/benchmarks/harness/leak_guard.py
+
+      # ── 4. Run benchmark ───────────────────────────────────────────
+      - name: Run benchmark
+        env:
+          CASE_INPUT: ${{ inputs.case }}
+          FILTER_INPUT: ${{ inputs.filter }}
+        run: |
+          ARGS=()
+          if [ -n "$CASE_INPUT" ]; then
+            ARGS+=(--case "$CASE_INPUT")
+          fi
+          if [ -n "$FILTER_INPUT" ]; then
+            ARGS+=(--filter "$FILTER_INPUT")
+          fi
+          python .github/ai-review/benchmarks/harness/run_bench.py "${ARGS[@]}"
+
+      # ── 5. Upload results ──────────────────────────────────────────
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results-${{ github.run_id }}
+          path: .github/ai-review/results/
+          retention-days: 90

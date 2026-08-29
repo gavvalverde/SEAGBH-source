@@ -1,0 +1,23 @@
+{
+  "id": "inj-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "critical",
+    "category": "security",
+    "path": "src/core/database.py",
+    "line": null,
+    "location": {
+      "symbol": "buscar_equipamento",
+      "region": "query busca",
+      "description": "f-string interpolando input na query SQL"
+    },
+    "confidence_expected": "high",
+    "behavior": "SQL injection."
+  },
+  "delta": {
+    "correct": "execute(WHERE codigo_barras=?)",
+    "incorrect": "execute(f WHERE codigo_barras={codigo})",
+    "note": "SQL injection"
+  }
+}

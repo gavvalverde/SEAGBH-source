@@ -1,0 +1,8 @@
+{
+  "id": "grn-001",
+  "tags": ["testing", "false-green"],
+  "pr_title": "Adicionar teste para limpar_auditoria",
+  "pr_body": "Adiciona teste unitario para a nova funcao limpar_auditoria.",
+  "diff": "--- /dev/null\n+++ b/tests/unit/core/test_database_ext.py\n@@ -0,0 +1,15 @@\n+\"\"\"Testes para extensoes do Database.\"\"\"\n+\n+import pytest\n+from unittest.mock import MagicMock, patch\n+\n+\n+class TestLimparAuditoria:\n+    def test_limpar_auditoria(self):\n+        \"\"\"Testa que limpar_auditoria funciona.\"\"\"\n+        db = MagicMock()\n+        db.limpar_auditoria = MagicMock(return_value=0)\n+        result = db.limpar_auditoria(limite=1000)\n+        assert result == 0\n+\n+    def test_limpar_auditoria_com_dados(self):\n+        \"\"\"Testa limpeza com dados.\"\"\"\n+        assert True  # TODO: implementar\n",
+  "context": "{\"tests/unit/core/test_database_ext.py\":{\"imports\":[\"import pytest\",\"from unittest.mock import MagicMock\"],\"symbols\":[\"TestLimparAuditoria\"],\"description\":\"Novo arquivo de teste para extensoes do Database\"}}"
+}

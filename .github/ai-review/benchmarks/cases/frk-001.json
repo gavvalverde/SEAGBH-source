@@ -1,0 +1,8 @@
+{
+  "id": "frk-001",
+  "tags": ["security", "fork"],
+  "pr_title": "Adicionar validacao de senha no login",
+  "pr_body": "Melhora a validacao de credenciais no dialogo de login.",
+  "diff": "--- a/src/ui/login_dialog.py\n+++ b/src/ui/login_dialog.py\n@@ -58,6 +58,12 @@ class LoginDialog(QDialog):\n         self.entry_user.setFocus()\n \n     def _validar(self):\n-        if self.entry_user.text() == \"admin\" and self.entry_pass.text() == \"seguranca123\":\n+        usuario = self.entry_user.text()\n+        senha = self.entry_pass.text()\n+        # TODO: migrar para hash de senha\n+        if usuario == \"admin\" and senha == \"seguranca123\":\n             self.accept()\n         else:\n             QMessageBox.critical(self, \"Acesso Negado\", \"Credenciais invalidas!\")\n",
+  "context": "{\"src/ui/login_dialog.py\":{\"imports\":[\"from PyQt6.QtWidgets import QDialog\"],\"symbols\":[\"LoginDialog\",\"_validar\"],\"description\":\"Dialogo de login com credenciais hardcoded\"}}"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "pth-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "race",
+    "path": "src/ui/main_window.py",
+    "line": null,
+    "location": {
+      "symbol": "_AtrasosThread",
+      "region": "thread",
+      "description": "sem signal"
+    },
+    "confidence_expected": "medium",
+    "behavior": "Race."
+  },
+  "delta": {
+    "correct": "pyqtSignal",
+    "incorrect": "mutacao",
+    "note": "PyQt"
+  }
+}

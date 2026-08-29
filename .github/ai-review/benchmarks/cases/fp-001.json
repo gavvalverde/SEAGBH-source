@@ -1,0 +1,8 @@
+{
+  "id": "fp-001",
+  "tags": ["clean", "refactor"],
+  "pr_title": "Refatorar lambda para def em consultas do banco",
+  "pr_body": "Converte lambdas complexas em funcoes nomeadas para melhorar legibilidade.",
+  "diff": "--- a/src/core/database.py\n+++ b/src/core/database.py\n@@ -500,6 +500,14 @@ class Database:\n         return self.cursor.fetchall()\n \n+    def _formatar_equipamento(self, row) -> dict:\n+        \"\"\"Formata tupla de equipamento em dicionario.\"\"\"\n+        return {\n+            'id': row[0],\n+            'codigo': row[1],\n+            'nome': row[2],\n+        }\n+\n     def listar_equipamentos(self) -> list:\n         self.cursor.execute(\"SELECT id, codigo_barras, nome FROM equipamentos\")\n-        return list(map(lambda r: {'id': r[0], 'codigo': r[1], 'nome': r[2]}, self.cursor.fetchall()))\n+        return [self._formatar_equipamento(r) for r in self.cursor.fetchall()]\n",
+  "context": "{\"src/core/database.py\":{\"imports\":[\"import sqlite3\"],\"symbols\":[\"Database\",\"listar_equipamentos\"],\"description\":\"Wrapper de dados - listagem de equipamentos\"}}"
+}

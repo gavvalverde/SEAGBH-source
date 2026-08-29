@@ -1,0 +1,8 @@
+{
+  "id": "cln-001",
+  "tags": ["clean"],
+  "pr_title": "Atualizar docstring de verificar_atualizacao",
+  "pr_body": "Corrige typos na docstring.",
+  "diff": "--- a/src/core/atualizacao.py\n+++ b/src/core/atualizacao.py\n@@ -14,7 +14,7 @@\n \n def verificar_atualizacao() -> ResultadoVerificacao:\n     \"\"\"Verifica se ha atualizacao disponivel.\n \n-    Checa o manifest remoto no Firebase e compara com a versao atual.\n+    Verifica o manifest remoto no Firebase e compara com a versao atual.\n     \"\"\"\n",
+  "context": "{\"src/core/atualizacao.py\":{\"imports\":[\"from dataclasses import dataclass\",\"from enum import Enum\"],\"symbols\":[\"verificar_atualizacao\",\"ResultadoVerificacao\"],\"description\":\"Sistema de auto-atualizacao via Firebase\"}}"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "brk-001",
+  "tags": ["licensing", "broken-api"],
+  "pr_title": "Melhorar tratamento de dados corrompidos na licenca",
+  "pr_body": "Ao detectar HMAC mismatch, retorna dados parciais em vez de None para melhorar debug.",
+  "diff": "--- a/src/core/licenca.py\n+++ b/src/core/licenca.py\n@@ -272,7 +272,7 @@ def validar_chave(chave: str) -> dict | None:\n         if not hmac.compare_digest(sig, sig_esperada):\n             logger.error(\"HMAC mismatch - arquivo .licenca.dat corrompido!\")\n             remover_licenca(remover_backup=False)\n-            return None\n+            return {}\n \n     except Exception as e:\n         logger.error(f\"Erro ao validar chave: {e}\")\n",
+  "context": "{\"src/core/licenca.py\":{\"imports\":[\"import hmac\",\"import hashlib\"],\"symbols\":[\"validar_chave\",\"hmac.compare_digest\",\"remover_licenca\"],\"description\":\"Validacao HMAC-SHA256 de chaves de licenca\"}}"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "mnt-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "minor",
+    "category": "other",
+    "path": "src/core/atualizacao.py",
+    "line": null,
+    "location": {
+      "symbol": "verificar_atualizacao",
+      "region": "limpeza",
+      "description": "remove limpeza"
+    },
+    "confidence_expected": "medium",
+    "behavior": "Acumulo."
+  },
+  "delta": {
+    "correct": "limpar chamado",
+    "incorrect": "removido",
+    "note": "Mnt"
+  }
+}
