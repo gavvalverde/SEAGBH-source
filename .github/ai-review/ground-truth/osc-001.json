@@ -1,0 +1,23 @@
+{
+  "id": "osc-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "informational",
+    "category": "out-of-scope",
+    "path": "src/ui/tab_eventos.py",
+    "line": null,
+    "location": {
+      "symbol": "_buscar",
+      "region": "busca",
+      "description": "fora escopo"
+    },
+    "confidence_expected": "medium",
+    "behavior": "Out of scope."
+  },
+  "delta": {
+    "correct": "inalterado",
+    "incorrect": "fora escopo",
+    "note": "OOS"
+  }
+}

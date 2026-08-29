@@ -1,0 +1,23 @@
+{
+  "id": "exc-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "critical",
+    "category": "exception-handling",
+    "path": "src/core/licenca.py",
+    "line": null,
+    "location": {
+      "symbol": "salvar_licenca",
+      "region": "bloco de escrita do .licenca.dat",
+      "description": "trecho que assina HMAC e grava arquivo - excecao engolida mascara corrupcao"
+    },
+    "confidence_expected": "high",
+    "behavior": "except: pass na escrita HMAC mascara corrupcao silenciosa."
+  },
+  "delta": {
+    "correct": "except Exception as e: logger.error(...); raise",
+    "incorrect": "except: pass",
+    "note": "Engolir excecao em escrita de licenca"
+  }
+}

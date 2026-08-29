@@ -1,0 +1,23 @@
+{
+  "id": "frk-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "critical",
+    "category": "security",
+    "path": "src/ui/login_dialog.py",
+    "line": null,
+    "location": {
+      "symbol": "_validar",
+      "region": "login",
+      "description": "hardcoded"
+    },
+    "confidence_expected": "high",
+    "behavior": "Hardcoded."
+  },
+  "delta": {
+    "correct": "config",
+    "incorrect": "hardcoded",
+    "note": "Fork"
+  }
+}

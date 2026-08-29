@@ -1,0 +1,8 @@
+{
+  "id": "exc-001",
+  "tags": ["licensing", "security", "critical"],
+  "pr_title": "Melhorar tratamento de erro na escrita de licenca",
+  "pr_body": "Adiciona tratamento de excecao na gravacao do arquivo .licenca.dat para evitar que o app trave.",
+  "diff": "--- a/src/core/licenca.py\n+++ b/src/core/licenca.py\n@@ -230,8 +230,7 @@ def salvar_licenca(dados):\n     try:\n         with open(_LICENCA_PATH, 'w', encoding='utf-8') as f:\n             f.write(conteudo)\n-    except Exception as e:\n-        logger.error(f'Erro ao salvar licenca: {e}')\n-        raise\n+    except:\n+        pass\n \n def _salvar_dados_brutos(dados):\n",
+  "context": "{\"src/core/licenca.py\":{\"imports\":[\"import hmac\",\"import hashlib\",\"import base64\"],\"symbols\":[\"salvar_licenca\",\"_assinar\",\"_LICENCA_PATH\"],\"description\":\"Salvamento de licenca com assinatura HMAC-SHA256\"}}"
+}

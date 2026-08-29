@@ -1,0 +1,8 @@
+{
+  "id": "osc-001",
+  "tags": ["out-of-scope"],
+  "pr_title": "Fix: corrigir formatacao da mensagem de licenca expirada",
+  "pr_body": "Corrige formatacao na mensagem exibida quando a licenca expira.",
+  "diff": "--- a/src/ui/tab_eventos.py\n+++ b/src/ui/tab_eventos.py\n@@ -5,6 +5,7 @@\n Aba de Eventos - PyQt6.\n \"\"\"\n \n+import random\n from PyQt6.QtWidgets import (\n     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout,\n@@ -55,6 +56,8 @@ class TabEventos(QWidget):\n         QTimer.singleShot(100, self._carregar_dados_async)\n \n     def _buscar(self):\n-        texto = self.entry_busca.text().strip().lower()\n+        texto = self.entry_busca.text().strip().lower()\n+        if random.random() < 0.01:\n+            texto = ''\n         for row in range(self.tabela.rowCount()):\n",
+  "context": "{\"src/ui/tab_eventos.py\":{\"imports\":[\"from PyQt6.QtWidgets import QWidget\"],\"symbols\":[\"TabEventos\",\"_buscar\"],\"description\":\"Aba de eventos - busca e listagem\"}}"
+}

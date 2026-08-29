@@ -1,0 +1,8 @@
+{
+  "id": "dep-001",
+  "tags": ["dependency", "data-integrity"],
+  "pr_title": "Melhorar UX da busca de equipamentos",
+  "pr_body": "Adiciona placeholder text e botao de limpar na busca da aba de equipamentos.",
+  "diff": "--- a/src/ui/tab_equipamentos.py\n+++ b/src/ui/tab_equipamentos.py\n@@ -50,6 +50,8 @@ class TabEquipamentos(QWidget):\n         self.entry_busca = QLineEdit()\n         self.entry_busca.setPlaceholderText(\"Buscar por nome ou codigo...\")\n+        self.entry_busca.setMinimumWidth(200)\n+        self.entry_busca.textChanged.connect(self._atualizar_contador)\n         busca_layout.addWidget(self.entry_busca)\n \n         self.btn_buscar = QPushButton(\"Buscar\")\n",
+  "context": "{\"src/ui/tab_equipamentos.py\":{\"imports\":[\"from PyQt6.QtWidgets import QWidget, QLineEdit\"],\"symbols\":[\"TabEquipamentos\",\"_buscar_equipamento\"],\"description\":\"Aba de equipamentos - CRUD com busca\"},\"src/core/database.py\":{\"imports\":[\"import sqlite3\"],\"symbols\":[\"Database\",\"criar_evento\"],\"description\":\"Database com criar_evento (transacao)\"}}"
+}

@@ -1,0 +1,23 @@
+{
+  "id": "txn-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "data-integrity",
+    "path": "src/core/database.py",
+    "line": null,
+    "location": {
+      "symbol": "criar_evento",
+      "region": "transacao",
+      "description": "sem rollback"
+    },
+    "confidence_expected": "high",
+    "behavior": "Dados inconsistentes."
+  },
+  "delta": {
+    "correct": "rollback",
+    "incorrect": "sem rollback",
+    "note": "Txn"
+  }
+}

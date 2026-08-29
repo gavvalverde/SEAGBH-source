@@ -1,0 +1,8 @@
+{
+  "id": "rac-001",
+  "tags": ["licensing", "race"],
+  "pr_title": "Otimizar atualizacao de dados Firebase",
+  "pr_body": "Remove bloqueio desnecessario na atualizacao de dados da licenca para melhorar performance.",
+  "diff": "--- a/src/core/licenca.py\n+++ b/src/core/licenca.py\n@@ -528,14 +528,11 @@ def consultar_firebase():\n         # Salvar dados do Firebase\n-        with _lock:\n-            dados['firebase'] = {\n-                'revogada': False,\n-                'auto_renew': fb.get('auto_renew', False),\n-            }\n-            dados['ultima_verificacao'] = datetime.now().isoformat()\n-            _salvar_dados_brutos(dados)\n+        dados['firebase'] = {\n+            'revogada': False,\n+            'auto_renew': fb.get('auto_renew', False),\n+        }\n+        dados['ultima_verificacao'] = datetime.now().isoformat()\n+        _salvar_dados_brutos(dados)\n",
+  "context": "{\"src/core/licenca.py\":{\"imports\":[\"import json\",\"from datetime import datetime\"],\"symbols\":[\"consultar_firebase\",\"_salvar_dados_brutos\",\"_lock\"],\"description\":\"Verificacao Firebase com atualizacao atomica\"}}"
+}

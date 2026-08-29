@@ -1,0 +1,23 @@
+{
+  "id": "lic-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "data-integrity",
+    "path": "src/core/licenca.py",
+    "line": null,
+    "location": {
+      "symbol": "consultar_firebase",
+      "region": "except",
+      "description": "URLError->DELETED"
+    },
+    "confidence_expected": "high",
+    "behavior": "Viola regra."
+  },
+  "delta": {
+    "correct": "OFFLINE",
+    "incorrect": "DELETED",
+    "note": "Rule"
+  }
+}

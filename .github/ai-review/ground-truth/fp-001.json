@@ -1,0 +1,12 @@
+{
+  "id": "fp-001",
+  "type": "clean",
+  "expected": {
+    "find": false
+  },
+  "delta": {
+    "correct": "def correto",
+    "incorrect": "refactor",
+    "note": "Clean"
+  }
+}

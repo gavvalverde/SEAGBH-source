@@ -1,0 +1,23 @@
+{
+  "id": "dep-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "data-integrity",
+    "path": "src/core/database.py",
+    "line": null,
+    "location": {
+      "symbol": "criar_evento",
+      "region": "transacao",
+      "description": "sem FK"
+    },
+    "confidence_expected": "low",
+    "behavior": "Dep bug."
+  },
+  "delta": {
+    "correct": "validar FK",
+    "incorrect": "sem FK",
+    "note": "Dep"
+  }
+}

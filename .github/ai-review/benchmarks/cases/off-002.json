@@ -1,0 +1,8 @@
+{
+  "id": "off-002",
+  "tags": ["licensing", "security", "data-integrity"],
+  "pr_title": "Corrigir tratamento de licenca ausente no servidor",
+  "pr_body": "Quando a licenca nao e encontrada no Firebase, mantem estado offline em vez de excluir local.",
+  "diff": "--- a/src/core/licenca.py\n+++ b/src/core/licenca.py\n@@ -435,8 +435,8 @@ def consultar_firebase():\n     if fb_status == FB_MISSING:\n-        remover_licenca()\n-        return ESTADO_DELETED, {}\n+        logger.info('Licenca nao encontrada no servidor - mantendo offline')\n+        return ESTADO_OFFLINE, {}\n \n     if fb_status == FB_ERROR:\n         logger.warning('Erro de rede - usando tolerancia offline')\n",
+  "context": "{\"src/core/licenca.py\":{\"imports\":[\"from urllib.error import URLError\"],\"symbols\":[\"consultar_firebase\",\"FB_MISSING\",\"ESTADO_DELETED\",\"ESTADO_OFFLINE\",\"remover_licenca\"],\"description\":\"Consulta Firebase - quando nao existe (licenca deletada)\"}}"
+}

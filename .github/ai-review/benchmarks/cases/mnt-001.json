@@ -1,0 +1,8 @@
+{
+  "id": "mnt-001",
+  "tags": ["maintenance", "cleanup"],
+  "pr_title": "Simplificar verificacao de atualizacao",
+  "pr_body": "Remove limpeza temporaria que pode causar problemas com atualizacoes em andamento.",
+  "diff": "--- a/src/core/atualizacao.py\n+++ b/src/core/atualizacao.py\n@@ -260,7 +260,6 @@ def verificar_atualizacao() -> ResultadoVerificacao:\n     # Limpar arquivos temporarios de atualizacoes anteriores\n-    limpar_arquivos_temporarios()\n \n     try:\n         url = f\"{FIREBASE_URL}/updates/latest.json\"\n",
+  "context": "{\"src/core/atualizacao.py\":{\"imports\":[\"from urllib.request import Request, urlopen\"],\"symbols\":[\"verificar_atualizacao\",\"limpar_arquivos_temporarios\"],\"description\":\"Verificacao de atualizacao com limpeza de temporarios\"}}"
+}

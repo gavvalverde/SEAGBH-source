@@ -1,0 +1,23 @@
+{
+  "id": "off-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "regression",
+    "path": "src/core/licenca.py",
+    "line": null,
+    "location": {
+      "symbol": "consultar_firebase",
+      "region": "bloco de tratamento do estado",
+      "description": "comparacao de revoked_at que define fronteira entre REVOKED_GRACE e REVOKED_EXPIRED"
+    },
+    "confidence_expected": "high",
+    "behavior": "Muda fronteira de tolerancia de 24h. Regressao funcional."
+  },
+  "delta": {
+    "correct": "horas_desde_revogacao <= 24 -> REVOKED_GRACE",
+    "incorrect": "horas_desde_revogacao < 24 -> REVOKED_GRACE (exclui limite)",
+    "note": "Off-by-one na fronteira de 24h"
+  }
+}
