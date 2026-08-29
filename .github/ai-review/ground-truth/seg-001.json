@@ -2,13 +2,13 @@
   "id": "seg-001",
   "type": "parcial",
   "expected": {
-    "find": true,
+    "find": false,
     "partial_acknowledged": true,
     "confidence_overall_expected": "low"
   },
   "delta": {
-    "correct": "diff>80KiB",
-    "incorrect": "parcial",
-    "note": "Trunc"
+    "correct": "diff>80KiB, reviewer diz partial/low confidence",
+    "incorrect": "inventar findings especificos sem ver o diff completo",
+    "note": "Partial review — não há bug esperado"
   }
 }
