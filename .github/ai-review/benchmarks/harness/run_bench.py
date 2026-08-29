@@ -143,13 +143,109 @@ def _line_close(a, b):
     return abs(a - b) <= LINE_TOLERANCE
 
 
+import re as _re
+
+
+def _normalize_tokens(text):
+    """Lowercase, remove pontuação, retorna set de tokens."""
+    return set(_re.sub(r"[^\w\s]", " ", text.lower()).split())
+
+
+_GENERIC_TOKENS = frozenset({
+    # Tokens genéricos que NÃO devem contar sozinhos como evidência
+    "teste", "erro", "problema", "funcao", "arquivo", "codigo",
+    "mudanca", "alteracao", "consulta", "dado", "dados", "sistema",
+    "metodo", "classe", "modulo", "elemento", "valor", "campo",
+    "tipo", "nome", "texto", "saida", "entrada", "linha", "bloco",
+    "parte", "uso", "chamada", "retorno",
+})
+
+# Palavras funcionais (preposições, negações, artigos) que NÃO são conteúdo.
+# Excluídas dos tokens relevantes do GT — o modelo não as usaria em evidência.
+_FUNCTION_WORDS = frozenset({
+    "sem", "na", "no", "de", "do", "da", "dos", "das",
+    "em", "por", "para", "com", "que", "e", "ou",
+    "o", "a", "os", "as", "um", "uma",
+    "not", "the", "in", "on", "at", "to", "for", "of", "with", "and", "or",
+})
+
+
+def _prefix_match(tok_a, tok_b):
+    """Dois tokens longos (>6 chars) são equivalentes se compartilham prefixo >= 6."""
+    if len(tok_a) <= 6 or len(tok_b) <= 6:
+        return False
+    return tok_a[:6] == tok_b[:6]
+
+
+def _match_tokens(gt_tokens, ev_tokens):
+    """Conta tokens relevantes do GT que casam com o evidence.
+
+    Exclui tokens genéricos e funcionais do GT.
+    Um token casa por: exato, ou prefixo comum >=6 chars.
+    Retorna (matching_relevant, total_relevant).
+    """
+    relevant = gt_tokens - _GENERIC_TOKENS - _FUNCTION_WORDS
+    if not relevant:
+        return set(), set()
+    matching = set()
+    for t in relevant:
+        if t in ev_tokens:
+            matching.add(t)
+            continue
+        # Prefix match para tokens longos
+        if len(t) > 6:
+            for e in ev_tokens:
+                if _prefix_match(t, e):
+                    matching.add(t)
+                    break
+    return matching, relevant
+
+
 def _semantic_match(finding, loc):
+    """Match semântico determinístico e conservador.
+
+    Regras:
+    1. Substring exato (rápido)
+    2. Token overlap com threshold adaptativo:
+       - GT <=2 tokens relevantes: 100%
+       - GT 3-5 tokens relevantes: >=50%
+       - GT >=6 tokens relevantes: >=40% (min 2 tokens)
+    3. Prefix match para tokens >6 chars
+    4. Tokens genéricos não contam sozinhos
+    """
     evidence = ((finding.get("evidence") or "") + " " +
                 (finding.get("title") or "") + " " +
                 (finding.get("body") or "")).lower()
+    ev_tokens = _normalize_tokens(evidence)
     for key in ("symbol", "region", "description"):
         val = (loc.get(key) or "").lower()
-        if val and len(val) > 2 and val in evidence:
+        if not val or len(val) <= 2:
+            continue
+        # 1) Substring exato (exceto se GT é 100% genérico/funcional)
+        gt_tokens_raw = _normalize_tokens(val)
+        all_generic_or_func = gt_tokens_raw <= (_GENERIC_TOKENS | _FUNCTION_WORDS)
+        if not all_generic_or_func and val in evidence:
+            return True
+        # 2) Token overlap adaptativo
+        gt_tokens = _normalize_tokens(val)
+        if len(gt_tokens) < 2:
+            continue
+        matching, relevant = _match_tokens(gt_tokens, ev_tokens)
+        n_relevant = len(relevant)
+        n_matching = len(matching)
+        if n_relevant == 0:
+            continue
+        ratio = n_matching / n_relevant
+        # Threshold adaptativo
+        if n_relevant <= 2:
+            threshold = 1.0  # 100%
+        elif n_relevant <= 5:
+            threshold = 0.75  # 75% — previne falsos positivos com tokens parciais
+        else:
+            threshold = 0.4  # 40%, mas min 2 tokens
+        if ratio >= threshold:
+            if n_relevant >= 6 and n_matching < 2:
+                continue  # GT longo exige min 2 tokens relevantes
             return True
     return False
 
