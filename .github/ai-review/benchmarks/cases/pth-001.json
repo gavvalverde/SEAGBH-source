@@ -1,0 +1,8 @@
+{
+  "id": "pth-001",
+  "tags": ["race", "pyqt"],
+  "pr_title": "Otimizar thread de atrasos",
+  "pr_body": "Substitui signal por atributo direto para simplificar comunicacao entre threads.",
+  "diff": "--- a/src/ui/main_window.py\n+++ b/src/ui/main_window.py\n@@ -56,15 +56,15 @@ class _DownloadThread(QThread):\n \n class _AtrasosThread(QThread):\n     \"\"\"Thread para verificar atrasos sem bloquear a interface.\"\"\"\n-    pronto = pyqtSignal(list)\n-    falha = pyqtSignal(str)\n+    def __init__(self):\n+        super().__init__()\n+        self.resultado = None\n+        self.erro = None\n \n     def run(self):\n         try:\n             db = Database()\n             atrasados = db.eventos_atrasados()\n             db.fechar()\n-            self.pronto.emit(atrasados)\n+            self.resultado = atrasados\n         except Exception as e:\n-            self.falha.emit(str(e))\n+            self.erro = str(e)\n",
+  "context": "{\"src/ui/main_window.py\":{\"imports\":[\"from PyQt6.QtCore import QThread, pyqtSignal\"],\"symbols\":[\"_AtrasosThread\",\"pronto\",\"falha\"],\"description\":\"Thread para verificacao de atrasos em background\"}}"
+}

@@ -1,0 +1,8 @@
+{
+  "id": "sec-001",
+  "tags": ["security", "critical"],
+  "pr_title": "Adicionar validacao de token Firebase no gerador",
+  "pr_body": "Adiciona validacao do token Firebase antes de gerar chaves.",
+  "diff": "--- a/tools/gerador_chaves.py\n+++ b/tools/gerador_chaves.py\n@@ -18,6 +18,9 @@ from PyQt6.QtGui import QGuiApplication, QColor, QIcon\n from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal\n from PyQt6.QtGui import QGuiApplication, QColor, QIcon\n \n+FIREBASE_TOKEN = \"AIzaSyC_EXAMPLE_TOKEN_HARD_CODED_12345\"\n+FIREBASE_URL = \"https://seagbh-licencas-default-rtdb.firebaseio.com\"\n+\n \n class GeradorChaves(QWidget):\n",
+  "context": "{\"tools/gerador_chaves.py\":{\"imports\":[\"from PyQt6.QtWidgets import QApplication\",\"import hashlib\"],\"symbols\":[\"GeradorChaves\",\"gerar_chave\"],\"description\":\"Gerador de chaves de licenca com UI PyQt6\"}}"
+}

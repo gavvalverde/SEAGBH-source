@@ -1,0 +1,23 @@
+{
+  "id": "rac-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "important",
+    "category": "race",
+    "path": "src/core/licenca.py",
+    "line": null,
+    "location": {
+      "symbol": "consultar_firebase",
+      "region": "bloco de atualizacao Firebase",
+      "description": "escrita concorrente em dados compartilhados sem serializacao"
+    },
+    "confidence_expected": "medium",
+    "behavior": "Remove protecao de concorrencia. Duas instancias podem corromper dados."
+  },
+  "delta": {
+    "correct": "lock/serializacao antes de atualizar dados",
+    "incorrect": "remove lock",
+    "note": "Race condition em operacao de licenciamento"
+  }
+}

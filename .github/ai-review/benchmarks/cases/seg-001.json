@@ -1,0 +1,8 @@
+{
+  "id": "seg-001",
+  "tags": ["partial", "segmentation"],
+  "pr_title": "Refatoracao completa do modulo de dados",
+  "pr_body": "Grande refatoracao do database.py com muitas alteracoes em multiplos arquivos.",
+  "diff": "--- a/src/core/database.py\n+++ b/src/core/database.py\n@@ -100,6 +100,8 @@ class Database:\n     def __init__(self):\n         self.conn = None\n+    def __init_novo(self):\n+        pass\n [LARGE DIFF CONTINUES FOR 80+ KiB]\n",
+  "context": "{\"src/core/database.py\":{\"imports\":[\"import sqlite3\"],\"symbols\":[\"Database\"],\"description\":\"Grande refatoracao do modulo de dados\"}}"
+}

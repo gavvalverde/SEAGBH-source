@@ -1,0 +1,14 @@
+{
+  "id": "seg-001",
+  "type": "parcial",
+  "expected": {
+    "find": true,
+    "partial_acknowledged": true,
+    "confidence_overall_expected": "low"
+  },
+  "delta": {
+    "correct": "diff>80KiB",
+    "incorrect": "parcial",
+    "note": "Trunc"
+  }
+}

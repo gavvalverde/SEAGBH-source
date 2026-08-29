@@ -1,0 +1,23 @@
+{
+  "id": "off-002",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "critical",
+    "category": "data-integrity",
+    "path": "src/core/licenca.py",
+    "line": null,
+    "location": {
+      "symbol": "consultar_firebase",
+      "region": "FB_MISSING",
+      "description": "->OFFLINE"
+    },
+    "confidence_expected": "high",
+    "behavior": "Bypass."
+  },
+  "delta": {
+    "correct": "DELETED",
+    "incorrect": "OFFLINE",
+    "note": "Confusion"
+  }
+}
