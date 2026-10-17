@@ -107,7 +107,7 @@ def test_match():
     check("o2o no-match fn=1", no_match[2] == 1)
 
 
-def test_detection():
+def test_detection_with_intermediate_scores():
     print("\n── detection (Fase 8.2) ──")
     gt = _gt(symbol="func")
     # A: mesmo bug + mesma categoria → TP
@@ -171,7 +171,7 @@ def test_fpfn_counting():
     check("F: 2exp/3mix", tp == 1 and fp == 2 and fn == 1)
 
 
-def test_detection():
+def test_detection_with_direct_scores():
     print("\n── detection (Fase 8.2) ──")
     gt = _gt(symbol="func")
     f_same = _f(evidence="func broken", category="regression")
@@ -629,12 +629,214 @@ def test_evidence_to_publish():
           and "high|medium|low" in sys_c)
 
 
+def test_output_format_json_example():
+    from prompt_builder import _system_prompt
+
+    output_format = _system_prompt().split("## OUTPUT FORMAT\n", 1)[1]
+    example = output_format.split(
+        "Use this schema exactly (see .github/ai-review/review-schema.json):\n", 1
+    )[1].split("\n\n", 1)[0]
+    review = json.loads(example)
+
+    check("JSON example is an object", isinstance(review, dict))
+    check("JSON example review fields", {
+        "summary", "findings", "reviewed_scope", "confidence_overall"
+    } <= review.keys())
+    findings = review["findings"]
+    check("JSON example has findings", isinstance(findings, list) and bool(findings))
+    finding = findings[0]
+    check("JSON example finding is an object", isinstance(finding, dict))
+    check("JSON example finding fields", {
+        "severity", "category", "path", "line", "title", "body", "confidence", "evidence"
+    } <= finding.keys())
+
+
 def main():
-    test_leak_guard(); test_prompt(); test_match()
+    test_leak_guard(); test_prompt(); test_match(); test_output_format_json_example()
     test_evaluate(); test_loaders(); test_parse()
-    test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override(); test_detection(); test_semantic_adversarial(); test_false_match_adversarial(); test_finding_granularity(); test_evidence_to_publish()
+    test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override(); test_detection_with_intermediate_scores(); test_detection_with_direct_scores(); test_semantic_adversarial(); test_false_match_adversarial(); test_finding_granularity(); test_evidence_to_publish()
+    test_same_region_multiple_defects(); test_partial_truncated_diff()
+    test_security_framing_11a(); test_exact_symbol_anchor_11a(); test_partial_truncated_clarification_11a()
+    test_anchor_mandatory_11b(); test_branch_examination_11b(); test_partial_diff_11b(); test_critical_rules_preserved_11b()
     print(f"\n{'='*40}\nResults: {passed} passed, {failed} failed")
     sys.exit(1 if failed else 0)
+
+
+def test_same_region_multiple_defects():
+    print("\n── same region, multiple defects (Fase 10B) ──")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+
+    check("1: section present", "SAME REGION, MULTIPLE DEFECTS" in sys_c)
+    check("2: multiple defects",
+          "MULTIPLE independent defects" in sys_c
+          or "multiple independent defects" in sys_c.lower())
+    check("3: independent defects",
+          "independent defect" in sys_c.lower()
+          or "independent defects" in sys_c.lower()
+          or "independent causes" in sys_c.lower())
+    check("4: different mechanisms",
+          "different failure mechanism" in sys_c.lower()
+          or "independent mechanisms" in sys_c.lower())
+    check("5: independent fix",
+          "independent fix" in sys_c.lower()
+          or "independently" in sys_c.lower())
+    check("6: causal chain required",
+          "causal chain" in sys_c.lower())
+    check("7a: GRANULARITY preserved",
+          "FINDING GRANULARITY" in sys_c)
+    check("7b: same root cause",
+          "same root cause" in sys_c.lower() or "same cause" in sys_c.lower())
+    check("7c: separate findings for independent",
+          "separate findings" in sys_c.lower())
+    check("8a: TWO-PASS preserved", "TWO-PASS" in sys_c)
+    check("8b: EVIDENCE RULE preserved", "EVIDENCE RULE" in sys_c)
+    check("8c: SEVERITY preserved", "## SEVERITY" in sys_c)
+    check("8d: OUTPUT FORMAT preserved", "OUTPUT FORMAT" in sys_c)
+
+
+def test_partial_truncated_diff():
+    print("\n── partial / truncated diff (Fase 10B) ──")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+
+    check("1: section present", "PARTIAL / TRUNCATED DIFF" in sys_c)
+    check("2: truncated recognized",
+          "truncated" in sys_c.lower()
+          or "incomplete" in sys_c.lower())
+    check("3: partial review low confidence",
+          "confidence_overall" in sys_c.lower() or "low confidence" in sys_c.lower())
+    check("4: no findings from unavailable code",
+          "do not publish" in sys_c.lower() and "not provided" in sys_c.lower())
+    check("5: visible context supports inference",
+          "legitimate inference" in sys_c.lower()
+          or "code that is" in sys_c.lower())
+    check("6: no complete review claim",
+          "complete review" in sys_c.lower() and "truncated" in sys_c.lower())
+    check("7: truncation markers listed",
+          "[LARGE DIFF CONTINUES]" in sys_c
+          or "DIFF TRUNCATED" in sys_c
+          or "CONTENT OMITTED" in sys_c)
+    check("8a: TWO-PASS preserved", "TWO-PASS" in sys_c)
+    check("8b: EVIDENCE RULE preserved", "EVIDENCE RULE" in sys_c)
+    check("8c: SECURITY RULES preserved", "SECURITY RULES" in sys_c)
+    check("8d: GRANULARITY preserved", "FINDING GRANULARITY" in sys_c)
+    check("8e: OUTPUT FORMAT preserved", "OUTPUT FORMAT" in sys_c)
+    check("8f: EVIDENCE-TO-PUBLISH preserved", "EVIDENCE-TO-PUBLISH DISCIPLINE" in sys_c)
+    check("8g: SAME REGION preserved", "SAME REGION, MULTIPLE DEFECTS" in sys_c)
+    check("9: recall clause preserved",
+          "may be inferred" in sys_c.lower()
+          and "demonstrable failure mechanism" in sys_c.lower())
+    check("10: UNTRUSTED preserved", "UNTRUSTED DATA" in sys_c)
+
+
+def test_security_framing_11a():
+    print("\n-- security framing against TODO/future migration (Fase 11A) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    check("1: item 6 present", "6." in sys_c and "TODO" in sys_c and "future migration" in sys_c)
+    check("2: hardcoded credential mentioned", "hardcoded credential" in sys_c.lower())
+    check("3: auth bypass mentioned", "auth bypass" in sys_c.lower())
+    check("4: future intent does not remediate", "Future intent does NOT remediate" in sys_c)
+    check("5: report it now", "report it now" in sys_c.lower())
+    check("6: SECURITY RULES header preserved", "SECURITY RULES" in sys_c)
+    check("7: items 1-5 preserved", all(str(i) + "." in sys_c for i in range(1, 6)))
+
+def test_exact_symbol_anchor_11a():
+    print("\n-- exact symbol anchor (Fase 11A) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    check("1: EVIDENCE-TO-PUBLISH DISCIPLINE present", "EVIDENCE-TO-PUBLISH DISCIPLINE" in sys_c)
+    check("2: exact symbol mentioned", "exact symbol" in sys_c.lower() or "concrete name" in sys_c.lower())
+    check("3: identifier mentioned", "identifier" in sys_c.lower())
+    check("4: changed construct mentioned", "changed construct" in sys_c.lower())
+    check("5: from diff/context mentioned", "supplied diff" in sys_c.lower() or "supplied context" in sys_c.lower())
+    check("6: EVIDENCE RULE preserved", "EVIDENCE RULE" in sys_c)
+    check("7: FINDING GRANULARITY preserved", "FINDING GRANULARITY" in sys_c)
+    check("8: SAME REGION preserved", "SAME REGION, MULTIPLE DEFECTS" in sys_c)
+
+def test_partial_truncated_clarification_11a():
+    print("\n-- partial/truncated clarification (Fase 11A) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    check("1: truncation markers present", "[LARGE DIFF CONTINUES]" in sys_c or "truncation markers" in sys_c.lower())
+    check("2: omitted content as unavailable", "omitted content" in sys_c.lower() and "unavailable evidence" in sys_c.lower())
+    check("3: do not publish findings depending on omitted code", "Do NOT publish findings that depend on omitted code" in sys_c or "Do NOT publish findings that depend on omitted" in sys_c)
+    check("4: findings allowed when causal chain complete", "CHANGED CODE, TRIGGER, FAILURE MECHANISM, and IMPACT are fully established" in sys_c)
+    check("5: do not claim complete review when truncated", "Do not claim the review is complete when the diff is truncated" in sys_c)
+    check("6: PARTIAL / TRUNCATED section present", "PARTIAL / TRUNCATED DIFF" in sys_c)
+    check("7: legitimate inference still allowed", "legitimate inference" in sys_c.lower())
+
+
+def test_anchor_mandatory_11b():
+    print("\n-- mandatory evidence anchor (Fase 11B) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    check("1: MANDATORY present", "MANDATORY:" in sys_c)
+    check("2: evidence field must identify", "evidence' field MUST identify" in sys_c)
+    check("3: exact symbol/identifier/construct", "exact symbol, identifier, or changed construct" in sys_c)
+    check("4: supplied diff/context", "from the supplied diff/context" in sys_c)
+    check("5: concrete name", "concrete name" in sys_c)
+    # a frase da 11A foi substituida
+    check("6: old 11A sentence removed", "Identify the exact symbol, identifier, or changed construct that the finding refers to" not in sys_c)
+    check("7: no matcher mention", "matcher" not in sys_c.lower() and "matching" not in sys_c.lower())
+    check("8: EVIDENCE-TO-PUBLISH preserved", "EVIDENCE-TO-PUBLISH DISCIPLINE" in sys_c)
+
+
+def test_branch_examination_11b():
+    print("\n-- branch/state/boundary examination (Fase 11B) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    check("1: branch rule present", "contains multiple branches, states, or boundary conditions" in sys_c)
+    check("2: error statuses example", "FB_MISSING/FB_ERROR" in sys_c)
+    check("3: off-by-one example", "off-by-one boundaries" in sys_c)
+    check("4: examine EACH one", "examine EACH one for an independent defect before concluding" in sys_c)
+    check("5: no branch omission", "Do not omit a branch's defect by assuming it shares the root cause" in sys_c)
+    # escopo local, nao universal
+    check("6: scoped to changed function", "When a changed function contains" in sys_c)
+    check("7: no universal enumeration", "enumerate ALL branches" not in sys_c)
+    # secoes preservadas
+    check("8: SAME REGION preserved", "SAME REGION, MULTIPLE DEFECTS" in sys_c)
+    check("9: GRANULARITY preserved", "FINDING GRANULARITY" in sys_c)
+    check("10: GRANULARITY relation intact", "This rule does NOT replace FINDING GRANULARITY" in sys_c)
+
+
+def test_partial_diff_11b():
+    print("\n-- partial/truncated diff integrity (Fase 11B) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    # as 4 regras nucleares exigidas
+    check("1: omitted content unavailable", "When truncation markers are present, treat omitted content as unavailable evidence" in sys_c)
+    check("2: no findings from omitted code", "Do NOT publish findings that depend on omitted code or behavior" in sys_c)
+    check("3: findings allowed when chain visible", "Findings are still allowed when CHANGED CODE, TRIGGER, FAILURE MECHANISM, and IMPACT are fully established by the supplied diff/context" in sys_c)
+    check("4: no complete review claim", "Do not claim the review is complete when the diff is truncated" in sys_c)
+    # nenhuma exigencia universal de findings vazio
+    check("5: no universal empty findings", "MUST publish an EMPTY findings array" not in sys_c)
+    check("6: no empty-findings instruction", "EMPTY findings array" not in sys_c)
+    # visao de inferencia legitima preservada
+    check("7: section present", "PARTIAL / TRUNCATED DIFF" in sys_c)
+    check("8: legitimate inference preserved", "legitimate inference" in sys_c.lower())
+
+
+def test_critical_rules_preserved_11b():
+    print("\n-- critical rules preserved (Fase 11B) --")
+    from prompt_builder import build_request
+    sys_c = build_request("t", "b", "d")["messages"][0]["content"]
+    check("1: UNTRUSTED DATA", "UNTRUSTED DATA" in sys_c)
+    check("2: SECURITY RULES 1-6", "SECURITY RULES" in sys_c and "6. A hardcoded credential" in sys_c)
+    check("3: TWO-PASS", "TWO-PASS ADVERSARIAL REVIEW" in sys_c)
+    check("4: EVIDENCE RULE", "## EVIDENCE RULE" in sys_c)
+    check("5: SEVERITY anti-inflation", "## SEVERITY (anti-inflation)" in sys_c)
+    check("6: FINDING GRANULARITY", "## FINDING GRANULARITY" in sys_c)
+    check("7: EVIDENCE-TO-PUBLISH DISCIPLINE", "## EVIDENCE-TO-PUBLISH DISCIPLINE" in sys_c)
+    check("8: SAME REGION", "## SAME REGION, MULTIPLE DEFECTS" in sys_c)
+    check("9: PARTIAL/TRUNCATED", "## PARTIAL / TRUNCATED DIFF" in sys_c)
+    check("10: OUTPUT FORMAT", "## OUTPUT FORMAT" in sys_c)
+    check("11: JSON schema", '"summary":"...","findings":[{' in sys_c)
+    check("12: recall clause", "may be inferred when the failure mechanism is demonstrated by the diff/context" in sys_c)
+    check("13: severity inflation guard", "Without concrete impact + plausible trigger: max severity is minor" in sys_c)
+    check("14: intent not suppress", "author intent never overrides evidence" in sys_c)
+
 
 if __name__ == "__main__":
     main()
