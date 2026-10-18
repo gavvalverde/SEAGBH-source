@@ -15,8 +15,7 @@ jobs:
   review:
     if: >-
       vars.AI_REVIEW_ENABLED == 'true' &&
-      (vars.AI_REVIEW_TARGET_PR == format('{0}', github.event.pull_request.number) ||
-       vars.AI_REVIEW_TARGET_PR == 'all') &&
+      vars.AI_REVIEW_TARGET_PR == format('{0}', github.event.pull_request.number) &&
       github.repository == 'gavvalverde/SEAGBH-source' &&
       github.event.pull_request.head.repo.full_name == 'gavvalverde/SEAGBH-source' &&
       github.event.pull_request.base.repo.full_name == 'gavvalverde/SEAGBH-source' &&
