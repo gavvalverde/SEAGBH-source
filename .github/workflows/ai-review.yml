@@ -1,0 +1,71 @@
+name: AI PR Review (disabled by default)
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions: {}
+
+concurrency:
+  group: ai-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  review:
+    if: >-
+      vars.AI_REVIEW_ENABLED == 'true' &&
+      github.repository == 'gavvalverde/SEAGBH-source' &&
+      github.event.pull_request.head.repo.full_name == 'gavvalverde/SEAGBH-source' &&
+      github.event.pull_request.base.repo.full_name == 'gavvalverde/SEAGBH-source' &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.state == 'open' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Check literal activation without credentials
+        id: activation
+        shell: bash
+        env:
+          AI_REVIEW_ENABLED: ${{ vars.AI_REVIEW_ENABLED }}
+        run: |
+          if [[ "${AI_REVIEW_ENABLED:-}" == "true" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Checkout trusted workflow revision only
+        if: steps.activation.outputs.enabled == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gavvalverde/SEAGBH-source
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/ai-review/production/
+            /.github/ai-review/benchmarks/harness/prompt_builder.py
+            /.github/ai-review/review-schema.json
+      - name: Install pinned production dependencies in an ephemeral venv
+        if: steps.activation.outputs.enabled == 'true'
+        shell: bash
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/ai-review-venv"
+          "$RUNNER_TEMP/ai-review-venv/bin/python" -m pip --isolated --disable-pip-version-check install --only-binary=:all: --index-url https://pypi.org/simple -r .github/ai-review/production/requirements.txt
+      - name: Run trusted reviewer
+        if: steps.activation.outputs.enabled == 'true'
+        shell: bash
+        env:
+          AI_REVIEW_ENABLED: ${{ vars.AI_REVIEW_ENABLED }}
+          AI_REVIEW_TRUSTED_SHA: ${{ github.workflow_sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: '"$RUNNER_TEMP/ai-review-venv/bin/python" -B .github/ai-review/production/runner.py'
