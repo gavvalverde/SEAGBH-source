@@ -2,8 +2,7 @@
 
 The production workflow is present on `main` but disabled by default. It requires
 both `AI_REVIEW_ENABLED=true` and `AI_REVIEW_TARGET_PR` equal to the exact PR
-number. This model migration is proposed on a separate branch; opening or
-merging the PR does not activate paid model calls by itself.
+number. Source changes and offline CI never activate paid model calls by themselves.
 
 ## Trust and activation
 
@@ -67,7 +66,7 @@ Binary/missing patches and metadata-only renames without patches fail safely.
 
 `core.build_payload` delegates unchanged to the published `build_request`:
 DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
-temperature 0.3, max_tokens 2500, with no tools or duplicate prompt.
+temperature 0.3, max_tokens 8192, with no tools or duplicate prompt.
 Transport accepts only fixed HTTPS origins, never follows redirects, and bounds
 responses (GitHub 2 MiB, OpenRouter 1 MiB) and encoded model requests (256 KiB).
 Socket connection/read timeouts are 5/30 seconds; the response-read deadline is
@@ -175,3 +174,41 @@ artifact hash-locking and operational GitHub validation remain separate work.
 - A finished model response must still be one assistant JSON message with
   `finish_reason=stop` and pass the existing schema/coordinate validations.
   Any missing, malformed or truncated response is an error, never a clean review.
+
+
+## Live pilot failure and follow-up (2026-11-17)
+
+- PR #16 triggered the DeepSeek review from trusted main on 2026-11-17.
+  The workflow got as far as the model response and failed closed with
+  `{"code":"incomplete_response","stage":"model","published":false}`.
+  The original response was intentionally not logged, so the precise
+  provider finish reason (such as `length`) is **not established**.
+- The output budget has been increased from 2500 to 8192 tokens. This is a
+  hypothesis-driven compatibility adjustment, not a guarantee of completion;
+  reasoning tokens may consume part of the generation budget.
+- For `finish_reason` values `length`, `content_filter`, and `error`,
+  the transport now raises `model_output_limit`, `model_content_filter`,
+  and `model_generation_error` respectively. Unknown or absent values remain
+  `incomplete_response`. Only these fixed codes may reach CI logs; never
+  log provider-supplied strings, body, token text, raw headers or API keys.
+  No truncated or incomplete response may be published; no automatic retry
+  is attempted for those finish reasons.
+- Offline CI now covers all new diagnostic branches, absence of retry,
+  absence of leaked provider content and fail-closed publication behavior.
+- Before any additional paid test, independently verify an OpenRouter key
+  budget, `AI_REVIEW_ENABLED=false`, and that fixture PR #16 is Draft.
+  A new paid attempt requires explicit approval and controlled reactivation.
+
+## GitHub event policy change (2026-12-02)
+
+GitHub has announced a default policy that blocks `pull_request_target`
+workflow events in public repositories starting 2026-12-02 unless an
+applicable Actions event policy explicitly permits the event. The review
+workflow deliberately uses a trusted base checkout and keeps the
+explicit repository/PR activation gates. Do not bypass these controls
+by checking out or executing untrusted PR code. A repository
+administrator must assess the GitHub event policy in Settings > Actions
+> Policies and, if appropriate, narrowly allow this trusted reviewer
+workflow. This is a separate administrative decision and has not been
+changed automatically. Documentation:
+https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target
