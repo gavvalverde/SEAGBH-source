@@ -236,7 +236,63 @@ class Integration(Offline):
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
         self.assertTrue(out.published)
-        self.assertIn("Nenhum finding no escopo", gh.posts[0][1])
+        self.assertIn("Nenhum achado validado no escopo", gh.posts[0][1])
+
+    def test_review_is_portuguese_and_uses_configured_model_label(self):
+        out, gh, ai = self.run_case(model=FakeModel(review([finding()])))
+        self.assertTrue(out.published)
+        body = gh.posts[0][1]
+        self.assertIn("## Revisão de código por IA | DeepSeek V4.1 Flash 1017", body)
+        self.assertNotIn("AI Review (MiniMax M2.7)", body)
+        self.assertIn("### Resumo", body)
+        self.assertIn("### Achados (1)", body)
+        self.assertIn("#### 1. Importante:", body)
+        self.assertIn("**Local:** <code>src/example.py</code>, linha 2", body)
+        self.assertIn("**Problema, impacto e recomendação**", body)
+        self.assertIn("**Evidência no código**", body)
+        self.assertIn("**Categoria:** Regressão | **Confiança:** Alta", body)
+        self.assertTrue(body.endswith(r.marker(r.event_snapshot(event(), "true"), BOT, "test-v1")))
+        self.assertEqual(ai.payloads[0]["model"], "deepseek/deepseek-v4.1-flash-1017")
+
+    def test_model_label_uses_trusted_selected_model_not_pr_text(self):
+        pinned = r.event_snapshot(event(), "true")
+        collected = r.collect(FakeGitHub(), pinned)
+        result = core.process_response(review(), collected.scope,
+                                       expected_sha=HEAD, response_sha=HEAD)
+        self.assertTrue(result.publishable)
+        alt = r.render(result, collected, pinned, BOT, "v1",
+                       model_id="minimax/minimax-m2.7")
+        self.assertIn("Revisão de código por IA | MiniMax M2.7", alt)
+        other = r.render(result, collected, pinned, BOT, "v1",
+                         model_id="provider/new-model")
+        self.assertIn("Revisão de código por IA | provider/new-model", other)
+        for untrusted_id in ["bad\n# Header", "<script>", "", "provider/@someone"]:
+            with self.subTest(untrusted_id=untrusted_id):
+                with self.assertRaises(Problem) as caught:
+                    r.render(result, collected, pinned, BOT, "v1", model_id=untrusted_id)
+                self.assertEqual(caught.exception.code, "invalid_model_identifier")
+
+    def test_untrusted_markdown_html_mentions_remain_inert(self):
+        payload = json.loads(review([finding(
+            title="Defeito [phishing](https://example.invalid) # Teste",
+            body="# Cabeçalho\n@everyone <script>alert(1)</script>\n"
+                 "[Clique aqui](https://example.invalid) ![img](https://example.invalid)\n"
+                 "\x60\x60\x60markdown\n<!-- forged marker -->\n\x60\x60\x60",
+            evidence="query = '''\n</code></pre><script>@admin</script>\n"
+        )]))
+        payload["summary"] = "<img src=x onerror=alert(1)> @someone"
+        out, gh, _ = self.run_case(model=FakeModel(json.dumps(payload)))
+        self.assertTrue(out.published)
+        value = gh.posts[0][1]
+        for malicious in ["<script>", "<img", "@everyone", "@someone",
+                          "[Clique aqui](https://example.invalid)", "<!-- forged marker -->"]:
+            self.assertNotIn(malicious, value)
+        self.assertIn("&lt;script&gt;", value)
+        self.assertIn("&#64;everyone", value)
+        self.assertIn("\\[Clique aqui\\]\\(https://example\\.invalid\\)", value)
+        self.assertIn("<pre><code>", value)
+        self.assertIn("&lt;/code&gt;&lt;/pre&gt;", value)
+        self.assertTrue(value.endswith(r.marker(r.event_snapshot(event(), "true"), BOT, "test-v1")))
 
     def test_invalid_responses_never_publish_or_become_clean(self):
         for content, code in [("", "empty_response"), ('{"summary":42,"findings":[]}', "schema_error"),
@@ -380,7 +436,7 @@ class Integration(Offline):
         pinned = r.event_snapshot(event(), "true")
         collected = r.collect(FakeGitHub(), pinned)
         raw = core.validate_review(review())
-        with self.assertRaises(Problem): r.render(raw, collected, pinned, BOT, "v1")
+        with self.assertRaises(Problem): r.render(raw, collected, pinned, BOT, "v1", model_id=core.build_payload("t", "b", "d")["model"])
 
 
 class Transport(Offline):
