@@ -338,7 +338,7 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
     parts = [
         "## Revisão de código por IA | " + _trusted_model_label(model_id),
         "",
-        "**Escopo:** revisão parcial: somente o diff fornecido." if partial else
+        "**Escopo: REVISÃO PARCIAL.** Somente o diff fornecido foi analisado." if partial else
         "**Escopo:** alterações fornecidas no diff do Pull Request.",
         "",
         "### Resumo",
