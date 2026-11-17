@@ -284,27 +284,95 @@ def already_reviewed(rows, pinned, bot_id, version):
     return False
 
 
-def render(result, collected, pinned, bot_id, version):
+_MODEL_LABELS = {
+    "deepseek/deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash 1017",
+    "minimax/minimax-m2.7": "MiniMax M2.7",
+}
+_SEVERITY_LABELS = {
+    "critical": "Crítico",
+    "important": "Importante",
+    "minor": "Menor",
+    "informational": "Informativo",
+}
+_CATEGORY_LABELS = {
+    "regression": "Regressão",
+    "edge-case": "Caso-limite",
+    "unhandled-state": "Estado não tratado",
+    "exception-handling": "Tratamento de exceções",
+    "race": "Concorrência",
+    "security": "Segurança",
+    "data-integrity": "Integridade de dados",
+    "broken-api": "API incompatível",
+    "insufficient-test": "Teste insuficiente",
+    "out-of-scope": "Fora do escopo",
+    "other": "Outro",
+}
+_CONFIDENCE_LABELS = {"high": "Alta", "medium": "Média", "low": "Baixa"}
+
+
+def _markdown_text(value):
+    """Escape untrusted model strings, including Markdown and HTML injection."""
+    safe = html.escape(str(value).replace("\r\n", "\n").replace("\r", "\n"))
+    safe = re.sub(r"([\\\x60*_{}\[\]()#+.!|>~-])", r"\\\1", safe)
+    return safe.replace("@", "&#64;")
+
+
+def _html_code(value, *, block=False):
+    """Escaped code evidence: arbitrary backticks cannot close a code fence."""
+    safe = html.escape(str(value)).replace("@", "&#64;")
+    return "<pre><code>" + safe + "</code></pre>" if block else "<code>" + safe + "</code>"
+
+
+def _trusted_model_label(model_id):
+    # The ID comes from the trusted request payload, never from PR/model text.
+    if not isinstance(model_id, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", model_id):
+        raise Problem("invalid_model_identifier")
+    return _MODEL_LABELS.get(model_id, model_id)
+
+
+def render(result, collected, pinned, bot_id, version, *, model_id):
     if not result.publishable or result.sha != pinned.head_sha:
         raise Problem("publication_not_validated")
     review = result.review  # exclusively the accepted object, never the API envelope
-    def block(value):
-        return "<pre>" + html.escape(str(value)).replace("@", "&#64;") + "</pre>"
     partial = collected.manifest["partial"]
-    parts = ["## AI Review (MiniMax M2.7)",
-             "Revis?o PARCIAL: somente os arquivos/hunks fornecidos." if partial else "Escopo: diff fornecido nesta revis?o.",
-             block(review["summary"] if not partial and not result.rejected else
-                   "Somente os findings aceitos no escopo fornecido est?o listados abaixo.")]
-    if review["findings"]:
-        for item in review["findings"]:
-            parts.extend([block(item["severity"] + ": " + item["title"]),
-                          block(item["path"] + ":" + str(item["line"])),
-                          block(item["body"]), block(item["evidence"])])
-    else:
-        parts.append("Nenhum finding no escopo fornecido pelo modelo e validado.")
+    parts = [
+        "## Revisão de código por IA | " + _trusted_model_label(model_id),
+        "",
+        "**Escopo:** revisão parcial: somente o diff fornecido." if partial else
+        "**Escopo:** alterações fornecidas no diff do Pull Request.",
+        "",
+        "### Resumo",
+        _markdown_text(review["summary"] if not partial and not result.rejected else
+                       "Somente os achados validados no escopo analisado estão listados abaixo."),
+        "",
+        f"### Achados ({len(review['findings'])})",
+    ]
+    for index, item in enumerate(review["findings"], 1):
+        severity = _SEVERITY_LABELS[item["severity"]]
+        category = _CATEGORY_LABELS[item["category"]]
+        confidence = _CONFIDENCE_LABELS[item["confidence"]]
+        location = _html_code(item["path"])
+        if item["line"] is not None:
+            location += f", linha {item['line']}"
+        else:
+            location += " (arquivo inteiro)"
+        parts.extend([
+            "",
+            f"#### {index}. {severity}: {_markdown_text(item['title'])}",
+            f"**Local:** {location}",
+            f"**Categoria:** {category} | **Confiança:** {confidence}",
+            "",
+            "**Problema, impacto e recomendação**",
+            _markdown_text(item["body"]),
+            "",
+            "**Evidência no código**",
+            _html_code(item["evidence"], block=True),
+        ])
+    if not review["findings"]:
+        parts.extend(["", "Nenhum achado validado no escopo efetivamente analisado."])
     if result.rejected:
-        parts.append(f"Findings rejeitados pela pol?tica de escopo: {len(result.rejected)}.")
-    parts.append(marker(pinned, bot_id, version))
+        parts.extend(["", f"**Achados descartados por estarem fora do escopo:** {len(result.rejected)}."])
+    parts.extend(["", marker(pinned, bot_id, version)])
     body = "\n".join(parts)
     if len(body.encode("utf-8")) > 60000:
         raise Problem("publication_size_limit")
@@ -347,7 +415,7 @@ def run_review(event, enabled, github, model, *, version):
         ensure_current(github, pinned)
         if already_reviewed(github.reviews(pinned.number), pinned, bot_id, version):
             return Outcome("skip_duplicate")
-        text = render(result, collected, pinned, bot_id, version)
+        text = render(result, collected, pinned, bot_id, version, model_id=payload["model"])
         ensure_current(github, pinned)
         stage = "publication"
         try:

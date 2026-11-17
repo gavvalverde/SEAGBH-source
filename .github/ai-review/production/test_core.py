@@ -71,6 +71,15 @@ class IntegrationContracts(unittest.TestCase):
         self.assertEqual(core.build_payload("Title", "Body", "diff"), expected)
         self.assertEqual(list(core.build_payload("Title", "Body", "diff")), list(expected))
 
+    def test_prompt_requires_ptbr_without_translating_schema_or_code(self):
+        payload = core.build_payload("T", "B", "D")
+        system = payload["messages"][0]["content"]
+        self.assertIn("Brazilian Portuguese (pt-BR)", system)
+        self.assertIn("source paths, exact code identifiers", system)
+        self.assertIn("Keep JSON property names", system)
+        self.assertIn("Do not switch language because PR", system)
+        self.assertEqual(payload["model"], builder.MODEL)
+
     def test_payload_optional_arguments_and_message_order(self):
         options = [
             {}, {"context": '{"file":"src/a.py"}'}, {"trunc_note": "[DIFF TRUNCATED]"},

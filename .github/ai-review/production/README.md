@@ -212,3 +212,27 @@ administrator must assess the GitHub event policy in Settings > Actions
 workflow. This is a separate administrative decision and has not been
 changed automatically. Documentation:
 https://docs.github.com/en/actions/reference/security/securely-using-pull_request_target
+
+
+## Localização e apresentação do review (2026-11-17)
+
+- A saída publicada é um comentário Markdown legível em português brasileiro.
+  O prompt de sistema exige pt-BR para resumo, escopo, títulos, descrições,
+  impacto e recomendações, sem traduzir chaves JSON, enums, paths ou
+  referências exatas de código.
+- O cabeçalho deriva do ID do modelo realmente enviado à API pelo payload
+  confiável, nunca de um texto retornado pelo modelo ou do Pull Request.
+  Os nomes conhecidos recebem rótulos amigáveis; IDs futuros usam seu valor
+  estritamente validado.
+- Textos não confiáveis são escapados para Markdown e HTML, incluindo
+  menções (@), links, imagens e cabeçalhos. Evidências de código ficam em
+  <pre><code> escapado; backticks arbitrários não podem fechar um fence.
+  O marcador de deduplicação permanece no fim do comentário.
+- Revisões parciais ou com achados filtrados não republicam o resumo
+  original potencialmente enganoso. Respostas com schema inválido continuam
+  bloqueadas antes da publicação.
+- A nova apresentação vale somente para reviews futuros; comentários já
+  publicados no PR #16 não são reescritos.
+- A regressão offline cobre localização do prompt, modelo selecionado,
+  formatação Markdown segura, defesa contra injeção, deduplicação e filtros,
+  sem credenciais ou chamadas pagas.
