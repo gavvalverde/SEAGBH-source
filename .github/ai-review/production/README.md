@@ -1,8 +1,9 @@
-# AI Reviewer: integration candidate, disabled by default
+# AI Reviewer: DeepSeek V4.1 Flash 1017 (guarded pilot)
 
-No workflow has been executed or enabled by this implementation. No repository
-variables/secrets have been changed. This directory and the new workflow are
-uncommitted candidates for review.
+The production workflow is present on `main` but disabled by default. It requires
+both `AI_REVIEW_ENABLED=true` and `AI_REVIEW_TARGET_PR` equal to the exact PR
+number. This model migration is proposed on a separate branch; opening or
+merging the PR does not activate paid model calls by itself.
 
 ## Trust and activation
 
@@ -16,7 +17,7 @@ requirements and schema are loaded exclusively from the same trusted checkout.
 
 Only open, non-draft PRs from gavvalverde/SEAGBH-source to its main branch are
 eligible. The repository default branch must be main. The job gate requires
-AI_REVIEW_ENABLED == 'true'. The Python gate additionally requires the exact,
+AI_REVIEW_ENABLED == 'true' AND the exact `AI_REVIEW_TARGET_PR` match. The Python gate additionally requires the exact,
 case-sensitive string `true`; absent, false or any other value means no API
 request. A first Bash step, without credential environment variables, checks the
 literal value with case-sensitive [[ ... == "true" ]]. It writes only the fixed
@@ -65,7 +66,8 @@ published heading reflects actual partial scope independently of model claims.
 Binary/missing patches and metadata-only renames without patches fail safely.
 
 `core.build_payload` delegates unchanged to the published `build_request`:
-MiniMax M2.7, temperature 0.3, max_tokens 2500, with no tools or duplicate prompt.
+DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
+temperature 0.3, max_tokens 2500, with no tools or duplicate prompt.
 Transport accepts only fixed HTTPS origins, never follows redirects, and bounds
 responses (GitHub 2 MiB, OpenRouter 1 MiB) and encoded model requests (256 KiB).
 Socket connection/read timeouts are 5/30 seconds; the response-read deadline is
@@ -121,7 +123,8 @@ a global spending cap. Repeated failed runs can incur further costs. Repository
 budgets/approval procedures must be set separately before activation. Source
 code is intentionally sent to OpenRouter; schema validation is not DLP and does
 not prove the truth of model findings. Review the source-sharing policy and do
-not put credentials in source. No paid benchmark has validated this integration.
+not put credentials in source. The previous model completed an operational smoke review on PR #15, but no
+paid quality benchmark has validated this DeepSeek configuration yet.
 
 ## Offline tests
 
@@ -154,3 +157,21 @@ expression evaluator, token injection or event policies. No Actions or real API
 calls were used. Local validation uses the existing isolated Python 3.14.3 venv;
 Python 3.12/Ubuntu wheels and installation have not been exercised here. Full
 artifact hash-locking and operational GitHub validation remain separate work.
+
+## DeepSeek switch and controlled testing
+
+- Model ID is pinned in the shared `benchmarks/harness/prompt_builder.py` module.
+  Production uses that same module; the benchmark retains `--model` to compare
+  MiniMax and DeepSeek explicitly without changing production.
+- The `ai-review-ci.yml` workflow tests the production core/runner, benchmark
+  harness and leak guard on pull requests without API secrets or paid calls.
+- Do not mark the synthetic fixture PR #16 ready for review or enable the
+  reviewer until a spending limit on the OpenRouter key is independently
+  confirmed and an explicit paid-test authorization is provided.
+- For one live quality test, first ensure the new model configuration is merged
+  to main, set `AI_REVIEW_TARGET_PR=16`, and only then set
+  `AI_REVIEW_ENABLED=true`. PR #16 is intentionally Draft and must never merge.
+  After the one approved review, switch `AI_REVIEW_ENABLED=false` again.
+- A finished model response must still be one assistant JSON message with
+  `finish_reason=stop` and pass the existing schema/coordinate validations.
+  Any missing, malformed or truncated response is an error, never a clean review.
