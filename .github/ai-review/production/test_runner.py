@@ -231,7 +231,7 @@ class Integration(Offline):
         expected = core.build_payload(pinned.title, pinned.body, collected.diff,
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
-        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("minimax/minimax-m2.7", 0.3, 2500))
+        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 2500))
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))

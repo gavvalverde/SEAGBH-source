@@ -519,7 +519,7 @@ def main():
     parser = argparse.ArgumentParser(description="SEAGBH Benchmark Fase 8")
     parser.add_argument("--case", help="Run single case by ID (e.g. off-001)")
     parser.add_argument("--filter", help="Filter by tag (e.g. security)")
-    parser.add_argument("--model", help="Model to use (default: minimax/minimax-m2.7)")
+    parser.add_argument("--model", help="Model to use (default: deepseek/deepseek-v4.1-flash-1017)")
     args = parser.parse_args()
     run_suite(args)
 

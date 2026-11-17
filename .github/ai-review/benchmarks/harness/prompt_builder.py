@@ -1,7 +1,7 @@
 """
 prompt_builder.py — Replica FIEL do prompt do ai-review.yml (Fase 3/7).
 
-Constrói o payload JSON para chamar o MiniMax M2.7 via OpenRouter,
+Constrói o payload JSON para chamar o DeepSeek V4.1 Flash 1017 via OpenRouter,
 usando os mesmos parâmetros e estrutura de prompt da produção.
 NÃO recebe ground truth — apenas case input.
 """
@@ -9,7 +9,7 @@ import json
 import re
 from typing import Optional
 
-MODEL = "minimax/minimax-m2.7"
+MODEL = "deepseek/deepseek-v4.1-flash-1017"
 TEMPERATURE = 0.3
 MAX_TOKENS = 2500
 

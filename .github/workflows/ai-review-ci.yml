@@ -1,0 +1,44 @@
+name: AI Reviewer Offline Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/ai-review/**'
+      - '.github/workflows/ai-review-ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-review-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout PR test sources without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Install pinned offline test dependencies
+        shell: bash
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/ai-review-ci-venv"
+          "$RUNNER_TEMP/ai-review-ci-venv/bin/python" -m pip --isolated --disable-pip-version-check install --only-binary=:all: --index-url https://pypi.org/simple -r .github/ai-review/production/requirements-test.txt
+      - name: Run offline core, runner, harness and leak-guard checks
+        shell: bash
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          set -euo pipefail
+          PY="$RUNNER_TEMP/ai-review-ci-venv/bin/python"
+          "$PY" -B .github/ai-review/production/test_core.py
+          "$PY" -B .github/ai-review/production/test_runner.py
+          "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
+          "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
