@@ -11,7 +11,7 @@ from typing import Optional
 
 MODEL = "deepseek/deepseek-v4.1-flash-1017"
 TEMPERATURE = 0.3
-MAX_TOKENS = 2500
+MAX_TOKENS = 8192
 
 
 def _system_prompt() -> str:

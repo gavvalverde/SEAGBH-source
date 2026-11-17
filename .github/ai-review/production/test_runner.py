@@ -231,7 +231,7 @@ class Integration(Offline):
         expected = core.build_payload(pinned.title, pinned.body, collected.diff,
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
-        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 2500))
+        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 8192))
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
@@ -415,6 +415,47 @@ class Transport(Offline):
         http = FakeHTTP([HttpReply(200, b'x' * (OpenRouter.MAX_RESPONSE + 1))])
         with self.assertRaises(Problem) as got: OpenRouter("x", http=http).complete({})
         self.assertEqual(got.exception.code, "response_too_large")
+
+    def test_finish_reasons_are_sanitized_no_retry_and_never_publish(self):
+        cases = [
+            ("length", "model_output_limit"),
+            ("content_filter", "model_content_filter"),
+            ("error", "model_generation_error"),
+            ("tool_calls", "incomplete_response"),
+            ("provider-PRIVATE-SENTINEL", "incomplete_response"),
+            (None, "incomplete_response"),
+        ]
+        for finish_reason, expected_code in cases:
+            with self.subTest(finish_reason=finish_reason):
+                http = FakeHTTP([envelope("SENSITIVE-RESPONSE-CONTENT",
+                                          finish_reason=finish_reason)])
+                sleep = Mock()
+                model = OpenRouter("synthetic-key", http=http, sleep=sleep)
+                with self.assertRaises(Problem) as caught:
+                    model.complete(core.build_payload("t", "b", "d"))
+                self.assertEqual(caught.exception.code, expected_code)
+                self.assertNotIn("SENSITIVE", str(caught.exception))
+                self.assertNotIn("PRIVATE", str(caught.exception))
+                self.assertEqual(len(http.calls), 1)
+                sleep.assert_not_called()
+
+    def test_bounded_model_finish_reason_preserves_fail_closed_runner(self):
+        for reason, code in [("length", "model_output_limit"),
+                             ("content_filter", "model_content_filter"),
+                             ("error", "model_generation_error")]:
+            with self.subTest(reason=reason):
+                http = FakeHTTP([envelope(review(), finish_reason=reason)])
+                github = FakeGitHub()
+                outcome = r.run_review(
+                    event(), "true", github,
+                    OpenRouter("synthetic-key", http=http), version="synthetic-fixture"
+                )
+                self.assertFalse(github.posts)
+                self.assertEqual(outcome.code, code)
+                self.assertEqual(outcome.stage, "model")
+                self.assertFalse(outcome.published)
+                self.assertEqual(outcome.exit_code, 1)
+                self.assertEqual(len(http.calls), 1)
 
     def test_truncation_api_errors_and_unexpected_envelopes(self):
         values = [envelope(review([]), finish_reason="length"), HttpReply(200, b'{"error":{}}'),

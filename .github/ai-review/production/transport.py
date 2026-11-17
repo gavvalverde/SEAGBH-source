@@ -125,8 +125,16 @@ class OpenRouter:
             if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
                 raise Problem("unexpected_response")
             choice = choices[0]
-            if choice.get("finish_reason") != "stop":
-                raise Problem("incomplete_response")
+            # Only emit fixed application-owned codes: provider data is untrusted
+            # and must never be copied into Actions logs.
+            finish_reason = choice.get("finish_reason")
+            if finish_reason != "stop":
+                diagnostic = {
+                    "length": "model_output_limit",
+                    "content_filter": "model_content_filter",
+                    "error": "model_generation_error",
+                }.get(finish_reason) if isinstance(finish_reason, str) else None
+                raise Problem(diagnostic or "incomplete_response")
             message = choice.get("message")
             if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
                 raise Problem("unexpected_response")
