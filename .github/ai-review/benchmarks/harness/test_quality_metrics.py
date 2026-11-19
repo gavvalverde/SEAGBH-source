@@ -58,7 +58,10 @@ class SafeQualityTests(unittest.TestCase):
         for changes in (
             {"reviewed_scope": "Verificado tudo"},
             {"confidence_overall": "high"},
-            {"findings": [{"title": "Assumption"}]},
+            {"findings": [{"title": "Assumption", "severity": "minor",
+                           "category": "other", "confidence": "low",
+                           "path": "src/core/database.py", "line": 1,
+                           "body": "Unproven hypothesis", "evidence": "test()"}]},
         ):
             bad = build("seg-001", {**complete, **changes})
             self.assertFalse(bad["partial"]["passed_heuristic"])
