@@ -168,6 +168,17 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(checkout["with"]["persist-credentials"], "false")
         dispatch_inputs = value["on"]["workflow_dispatch"]["inputs"]
         self.assertEqual(set(dispatch_inputs["case_id"]["options"]), set(CASE_IDS))
+        self.assertEqual(len(CASE_IDS), 23)
+        self.assertEqual(len(set(CASE_IDS)), 23)
+        from pathlib import Path
+        all_fixtures = {
+            p.stem for p in (Path(__file__).resolve().parents[1] / "cases").glob("*.json")
+        }
+        all_truth = {
+            p.stem for p in (Path(__file__).resolve().parents[2] / "ground-truth").glob("*.json")
+        }
+        self.assertEqual(set(CASE_IDS), all_fixtures)
+        self.assertEqual(set(CASE_IDS), all_truth)
         self.assertEqual(dispatch_inputs["mode"]["default"], "CHECK_ONLY")
         self.assertEqual(set(dispatch_inputs["mode"]["options"]),
                          {"CHECK_ONLY", "EXECUTE_PAID"})
