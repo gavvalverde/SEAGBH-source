@@ -141,7 +141,8 @@ class PilotTests(unittest.TestCase):
         self.assertIn("vars.AI_REVIEW_PILOT_ENABLED == 'true'", job["if"])
         self.assertIn("github.actor == 'gavvalverde'", job["if"])
         self.assertIn("github.triggering_actor == 'gavvalverde'", job["if"])
-        self.assertIn("github.run_attempt == 1", job["if"])
+        self.assertIn("github.run_attempt == '1'", job["if"])
+        self.assertIn("inputs.mode == 'EXECUTE_PAID'", job["if"])
         self.assertIn("inputs.confirm == 'ONE_PAID_CALL'", job["if"])
         self.assertIn("github.ref == 'refs/heads/main'", job["if"])
         self.assertEqual(value["permissions"], {"contents": "read"})
@@ -149,8 +150,36 @@ class PilotTests(unittest.TestCase):
         self.assertRegex(checkout["uses"], r"^actions/checkout@[0-9a-f]{40}$")
         self.assertEqual(checkout["with"]["ref"], "${{ github.workflow_sha }}")
         self.assertEqual(checkout["with"]["persist-credentials"], "false")
-        self.assertEqual(set(value["on"]["workflow_dispatch"]["inputs"]["case_id"]["options"]),
-                         set(CASE_IDS))
+        dispatch_inputs = value["on"]["workflow_dispatch"]["inputs"]
+        self.assertEqual(set(dispatch_inputs["case_id"]["options"]), set(CASE_IDS))
+        self.assertEqual(dispatch_inputs["mode"]["default"], "CHECK_ONLY")
+        self.assertEqual(set(dispatch_inputs["mode"]["options"]),
+                         {"CHECK_ONLY", "EXECUTE_PAID"})
+        diagnostic = value["jobs"]["diagnose_authorization"]
+        self.assertEqual(diagnostic["permissions"], {})
+        self.assertNotIn("if", diagnostic)
+        self.assertEqual(len(diagnostic["steps"]), 1)
+        diagnostic_step = diagnostic["steps"][0]
+        self.assertNotIn("uses", diagnostic_step)
+        self.assertNotIn("secrets.", json.dumps(diagnostic))
+        self.assertNotIn("OPENROUTER_API_KEY", json.dumps(diagnostic))
+        expected_gates = {
+            "GATE_VARIABLE": "vars.AI_REVIEW_PILOT_ENABLED == 'true'",
+            "GATE_REPOSITORY": "github.repository == 'gavvalverde/SEAGBH-source'",
+            "GATE_ACTOR": "github.actor == 'gavvalverde'",
+            "GATE_TRIGGERING_ACTOR": "github.triggering_actor == 'gavvalverde'",
+            "GATE_FIRST_ATTEMPT": "github.run_attempt == '1'",
+            "GATE_EVENT": "github.event_name == 'workflow_dispatch'",
+            "GATE_BRANCH": "github.ref == 'refs/heads/main'",
+            "GATE_CONFIRMATION": "inputs.confirm == 'ONE_PAID_CALL'",
+            "GATE_PAID_MODE": "inputs.mode == 'EXECUTE_PAID'",
+        }
+        self.assertEqual(set(diagnostic_step["env"]), set(expected_gates))
+        for name, expression in expected_gates.items():
+            self.assertEqual(diagnostic_step["env"][name], "${{ " + expression + " }}")
+            self.assertIn('"' + "$" + name + '"', diagnostic_step["run"])
+        self.assertNotIn("curl", diagnostic_step["run"])
+        self.assertNotIn("python", diagnostic_step["run"])
         run_step = job["steps"][-1]
         self.assertNotIn("${{", run_step["run"])
         self.assertIn("--max-usd 0.05", run_step["run"])
