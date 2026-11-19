@@ -54,6 +54,7 @@ class Outcome:
     usage: dict | None = None
     validation_reason: str | None = None
     quality_hold_count: int = 0
+    quality_duplicate_pair_count: int = 0
 
 
 def snapshot(pr, number):
@@ -518,7 +519,8 @@ def run_review(event, enabled, github, model, *, version):
         if assessment.requires_manual_review:
             return Outcome("quality_manual_review_required", 1,
                            stage="quality_gate",
-                           quality_hold_count=assessment.unanchored_count)
+                           quality_hold_count=assessment.unanchored_count,
+                           quality_duplicate_pair_count=assessment.duplicate_location_pairs)
         ensure_current(github, pinned)
         if already_reviewed(github.reviews(pinned.number), pinned, bot_id, version):
             return Outcome("skip_duplicate")
@@ -597,6 +599,7 @@ def main():
         diagnostic["validation_reason"] = outcome.validation_reason
     if outcome.code == "quality_manual_review_required":
         diagnostic["quality_hold_count"] = outcome.quality_hold_count
+        diagnostic["quality_duplicate_pair_count"] = outcome.quality_duplicate_pair_count
     print(json.dumps(diagnostic))
     return outcome.exit_code
 
