@@ -229,6 +229,12 @@ reconstruído com a mudança real de indentação, e a regressão offline
 confere sintaxe AST de **ambas** as versões sem executar código do PR.
 O gabarito continua contendo somente a falha de rollback, agora isolada.
 
+O piloto pago também executa esse preflight AST **antes** de qualquer
+requisição OpenRouter: erro de sintaxe em trecho completo retorna
+`pilot_fixture_syntax_invalid` e nenhuma chamada é feita. Os resultados
+registram `syntax_status` com valor estático, inclusive
+`fragment_unverifiable` quando o input não permite validação integral.
+
 Um validador de sintaxe offline classifica **todos os 23 casos** como
 arquivo Python completo, método completo adicionado/reconstruído,
 fragmento parcial ou arquivo não Python. Os casos completos têm parsing
