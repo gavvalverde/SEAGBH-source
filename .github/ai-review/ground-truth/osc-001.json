@@ -3,21 +3,21 @@
   "type": "bug",
   "expected": {
     "find": true,
-    "severity": "informational",
-    "category": "out-of-scope",
+    "severity": "important",
+    "category": "regression",
     "path": "src/ui/tab_eventos.py",
     "line": null,
     "location": {
       "symbol": "_buscar",
-      "region": "busca",
-      "description": "fora escopo"
+      "region": "random.random",
+      "description": "esvazia termo de busca aleatoriamente com probabilidade 1 por cento"
     },
-    "confidence_expected": "medium",
-    "behavior": "Out of scope."
+    "confidence_expected": "high",
+    "behavior": "Em cerca de 1% das buscas, o filtro é apagado e resultados incorretos aparecem; mudança fora do escopo declarado."
   },
   "delta": {
-    "correct": "inalterado",
-    "incorrect": "fora escopo",
-    "note": "OOS"
+    "correct": "preservar texto da busca sempre",
+    "incorrect": "random.random() < 0.01 redefine texto para vazio",
+    "note": "Regressão funcional escondida em alteração fora do escopo declarado"
   }
 }
