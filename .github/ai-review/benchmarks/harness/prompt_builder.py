@@ -11,7 +11,7 @@ from typing import Optional
 
 MODEL = "deepseek/deepseek-v4.1-flash-1017"
 TEMPERATURE = 0.3
-MAX_TOKENS = 8192
+MAX_TOKENS = 16384
 # OpenRouter metadata: DeepSeek V4.1 Flash 1017 defaults to high reasoning.
 # Low is supported and preserves more of the same completion budget for JSON.
 REASONING_EFFORT = "low"
@@ -144,6 +144,15 @@ def _system_prompt() -> str:
         "source paths, exact code identifiers, commands and code evidence unchanged. "
         "Never translate or paraphrase the verbatim evidence field. "
         "No prose outside the required JSON document.\n\n"
+        "## RESPOSTA CONCISA, COM COBERTURA HONESTA\n"
+        "Analyze the entire supplied diff, but publish no more than 12 independent root causes, "
+        "prioritizing critical and important defects. If more than 12 independent defects "
+        "are present, clearly state in reviewed_scope that findings were limited. "
+        "Keep summary under 350 characters, each finding title under 100 characters, "
+        "body under 700 characters, evidence under 400 characters, and reviewed_scope "
+        "under 600 characters. These are OUTPUT length targets only; do not skip code "
+        "analysis or omit demonstrable critical/important defects to achieve brevity. "
+        "Produce one complete JSON document promptly, without prose or intermediate output.\n\n"
         "## OUTPUT FORMAT\n"
         "Return ONLY valid JSON. No markdown, no code fences, no extra text.\n"
         "Use this schema exactly (see .github/ai-review/review-schema.json):\n"

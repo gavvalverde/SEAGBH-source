@@ -42,6 +42,7 @@ class Outcome:
     exit_code: int = 0
     published: bool = False
     stage: str = ""
+    usage: dict | None = None
 
 
 def snapshot(pr, number):
@@ -433,7 +434,7 @@ def run_review(event, enabled, github, model, *, version):
             raise Problem("publication_unconfirmed")
         return Outcome("published", published=True, stage=stage)
     except Problem as error:
-        return Outcome(error.code, 1, stage=stage)  # no untrusted fallback review is posted
+        return Outcome(error.code, 1, stage=stage, usage=error.usage)  # fail closed
     except Exception:
         return Outcome("unexpected_execution_error", 1, stage=stage)
     finally:
@@ -473,7 +474,12 @@ def main():
         outcome = Outcome(error.code, 0 if error.code.startswith("skip_") else 1)
     except Exception:
         outcome = Outcome("unexpected_execution_error", 1)
-    print(json.dumps({"code": outcome.code, "stage": outcome.stage, "published": outcome.published}))
+    diagnostic = {"code": outcome.code, "stage": outcome.stage, "published": outcome.published}
+    # Only publish allowlisted numeric counters on a generation-limit error.
+    # No upstream content or metadata is printed to the public Actions log.
+    if outcome.code == "model_output_limit" and outcome.usage is not None:
+        diagnostic["usage"] = outcome.usage
+    print(json.dumps(diagnostic))
     return outcome.exit_code
 
 
