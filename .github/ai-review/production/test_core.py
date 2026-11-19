@@ -71,6 +71,14 @@ class IntegrationContracts(unittest.TestCase):
         self.assertEqual(core.build_payload("Title", "Body", "diff"), expected)
         self.assertEqual(list(core.build_payload("Title", "Body", "diff")), list(expected))
 
+    def test_deepseek_reasoning_is_explicit_and_preserves_token_ceiling(self):
+        payload = core.build_payload("Title", "Body", "Diff")
+        self.assertEqual(payload["model"], "deepseek/deepseek-v4.1-flash-1017")
+        self.assertEqual(payload["reasoning"], {"effort": "low"})
+        self.assertEqual(payload["max_tokens"], 8192)
+        self.assertNotIn("reasoning", core.build_payload(
+            "T", "B", "D", model="minimax/minimax-m2.7"))
+
     def test_prompt_requires_ptbr_without_translating_schema_or_code(self):
         payload = core.build_payload("T", "B", "D")
         system = payload["messages"][0]["content"]

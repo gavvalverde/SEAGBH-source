@@ -5,7 +5,7 @@ from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE / "harness"))
-from prompt_builder import build_request, parse_response, MODEL, TEMPERATURE, MAX_TOKENS
+from prompt_builder import build_request, parse_response, MODEL, TEMPERATURE, MAX_TOKENS, REASONING_EFFORT
 from run_bench import (_category_match, _line_close, _semantic_match, match_score,
                        one_to_one_match, evaluate_review, load_cases, load_ground_truth)
 
@@ -41,6 +41,8 @@ def test_prompt():
     check("model", r["model"] == MODEL)
     check("temp", r["temperature"] == TEMPERATURE)
     check("max_tokens", r["max_tokens"] == MAX_TOKENS)
+    check("DeepSeek low reasoning", r["reasoning"] == {"effort": REASONING_EFFORT} == {"effort": "low"})
+    check("alternate model uses default reasoning", "reasoning" not in build_request("T", "B", "D", model="minimax/minimax-m2.7"))
     sys_c = r["messages"][0]["content"]
     check("TWO-PASS", "TWO-PASS" in sys_c)
     check("UNTRUSTED", "UNTRUSTED" in sys_c)

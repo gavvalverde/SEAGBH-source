@@ -232,6 +232,7 @@ class Integration(Offline):
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 8192))
+        self.assertEqual(expected["reasoning"], {"effort": "low"})
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
@@ -457,6 +458,16 @@ class Transport(Offline):
         http = FakeHTTP([envelope()]);model = OpenRouter("synthetic-key", http=http)
         self.assertEqual(model.complete(core.build_payload("t", "b", "d")), review())
         self.assertEqual(http.calls[0][0:3], ("openrouter.ai", "POST", "/api/v1/chat/completions"))
+
+    def test_openrouter_posts_bounded_low_effort_payload_unchanged(self):
+        http = FakeHTTP([envelope()])
+        payload = core.build_payload("T", "B", "D")
+        OpenRouter("synthetic-key", http=http).complete(payload)
+        self.assertEqual(len(http.calls), 1)
+        sent = json.loads(http.calls[0][4].decode("utf-8"))
+        self.assertEqual(sent["reasoning"], {"effort": "low"})
+        self.assertEqual(sent["max_tokens"], 8192)
+        self.assertEqual(sent["model"], "deepseek/deepseek-v4.1-flash-1017")
 
     def test_400_401_do_not_retry(self):
         for code, expected in [(400, "http_error"), (401, "authentication_error")]:
