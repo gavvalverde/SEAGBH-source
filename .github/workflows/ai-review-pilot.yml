@@ -12,6 +12,14 @@ on:
           - r22-typ-001
           - r22-ddl-001
           - r22-ci-001
+      mode:
+        description: CHECK_ONLY nunca executa chamada paga
+        type: choice
+        required: true
+        default: CHECK_ONLY
+        options:
+          - CHECK_ONLY
+          - EXECUTE_PAID
       confirm:
         description: Confirmar UMA chamada paga apos limitar a chave
         type: choice
@@ -29,15 +37,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  diagnose_authorization:
+    name: Diagnostic of pilot gates (no model call)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    permissions: {}
+    steps:
+      - name: Report boolean gate results without secrets
+        shell: bash
+        env:
+          GATE_VARIABLE: ${{ vars.AI_REVIEW_PILOT_ENABLED == 'true' }}
+          GATE_REPOSITORY: ${{ github.repository == 'gavvalverde/SEAGBH-source' }}
+          GATE_ACTOR: ${{ github.actor == 'gavvalverde' }}
+          GATE_TRIGGERING_ACTOR: ${{ github.triggering_actor == 'gavvalverde' }}
+          GATE_FIRST_ATTEMPT: ${{ github.run_attempt == '1' }}
+          GATE_EVENT: ${{ github.event_name == 'workflow_dispatch' }}
+          GATE_BRANCH: ${{ github.ref == 'refs/heads/main' }}
+          GATE_CONFIRMATION: ${{ inputs.confirm == 'ONE_PAID_CALL' }}
+          GATE_PAID_MODE: ${{ inputs.mode == 'EXECUTE_PAID' }}
+        run: |
+          set -euo pipefail
+          printf 'variable_enabled_match=%s\n' "$GATE_VARIABLE"
+          printf 'repository_match=%s\n' "$GATE_REPOSITORY"
+          printf 'actor_match=%s\n' "$GATE_ACTOR"
+          printf 'triggering_actor_match=%s\n' "$GATE_TRIGGERING_ACTOR"
+          printf 'first_attempt_match=%s\n' "$GATE_FIRST_ATTEMPT"
+          printf 'event_match=%s\n' "$GATE_EVENT"
+          printf 'branch_match=%s\n' "$GATE_BRANCH"
+          printf 'confirmation_match=%s\n' "$GATE_CONFIRMATION"
+          printf 'paid_mode_match=%s\n' "$GATE_PAID_MODE"
+          printf '%s\n' 'Diagnostic only: no API calls, no access to model credentials.'
+
   single_paid_pilot:
     if: >-
       vars.AI_REVIEW_PILOT_ENABLED == 'true' &&
       github.repository == 'gavvalverde/SEAGBH-source' &&
       github.actor == 'gavvalverde' &&
       github.triggering_actor == 'gavvalverde' &&
-      github.run_attempt == 1 &&
+      github.run_attempt == '1' &&
       github.event_name == 'workflow_dispatch' &&
       github.ref == 'refs/heads/main' &&
+      inputs.mode == 'EXECUTE_PAID' &&
       inputs.confirm == 'ONE_PAID_CALL'
     runs-on: ubuntu-24.04
     timeout-minutes: 10

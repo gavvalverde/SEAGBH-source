@@ -95,8 +95,9 @@ garantias deste novo runner.
 A integração inclui um workflow separado `ai-review-pilot.yml` que só recebe
 `workflow_dispatch` e exige **todas** as condições: variável do repositório
 `AI_REVIEW_PILOT_ENABLED=true`, ator inicial e ator da execução `gavvalverde`,
-branch `main`, **primeira tentativa** (`github.run_attempt == 1`) e confirmação
-`ONE_PAID_CALL`. A verificação é duplicada no Python, que rejeita qualquer
+branch `main`, **primeira tentativa** (`github.run_attempt == '1'`),
+`mode=EXECUTE_PAID` e confirmação `ONE_PAID_CALL`. A verificação de contexto
+é duplicada no Python, que rejeita qualquer
 `GITHUB_RUN_ATTEMPT` diferente de `1`, sem chamada à API. O checkout usa
 `github.workflow_sha`, não o código da PR.
 
@@ -109,6 +110,24 @@ requisição sem retry e rejeita **re-runs do mesmo workflow**. Isso NÃO impede
 outro disparo manual independente; desabilitar a variável após o teste e manter
 o teto real de gastos na chave OpenRouter são indispensáveis. A cobrança pode
 ocorrer mesmo quando houver falha.
+
+### Diagnóstico sem custo de API
+
+O menu manual agora inclui `mode=CHECK_ONLY` (padrão seguro) e
+`mode=EXECUTE_PAID` (exige confirmação adicional). Quando
+`mode=CHECK_ONLY`, o job pago **sempre fica skipped**, independentemente
+da variável. Um job independente `diagnose_authorization` executa sem
+checkout, sem secret, sem OpenRouter e sem dados brutos e informa apenas
+booleanos `*_match=true/false` para cada condição do job pago.
+
+Para identificar um bloqueio, manter `AI_REVIEW_ENABLED=false`, ajustar
+temporariamente `AI_REVIEW_PILOT_ENABLED=true`, usar `mode=CHECK_ONLY`,
+`confirm=ONE_PAID_CALL` e o caso `r22-typ-001`. O resultado esperado é
+todos os testes `*_match=true`, **exceto** `paid_mode_match=false`.
+Não há requisição paga em CHECK_ONLY, mesmo com confirmação preenchida.
+Desativar `AI_REVIEW_PILOT_ENABLED` após ler o resultado. Só considerar
+uma chamada paga em um novo dispatch `mode=EXECUTE_PAID` após inspeção
+dos booleanos, limite financeiro real e autorização explícita.
 
 O Reviewer normal continua controlado por `AI_REVIEW_ENABLED`, que deve
 permanecer `false`. O piloto não publica comentários nem grava saídas brutas.
