@@ -250,6 +250,49 @@ def _semantic_match(finding, loc):
     return False
 
 
+def _mechanism_contract_match(finding, contract):
+    """Conservative proof-of-mechanism checks for explicitly tagged fixtures.
+
+    They do not replace path/line matching, and require *both* a specific
+    trigger and an observable failure mechanism. No broad 'regression' or
+    category-word match may substitute for the actual cause.
+    """
+    text = " ".join(str(finding.get(k) or "") for k in
+                    ("title", "body", "evidence")).casefold()
+    has = lambda pattern: bool(_re.search(pattern, text, flags=_re.I))
+    if contract == "exact_24h_grace_boundary":
+        has_threshold = has(r"(?<!\w)24(?:\s*(?:h|horas?|hours?))?(?!\d)")
+        has_boundary = has(
+            r"exat\w*|fronteira|limite|igualdad\w*|boundary|equal(?:ity)?|"
+            r"(?<![=!<>])<=?\s*24"
+        )
+        has_consequence = has(
+            r"grace|expired?|expir\w*|revog\w*|revok\w*|toler[aâ]nc\w*"
+        )
+        return has_threshold and has_boundary and has_consequence
+    if contract == "missing_ui_callback":
+        has_symbol = "_atualizar_contador" in text
+        has_connection = has(r"textchanged|\.connect\b|conex[aã]o|connect|sinal")
+        has_failure = has(
+            r"attributeerror|inexistent\w*|inexist\w*|ausent\w*|"
+            r"n[aã]o\s+(?:existe|definid\w*|implementad\w*)|"
+            r"undefined|not defined|missing|sem\s+(?:m[eé]todo|slot)"
+        )
+        return has_symbol and has_connection and has_failure
+    if contract == "negative_sqlite_limit":
+        has_negative = has(r"(?<![\d])-1(?![\d])|negativ\w*|menor\s+qu[ea]\s+zero|<\s*0")
+        has_limit = has(r"\blimit\b|\blimite\b")
+        has_mismatch = has(
+            r"nenhum\w*\s+(?:registro\w*\s+)?(?:removid\w*|exclu[ií]d\w*)|"
+            r"n[aã]o\s+(?:apaga|remove|exclui|deleta)|"
+            r"retorn\w*|contage\w*|quantidade|preserv\w*|"
+            r"without deleting|returns?\s+incorrect|no rows deleted"
+        )
+        return has_negative and has_limit and has_mismatch
+    # New mechanism contracts must have an explicit evaluator.
+    return False
+
+
 def match_score(finding, gt):
     """Score de detecção. Rejeita apenas por path/line/semantic mismatch.
 
@@ -266,7 +309,11 @@ def match_score(finding, gt):
     if gt_line is not None and f_line is not None and not _line_close(f_line, gt_line):
         return -1
     loc = exp.get("location", {})
-    if not _semantic_match(finding, loc):
+    contract = exp.get("mechanism_contract")
+    if contract is not None:
+        if not _mechanism_contract_match(finding, contract):
+            return -1
+    elif not _semantic_match(finding, loc):
         return -1
     # Base: detected (same problem, path, location)
     score = 1
