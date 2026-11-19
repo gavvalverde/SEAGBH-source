@@ -181,9 +181,9 @@ def safe_finding_audit(review, gt):
         if gt and gt.get("id") == "r22-typ-001":
             # Coarse heuristic cues, not quotes or a verdict on correctness.
             cause_signals = {
-                "type_error": bool(re.search(r"\\btypeerror\\b", text)),
+                "type_error": bool(re.search(r"\btypeerror\b", text)),
                 "unhashable_input": bool(re.search(
-                    r"unhash|n[aã]o.hash|lista|dicion|\\blist\\b|\\bdict\\b|\\[\\]|\\{\\}",
+                    r"unhash|n[aã]o.hash|lista|dicion|\blist\b|\bdict\b|\[\]|\{\}",
                     text,
                 )),
                 "membership_site": (
