@@ -26,6 +26,7 @@ MAX_REVIEWS = 1000
 MAX_SOURCE_FILES = 3
 MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
+MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
@@ -230,8 +231,10 @@ def source_context(github, pinned, collected):
     The snippets are untrusted PR data and never expand ReviewScope.
     """
     excerpts = []
+    attempts = 0
+    total_bytes = 0
     for entry in collected.manifest["files"]:
-        if len(excerpts) >= MAX_SOURCE_FILES:
+        if attempts >= MAX_SOURCE_FILES or total_bytes >= MAX_SOURCE_TOTAL_BYTES:
             break
         path = entry["path"]
         if (not path.startswith("src/") or not path.endswith(".py")
@@ -240,6 +243,7 @@ def source_context(github, pinned, collected):
         ranges = entry["added_new"] or entry["context_new"]
         if not ranges:
             continue
+        attempts += 1
         body = github.source_at(pinned.head_sha, path)
         if body is None:
             continue
@@ -259,7 +263,11 @@ def source_context(github, pinned, collected):
             snippet.append(row)
             size += length
         if snippet:
-            excerpts.append({"path": path, "source_lines": "".join(snippet)})
+            text = "".join(snippet)
+            if total_bytes + size > MAX_SOURCE_TOTAL_BYTES:
+                break
+            excerpts.append({"path": path, "source_lines": text})
+            total_bytes += size
     return excerpts
 
 

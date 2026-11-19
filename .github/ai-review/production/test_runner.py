@@ -286,6 +286,40 @@ class Integration(Offline):
         with self.assertRaises(Problem):
             client(value)[0].source_at(HEAD, "../invalid.py")
 
+    def test_source_fetch_attempts_capped_even_when_all_files_omitted(self):
+        gh = FakeGitHub()
+        paths = [f"src/feature_{i}.py" for i in range(6)]
+        gh.files = [file(path=p) for p in paths]
+        gh.current["changed_files"] = len(paths)
+        ev = event()
+        ev["pull_request"]["changed_files"] = len(paths)
+        outcome, gh, ai = self.run_case(
+            ev=ev, github=gh, model=FakeModel(review([]))
+        )
+        self.assertTrue(outcome.published)
+        self.assertEqual(gh.source_requests,
+                         [(HEAD, p) for p in paths[:r.MAX_SOURCE_FILES]])
+        self.assertEqual(len(ai.payloads), 1)
+
+    def test_source_global_bytes_cap(self):
+        gh = FakeGitHub()
+        names = ["src/first.py", "src/second.py", "src/third.py"]
+        gh.files = [file(path=p) for p in names]
+        gh.current["changed_files"] = len(names)
+        ev = event()
+        ev["pull_request"]["changed_files"] = len(names)
+        # One very long diff-adjacent function: almost 4 KiB per excerpt.
+        for name in names:
+            gh.sources[name] = "\n".join("x = '" + "a" * 230 + "'"
+                                         for _ in range(40)) + "\n"
+        pinned = r.event_snapshot(ev, "true")
+        collected = r.collect(gh, pinned)
+        excerpts = r.source_context(gh, pinned, collected)
+        self.assertLessEqual(sum(len(e["source_lines"].encode())
+                                 for e in excerpts), r.MAX_SOURCE_TOTAL_BYTES)
+        self.assertLessEqual(len(gh.source_requests), r.MAX_SOURCE_FILES)
+        self.assertLessEqual(len(excerpts), r.MAX_SOURCE_FILES)
+
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
         self.assertTrue(out.published)

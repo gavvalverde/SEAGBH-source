@@ -301,7 +301,9 @@ check the OpenRouter key budget and request explicit approval for a new call.
 O Reviewer recebe trechos próximos às alterações dos **mesmos arquivos**
 Python modificados sob `src/`, obtidos no SHA fixado do PR. Nunca executa
 código nem busca arquivos não alterados. Limites: 3 arquivos, até 32 KiB
-por arquivo, até 12 linhas vizinhas e no máximo 4 KiB por excerto.
+por arquivo, até 12 linhas vizinhas, no máximo 4 KiB por excerto e
+8 KiB no conjunto de excertos. A contagem de 3 arquivos limita as
+**consultas tentadas**, mesmo quando nenhum arquivo é aproveitado.
 
 O contexto adicional é dado **não confiável**. Não expande as coordenadas
 de review permitidas; o filtro de SHA e diff permanece obrigatório.
