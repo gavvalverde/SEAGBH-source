@@ -101,17 +101,27 @@ class PilotTests(unittest.TestCase):
             "GITHUB_REPOSITORY": "gavvalverde/SEAGBH-source",
             "GITHUB_REF": "refs/heads/main",
             "GITHUB_ACTOR": "gavvalverde",
+            "GITHUB_TRIGGERING_ACTOR": "gavvalverde",
+            "GITHUB_RUN_ATTEMPT": "1",
             "SEAGBH_AI_PILOT_PAID_ENABLED": "owner_confirmed",
             "OPENROUTER_API_KEY": "synthetic-key",
         }
         for name in ("SEAGBH_AI_PILOT_TRUSTED_ACTIONS",
                      "GITHUB_EVENT_NAME", "GITHUB_REPOSITORY",
-                     "GITHUB_REF", "GITHUB_ACTOR"):
+                     "GITHUB_REF", "GITHUB_ACTOR",
+                     "GITHUB_TRIGGERING_ACTOR", "GITHUB_RUN_ATTEMPT"):
             with self.subTest(key=name):
                 with patch.dict(os.environ, {**authorized, name: "bad"}, clear=True):
                     with self.assertRaises(Problem) as result:
                         command(args)
                     self.assertEqual(result.exception.code, "pilot_paid_blocked_in_ci")
+        for bad_attempt in ("2", "3", "0", "", "01"):
+            with self.subTest(run_attempt=bad_attempt), patch.dict(
+                    os.environ, {**authorized, "GITHUB_RUN_ATTEMPT": bad_attempt},
+                    clear=True):
+                with self.assertRaises(Problem) as denied:
+                    command(args)
+                self.assertEqual(denied.exception.code, "pilot_paid_blocked_in_ci")
         with patch.dict(os.environ, authorized, clear=True), patch(
             "pilot_guarded.run_one", return_value={"calls_attempted": 1}
         ) as mocked:
@@ -130,6 +140,8 @@ class PilotTests(unittest.TestCase):
         job = value["jobs"]["single_paid_pilot"]
         self.assertIn("vars.AI_REVIEW_PILOT_ENABLED == 'true'", job["if"])
         self.assertIn("github.actor == 'gavvalverde'", job["if"])
+        self.assertIn("github.triggering_actor == 'gavvalverde'", job["if"])
+        self.assertIn("github.run_attempt == 1", job["if"])
         self.assertIn("inputs.confirm == 'ONE_PAID_CALL'", job["if"])
         self.assertIn("github.ref == 'refs/heads/main'", job["if"])
         self.assertEqual(value["permissions"], {"contents": "read"})
