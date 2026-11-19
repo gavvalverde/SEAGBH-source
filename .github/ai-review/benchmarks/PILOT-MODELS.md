@@ -94,15 +94,21 @@ garantias deste novo runner.
 
 A integração inclui um workflow separado `ai-review-pilot.yml` que só recebe
 `workflow_dispatch` e exige **todas** as condições: variável do repositório
-`AI_REVIEW_PILOT_ENABLED=true`, ator `gavvalverde`, branch `main` e confirmação
-`ONE_PAID_CALL`. O checkout usa `github.workflow_sha`, não o código da PR.
+`AI_REVIEW_PILOT_ENABLED=true`, ator inicial e ator da execução `gavvalverde`,
+branch `main`, **primeira tentativa** (`github.run_attempt == 1`) e confirmação
+`ONE_PAID_CALL`. A verificação é duplicada no Python, que rejeita qualquer
+`GITHUB_RUN_ATTEMPT` diferente de `1`, sem chamada à API. O checkout usa
+`github.workflow_sha`, não o código da PR.
 
 Após a aprovação explícita de UMA chamada paga e a configuração de limite
 financeiro real na chave OpenRouter, definir a variável do piloto em
 Settings > Secrets and variables > Actions > Variables, então abrir
 Actions > AI Reviewer Gemini Pilot (manual) > Run workflow e escolher um caso.
 Voltar a variável para `false` após o teste. O workflow limita-se a uma
-requisição sem retry. A cobrança pode ocorrer mesmo quando houver falha.
+requisição sem retry e rejeita **re-runs do mesmo workflow**. Isso NÃO impede
+outro disparo manual independente; desabilitar a variável após o teste e manter
+o teto real de gastos na chave OpenRouter são indispensáveis. A cobrança pode
+ocorrer mesmo quando houver falha.
 
 O Reviewer normal continua controlado por `AI_REVIEW_ENABLED`, que deve
 permanecer `false`. O piloto não publica comentários nem grava saídas brutas.
