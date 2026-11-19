@@ -65,3 +65,59 @@ Não é seguro ligá-la diretamente à tela de ativação nem ao banco de dados.
 - Não vincular dados do almoxarifado ao license_id ou ao device_id.
 - Manter PRs pequenos, testes de concorrência, isolamento por tenant e
   migração do fluxo antigo antes de ativar o novo em produção.
+
+## Arquitetura de dados: SQLite local + Supabase multiempresa
+
+A V1 NÃO substituirá SQLite por conexão SQL direta ao Supabase. O desenho
+pretendido é:
+- SQLite: armazenamento operacional por instalação, útil mesmo sem internet.
+- Supabase PostgreSQL: fonte central dos dados da empresa, com RLS e
+  autorização por identidade autenticada.
+- API/backend confiável: autenticação, associação a company_id e operações
+  privilegiadas. Não distribuir senha PostgreSQL, service_role ou chave privada
+  no instalador do Windows.
+- Sincronizador futuro: outbox local durável, IDs estáveis, operações
+  idempotentes, versionamento e resolução explícita de conflitos.
+
+Não basta aceitar um company_id enviado pelo cliente. O backend deve validar
+a associação da identidade autenticada com a empresa. Para tabelas globais,
+chaves estrangeiras e unicidade devem considerar tenant; dados operacionais
+devem incluir company_id e testes de isolamento entre empresas.
+
+### Inventário da implementação atual (main em 2026-11-19)
+
+| Arquivo | Uso atual | Tratamento previsto |
+| --- | --- | --- |
+| src/core/database.py | Acesso central a equipamentos, eventos, movimentações, manutenção e auditoria; cria SQLite e opcionalmente conecta diretamente a PostgreSQL | PRESERVAR. Separar acesso local, repositórios e sincronização progressivamente. Descontinuar o caminho SQL direto somente após substituição e testes |
+| src/ui/main_window.py e abas | Dependem de Database e recebem a instância compartilhada | PRESERVAR. Migrar por interfaces estáveis |
+| src/ui/dialogs_utils.py | Backup/restauração local por cópia de arquivo .db | PRESERVAR temporariamente. Substituir por backup consistente do SQLite via API nativa; depois implementar exportação/restauração por company_id no backend |
+| tools/migrar_sqlite_para_postgres.py | Importação legado de SQLite em PostgreSQL direto; aceita opção destrutiva --truncate | LEGADO. Não usar como sincronizador Supabase multiempresa. Remover quando houver substituto ou quando a ausência de dependências estiver comprovada |
+| tools/testar_conexao_postgres.py | Teste de conexão PostgreSQL direta, com configuração local | LEGADO. Não utilizar no instalador distribuído; remover após aposentadoria do modo direto |
+| MIGRACAO_POSTGRES.md | Documenta o fluxo legado de conexão direta | Arquivar ou retirar somente após a nova arquitetura estar implementada |
+| SEAGBH.spec | Contém caminhos absolutos de máquina local e inclui um seaghb.db de origem no empacotamento | Ajustar antes do novo build; não distribuir um banco de exemplo como estado operacional do cliente |
+
+### Regras de migração e remoção segura
+
+1. Não apagar src/core/database.py ou os diálogos antes de atualizar todos os
+   chamadores, testes e configuração do empacotador.
+2. Não apagar nenhum SQLite local, backup, histórico ou dado persistente do
+   computador do desenvolvedor; GitHub não revela o conteúdo do disco local.
+3. Ao revisar SEAGBH.spec, tornar caminhos portáveis e separar recursos
+   empacotados de dados graváveis (preferencialmente pasta de dados do usuário).
+4. O backup atual usa checkpoint WAL + cópia do arquivo; para backup com
+   conexão ativa, preferir sqlite3.Connection.backup, validar integridade e
+   impedir restauração por cópia enquanto a conexão está aberta.
+5. Os IDs inteiros atuais podem colidir entre PCs; estabelecer UUID estável
+   ou mapeamento versionado antes de sincronizar registros.
+6. Implementar migrações SQL versionadas e testes de isolamento e backup
+   restaurável antes de remover o modo PostgreSQL direto.
+7. Nenhuma nova tabela Supabase, política RLS, migração remota ou exclusão
+   destrutiva será feita neste PR de domínio.
+
+### Backups no modelo futuro
+
+O backup por empresa será uma exportação lógica consistente, restrita a
+company_id, com referências e anexos correspondentes; não corresponde a um
+dump nativo de todo o banco Supabase. A restauração exige autenticação,
+validação de integridade, isolamento transacional, bloqueio de escritas da
+empresa e reinicialização segura da sincronização das instalações.
