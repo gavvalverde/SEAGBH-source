@@ -1,0 +1,35 @@
+name: Multiativacao Domain Offline Tests
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/core/multiativacao_dominio.py"
+      - "tests/unit/licenciamento/test_multiativacao_dominio.py"
+      - "docs/arquitetura-multiativacao.md"
+      - ".github/workflows/multiativacao-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/core/multiativacao_dominio.py"
+      - "tests/unit/licenciamento/test_multiativacao_dominio.py"
+      - "docs/arquitetura-multiativacao.md"
+      - ".github/workflows/multiativacao-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout PR code without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Test domain contracts offline
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: python3.12 -B -m unittest -v tests.unit.licenciamento.test_multiativacao_dominio

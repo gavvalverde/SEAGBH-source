@@ -1,5 +1,14 @@
 # Migração para PostgreSQL
 
+> **ATENÇÃO: PROCEDIMENTO LEGADO.** Este documento descreve a conexão
+> PostgreSQL direta que já existe no código, destinada a testes de uma
+> instalação tradicional. **Não é a arquitetura aprovada para o futuro
+> Supabase multiempresa.** Não distribua `SEAGBH_DB_PASSWORD`, credenciais
+> PostgreSQL privilegiadas ou `service_role` no aplicativo Windows. O script
+> de migração aceita `--truncate`, que pode apagar dados do destino.
+> Consulte `docs/arquitetura-multiativacao.md` antes de qualquer migração.
+>
+
 Este projeto agora suporta dois bancos:
 - `sqlite` (padrão atual)
 - `postgres` (multiusuário)
