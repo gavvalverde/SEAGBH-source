@@ -62,6 +62,8 @@ def summarize(records, *, profile):
             raise ValueError("stale_txn_fixture_result")
         if fingerprint is not None and fingerprint != _fixture_sha256(current_case):
             raise ValueError("fixture_revision_mismatch")
+        if cid == "txn-001" and item.get("syntax_status") != "validated":
+            raise ValueError("txn_syntax_status_unverified")
         tp, fp, fn = item.get("tp"), item.get("fp"), item.get("fn")
         if not all(_counter(v, 25) for v in (tp, fp, fn)):
             raise ValueError("invalid_counters")
