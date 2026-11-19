@@ -42,6 +42,7 @@ jobs:
           "$PY" -B .github/ai-review/production/test_evidence.py
           "$PY" -B .github/ai-review/production/test_quality_gate.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_suite_contract.py
+          "$PY" -B .github/ai-review/benchmarks/harness/test_fixture_syntax.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_pilot_report.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_pilot_guarded.py
           "$PY" -B .github/ai-review/production/test_runner.py
