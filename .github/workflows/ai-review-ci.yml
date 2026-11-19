@@ -39,6 +39,7 @@ jobs:
           set -euo pipefail
           PY="$RUNNER_TEMP/ai-review-ci-venv/bin/python"
           "$PY" -B .github/ai-review/production/test_core.py
+          "$PY" -B .github/ai-review/production/test_evidence.py
           "$PY" -B .github/ai-review/production/test_runner.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
           "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
