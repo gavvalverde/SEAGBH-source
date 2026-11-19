@@ -1,0 +1,23 @@
+{
+  "id": "r22-typ-001",
+  "type": "bug",
+  "expected": {
+    "find": true,
+    "severity": "minor",
+    "category": "exception-handling",
+    "path": "src/core/sync_outbox.py",
+    "line": 109,
+    "location": {
+      "symbol": "registrar_alteracao",
+      "region": "operacao not in _OPERACOES",
+      "description": "TypeError em operacao nao hashable"
+    },
+    "confidence_expected": "high",
+    "behavior": "Operacao [] ou {} produz TypeError ao consultar frozenset, contrariando a validação ValueError."
+  },
+  "delta": {
+    "correct": "Validar type(operacao) is str antes de consultar frozenset.",
+    "incorrect": "Consultar membership com uma lista ou dicionario sem validar hashabilidade.",
+    "note": "Achado real do Copilot, corrigido no PR22 commit fbae0a7."
+  }
+}

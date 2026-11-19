@@ -1,0 +1,12 @@
+{
+  "id": "r22-ddl-001",
+  "type": "clean",
+  "expected": {
+    "find": false
+  },
+  "delta": {
+    "correct": "SQLite3 padrão executa CREATE TABLE/INDEX fora de transação explícita sem pendência, mesmo sem conn.commit().",
+    "incorrect": "Afirmar que esse DDL abre transação implícita e se perde automaticamente no rollback seguinte.",
+    "note": "Falso positivo registrado pelo DeepSeek em PR22; verificado com teste de persistência no SQLite padrão. Não cobre isolamento_level/custom connections."
+  }
+}

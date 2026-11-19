@@ -1,0 +1,14 @@
+{
+  "id": "r22-ddl-001",
+  "tags": [
+    "real-pr",
+    "pr22",
+    "clean",
+    "sqlite",
+    "false-positive"
+  ],
+  "pr_title": "Criar estrutura de fila SQLite no início da instalação",
+  "pr_body": "Adiciona a tabela e o índice de eventos pendentes.",
+  "diff": "--- /dev/null\n+++ b/src/core/sync_outbox.py\n@@ -0,0 +49,27 @@ def criar_estrutura_outbox(conexao: sqlite3.Connection) -> None:\n+    if not isinstance(conexao, sqlite3.Connection):\n+        raise TypeError(\"conexao deve ser sqlite3.Connection\")\n+    if conexao.in_transaction:\n+        raise RuntimeError(\"crie a estrutura antes da transação de negócio\")\n+    conexao.execute(\"\"\"\n+        CREATE TABLE IF NOT EXISTS seagbh_sync_outbox (\n+            sequencia INTEGER PRIMARY KEY AUTOINCREMENT,\n+            evento_id TEXT NOT NULL UNIQUE,\n+            empresa_id TEXT NOT NULL,\n+            dispositivo_id TEXT NOT NULL,\n+            tipo_registro TEXT NOT NULL,\n+            registro_id TEXT NOT NULL,\n+            operacao TEXT NOT NULL CHECK(operacao IN ('upsert', 'delete')),\n+            dados_json TEXT NOT NULL,\n+            criado_em TEXT NOT NULL,\n+            confirmado_em TEXT\n+        )\n+    \"\"\")\n+    conexao.execute(\"\"\"\n+        CREATE INDEX IF NOT EXISTS idx_seagbh_sync_outbox_pendente\n+        ON seagbh_sync_outbox (empresa_id, confirmado_em, sequencia)\n+    \"\"\")\n",
+  "context": "{\"src/core/sync_outbox.py\":{\"imports\":[\"import sqlite3\"],\"symbols\":[\"criar_estrutura_outbox\"],\"description\":\"Uso com conexão criada por sqlite3.connect(path), sem BEGIN explícito ou alteração da configuração padrão de transações.\",\"source_revision\":\"Código do PR #22 anterior à correção, recortado para avaliação independente.\"}}"
+}
