@@ -105,7 +105,9 @@ def registrar_alteracao(
     eid = uuid4() if evento_id is None else evento_id
     eid_texto = _uuid(eid, "evento_id")
     tipo = _tipo(tipo_registro)
-    if operacao not in _OPERACOES:
+    # Validate type before hash-based membership: lists/dicts/sets otherwise
+    # raise TypeError instead of the public ValueError contract.
+    if type(operacao) is not str or operacao not in _OPERACOES:
         raise ValueError("operacao deve ser upsert ou delete")
     if not isinstance(dados, dict):
         raise ValueError("dados deve ser um objeto JSON")

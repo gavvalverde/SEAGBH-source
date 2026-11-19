@@ -176,6 +176,46 @@ class OutboxSQLite(unittest.TestCase):
             self.conn.rollback()
         self.assertEqual(listar_pendentes(self.conn, empresa_id=EMPRESA_X), [])
 
+    def test_operacao_invalida_inclui_valores_nao_hashable(self):
+        entradas = ([], {}, set(), None, True, 1, (), "", "truncate")
+        with self.conn:
+            self.conn.execute("BEGIN")
+            for invalida in entradas:
+                with self.subTest(operacao=repr(invalida)):
+                    with self.assertRaisesRegex(ValueError, "operacao deve ser"):
+                        self._gravar(operacao=invalida)
+        self.assertEqual(
+            listar_pendentes(self.conn, empresa_id=EMPRESA_X), []
+        )
+
+    def test_schema_sqlite_padrao_persiste_sem_commit_explicito(self):
+        # Regressão de um falso positivo em review: DDL executado fora de
+        # transação não deixa BEGIN pendente no sqlite3 padrão.
+        caminho = Path(self.tmp.name) / "schema_isolado.db"
+        conexao = sqlite3.connect(caminho)
+        try:
+            self.assertFalse(conexao.in_transaction)
+            criar_estrutura_outbox(conexao)
+            self.assertFalse(conexao.in_transaction)
+            conexao.execute("BEGIN")
+            conexao.rollback()
+        finally:
+            conexao.close()
+
+        reaberta = sqlite3.connect(caminho)
+        try:
+            nomes = {
+                row[0] for row in reaberta.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                )
+            }
+            self.assertIn("seagbh_sync_outbox", nomes)
+            self.assertEqual(
+                listar_pendentes(reaberta, empresa_id=EMPRESA_X), []
+            )
+        finally:
+            reaberta.close()
+
     def test_limite_de_leitura_e_validado(self):
         for limit in (0, -1, 1001, True, "100"):
             with self.subTest(limit=limit):
