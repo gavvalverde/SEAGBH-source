@@ -66,32 +66,34 @@ Binary/missing patches and metadata-only renames without patches fail safely.
 
 `core.build_payload` delegates unchanged to the published `build_request`:
 DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
-temperature 0.3, max_tokens 16384, with no tools or duplicate prompt.
-The pinned DeepSeek production request now sets `reasoning.effort=low`. OpenRouter
-model metadata (checked 2026-11-19) lists low as supported and high as default
-for `deepseek/deepseek-v4.1-flash-1017`. Its reasoning tokens can count against
-the same completion budget as final JSON. This corrects a second controlled
-PR #22 failure (run 44526208632, `model_output_limit`, stage=model,
-published=false) after the timeout fix was merged. The earlier PR #22 run
-44524958394 had failed due to `network_timeout`; these are separate causes.
+temperature 0.3, max_tokens 8192, with no tools or duplicate prompt.
+The pinned DeepSeek production request now sends `reasoning.effort=none`
+to request non-thinking mode. This is a *pilot*, not proof that every OpenRouter
+provider route will honor the field. If a completed response reports positive
+`reasoning_tokens` in usage, the reviewer fails closed with the fixed
+`reasoning_control_ignored` code. Missing token counters cannot verify this
+setting. The quality of a non-thinking code review must also be evaluated.
+Previously PR #22 failed with `network_timeout` (44524958394) and later
+`model_output_limit` (44526208632).
 Low effort alone did not resolve the output limit. On 2026-11-19, PR #22 run
 44527690287, both attempts, returned model_output_limit even after PR #24
 was merged. The source code does not establish whether the budget was
 spent on hidden reasoning or visible JSON. Do not infer either without token
 usage from OpenRouter Activity.
 
-The next mitigations use max_tokens 16384, retain low reasoning effort, and
-bound the length of the human-readable output in the trusted system prompt
-without asking the model to skip analysis. This doubles the possible
-completion-token expenditure per request. The longer model transport budget
-(5s connection, 180s read, 240s overall) is still subject to a 10-minute
-job timeout; GitHub requests keep 5/30/60s. This is NOT a guarantee of
-successful generation or review quality. The real spending cap is set in
-the OpenRouter API key settings, not in this repository.
+Run 44529754321 provided conclusive token counters:
+16,384 completion tokens = 15,097 reasoning + 1,287 visible JSON tokens.
+This confirms hidden reasoning consumed 92.1% of the completion budget even
+with `effort=low`. Do NOT increase the budget again to conceal the cause.
+The current pilot returns to max_tokens=8192, keeps concise-output guidance,
+and requests non-thinking mode. The 5s/180s/240s model transport and
+5s/30s/60s GitHub transport are unchanged. Success, provider compliance and
+code-review quality need evaluation before any production automation.
+A real spending cap must be configured in the OpenRouter account.
 
-On finish_reason=length, if OpenRouter supplies usage metadata, logs may
-include ONLY bounded integer completion_tokens, reasoning_tokens, and
-visible_tokens counters. Missing/invalid metadata remains absent. The log
+On finish_reason=length or verified reasoning opt-out failure, if OpenRouter
+supplies usage metadata, logs may include ONLY bounded integer
+completion_tokens, reasoning_tokens, and visible_tokens counters. Missing/invalid metadata remains absent. The log
 never contains message, prompt, reasoning, secret, raw API error or model
 content. No automatic retry occurs on a generation failure. Subsequent
 paid tests require a separately approved budget and one explicit activation

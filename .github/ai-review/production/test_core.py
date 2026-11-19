@@ -71,17 +71,17 @@ class IntegrationContracts(unittest.TestCase):
         self.assertEqual(core.build_payload("Title", "Body", "diff"), expected)
         self.assertEqual(list(core.build_payload("Title", "Body", "diff")), list(expected))
 
-    def test_deepseek_reasoning_is_explicit_and_preserves_token_ceiling(self):
+    def test_deepseek_nonthinking_pilot_is_explicit_and_budget_bounded(self):
         payload = core.build_payload("Title", "Body", "Diff")
         self.assertEqual(payload["model"], "deepseek/deepseek-v4.1-flash-1017")
-        self.assertEqual(payload["reasoning"], {"effort": "low"})
-        self.assertEqual(payload["max_tokens"], 16384)
+        self.assertEqual(payload["reasoning"], {"effort": "none"})
+        self.assertEqual(payload["max_tokens"], 8192)
         self.assertNotIn("reasoning", core.build_payload(
             "T", "B", "D", model="minimax/minimax-m2.7"))
 
     def test_output_budget_and_concise_complete_review_guidance(self):
         payload = core.build_payload("T", "B", "D")
-        self.assertEqual(payload["max_tokens"], 16384)
+        self.assertEqual(payload["max_tokens"], 8192)
         system = payload["messages"][0]["content"]
         self.assertIn("RESPOSTA CONCISA", system)
         self.assertIn("Analyze the entire supplied diff", system)

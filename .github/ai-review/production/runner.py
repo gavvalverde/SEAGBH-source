@@ -477,7 +477,7 @@ def main():
     diagnostic = {"code": outcome.code, "stage": outcome.stage, "published": outcome.published}
     # Only publish allowlisted numeric counters on a generation-limit error.
     # No upstream content or metadata is printed to the public Actions log.
-    if outcome.code == "model_output_limit" and outcome.usage is not None:
+    if outcome.code in ("model_output_limit", "reasoning_control_ignored") and outcome.usage is not None:
         diagnostic["usage"] = outcome.usage
     print(json.dumps(diagnostic))
     return outcome.exit_code

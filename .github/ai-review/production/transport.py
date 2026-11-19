@@ -161,6 +161,12 @@ class OpenRouter:
                 }.get(finish_reason) if isinstance(finish_reason, str) else None
                 counts = _safe_output_usage(envelope) if finish_reason == "length" else None
                 raise Problem(diagnostic or "incomplete_response", usage=counts)
+            # Provider may ignore optional non-thinking settings. Fail closed
+            # if reported usage proves the requested opt-out was not honored.
+            if payload.get("reasoning") == {"effort": "none"}:
+                counts = _safe_output_usage(envelope)
+                if counts is not None and counts.get("reasoning_tokens", 0) > 0:
+                    raise Problem("reasoning_control_ignored", usage=counts)
             message = choice.get("message")
             if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
                 raise Problem("unexpected_response")
