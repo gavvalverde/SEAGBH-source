@@ -147,6 +147,65 @@ Não informa custo real porque logs de tokens não são faturamento.
 A regressão offline de `test_suite_contract.py` verifica todos os pares
 de fixture, mas não representa execução de 23 requisições contra modelos.
 
+## Revisão dos gabaritos e critérios semânticos (2026-11-19)
+
+**Problema encontrado após 19 IDs testados:** o caso `dep-001` exigia uma
+falha de FK em `database.py`, mas o patch alterava somente a UI. Outros
+casos permitiam pontuação por sintomas genéricos ou apresentavam causas
+preexistentes/insuficientemente sustentadas. Esses resultados antigos
+não são prova de falha do modelo.
+
+A nova bateria sintética tem mecanismos demonstráveis:
+
+- `dep-001`: o patch conecta `textChanged` a um callback ausente no
+  inventário completo de métodos fornecido, implicando `AttributeError`
+  na inicialização da UI; o gabarito aponta a UI, não o banco.
+- `frk-001`: o patch **introduz** credenciais constantes onde antes
+  havia valores de ambiente. A senha preexistente já não é tratada como
+  regressão causada pelo PR.
+- `mnt-001`: o contexto apresenta a idade mínima de 1 hora e o local
+  de chamada da rotina de limpeza, sem afirmar que o impacto é crítico.
+- `off-001`: `match_score` exige evidência da fronteira exata de 24h
+  **e** do estado de licença afetado. Mesma categoria ou simples menção
+  a 24h não são suficientes; sem texto bruto histórico, o run antigo
+  permanece inconclusivo.
+- `osc-001`: a mudança aleatória que limpa 1% das buscas agora é
+  rotulada como regressão funcional `important`, apesar do título de
+  PR não relacionado.
+- `pth-001`: o construtor conserva `parent`, e o contexto mostra os
+  consumidores ainda conectando `pronto/falha`. O defeito esperado é
+  quebra comprovável do contrato de sinais PyQt.
+- `rac-001`: contexto explicita estado de licença compartilhado,
+  escrita persistente e possibilidade de chamadas concorrentes.
+- `tst-001`: substitui suposição de ausência de testes por caso real
+  de entrada `limite=-1`: o `LIMIT -1` do SQLite preserva linhas,
+  enquanto o método devolve contagem de linhas supostamente removidas.
+  Um witness SQLite offline comprova a divergência.
+
+Os contratos `mechanism_contract` de `dep-001`, `off-001` e `tst-001`
+verificam gatilho e mecanismo com expressões determinísticas e testes
+adversariais. **Não** demonstram verdade semântica do texto do modelo
+e podem produzir falsos negativos. As demais categorias continuam
+avaliadas com o matcher heurístico geral. Gabaritos jamais são inseridos
+no prompt do modelo.
+
+### Proveniência e próximas execuções
+
+O resultado pago passa a registrar somente `ground_truth_sha256`
+(SHA-256 da definição de referência) e `scorer_revision` fixo, sem
+armazenar texto do provedor. O agregador offline rejeita resultados
+anteriores sem versão compatível nos casos cujo gabarito/avaliador mudou
+e continua verificando `fixture_sha256` para patches modificados.
+
+**Não recalcular o resultado de `dep-001`, `frk-001`,
+`mnt-001` ou `off-001` a partir de logs antigos.** Para fechar a
+bateria consistente de 23 casos, executar manualmente os quatro casos
+revisados (`dep-001`, `frk-001`, `mnt-001`, `off-001`)
+e os quatro restantes (`osc-001`, `pth-001`, `rac-001`,
+`tst-001`), **um por vez**, apenas após aprovação do CI e limite real
+da chave OpenRouter. Este PR não dispara chamadas pagas e não habilita
+o AI Reviewer de produção.
+
 ## Critérios de decisão
 
 Só avaliar troca de modelo após executar o mesmo conjunto de casos e
