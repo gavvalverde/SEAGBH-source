@@ -230,6 +230,15 @@ def _fixture_sha256(case):
     return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
+SCORER_REVISION = "mechanism-contract-v1"
+
+
+def _ground_truth_sha256(gt):
+    """Versioned public benchmark label fingerprint, never provider content."""
+    body = json.dumps(gt, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
 def _safe_wording_overlap(left, right):
     """Coarse fixed label only. Never output tokens, excerpts or digests of model text."""
     def words(item):
@@ -388,6 +397,8 @@ def run_one(profile, case_id, key, *, http=None):
         "profile": profile,
         "case_id": case_id,
         "fixture_sha256": _fixture_sha256(case),
+        "ground_truth_sha256": _ground_truth_sha256(gt),
+        "scorer_revision": SCORER_REVISION,
         "syntax_status": syntax_status,
         "model": PROFILES[profile]["model"],
         "status": "review_valid",

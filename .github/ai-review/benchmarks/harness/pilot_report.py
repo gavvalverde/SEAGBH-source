@@ -11,7 +11,7 @@ import argparse
 import json
 from pathlib import Path
 
-from pilot_guarded import CASE_IDS, PROFILES, _fixture_sha256
+from pilot_guarded import CASE_IDS, PROFILES, _fixture_sha256, _ground_truth_sha256, SCORER_REVISION
 from run_bench import load_ground_truth, load_cases
 
 PAID_PROFILES = frozenset({
@@ -23,6 +23,14 @@ FORBIDDEN_FIELDS = frozenset({
     "prompt", "completion", "response", "body", "title", "evidence",
 })
 MAX_BYTES = 128 * 1024
+
+# Cases whose GT changed or whose scorer gained a mechanistic contract.
+# Historic records lacking the new version fields must not be scored against
+# these updated labels; others retain backwards-compatible historical metrics.
+NEW_GT_PROVENANCE_REQUIRED = frozenset({
+    "dep-001", "osc-001", "pth-001", "tst-001", "off-001",
+})
+NEW_SCORER_REQUIRED = frozenset({"dep-001", "off-001", "tst-001"})
 
 
 def _counter(value, max_value=1_000_000):
@@ -160,6 +168,16 @@ def summarize(records, *, profile):
         gt = load_ground_truth(cid)
         if not isinstance(gt, dict):
             raise ValueError("ground_truth_missing")
+        gt_fingerprint = item.get("ground_truth_sha256")
+        if cid in NEW_GT_PROVENANCE_REQUIRED and gt_fingerprint is None:
+            raise ValueError("stale_ground_truth_result")
+        if gt_fingerprint is not None and gt_fingerprint != _ground_truth_sha256(gt):
+            raise ValueError("ground_truth_revision_mismatch")
+        scorer = item.get("scorer_revision")
+        if cid in NEW_SCORER_REQUIRED and scorer != SCORER_REVISION:
+            raise ValueError("stale_semantic_scorer_result")
+        if scorer is not None and scorer != SCORER_REVISION:
+            raise ValueError("unrecognized_scorer_revision")
         expected = gt["expected"]["find"] is True
         if (expected and tp + fn != 1) or (not expected and (tp or fn)):
             raise ValueError("inconsistent_ground_truth_metrics")

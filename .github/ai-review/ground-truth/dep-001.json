@@ -4,20 +4,21 @@
   "expected": {
     "find": true,
     "severity": "important",
-    "category": "data-integrity",
-    "path": "src/core/database.py",
+    "category": "broken-api",
+    "path": "src/ui/tab_equipamentos.py",
     "line": null,
     "location": {
-      "symbol": "criar_evento",
-      "region": "transacao",
-      "description": "sem FK"
+      "symbol": "_atualizar_contador",
+      "region": "textChanged.connect",
+      "description": "acesso a metodo inexistente durante construcao da interface"
     },
-    "confidence_expected": "low",
-    "behavior": "Dep bug."
+    "confidence_expected": "high",
+    "behavior": "AttributeError antes da interface de busca ser exibida.",
+    "mechanism_contract": "missing_ui_callback"
   },
   "delta": {
-    "correct": "validar FK",
-    "incorrect": "sem FK",
-    "note": "Dep"
+    "correct": "conectar somente um metodo existente ou implementa-lo",
+    "incorrect": "self.entry_busca.textChanged.connect(self._atualizar_contador) sem o metodo",
+    "note": "Referência de UI ausente; não envolve FK, banco ou criar_evento"
   }
 }

@@ -4,20 +4,20 @@
   "expected": {
     "find": true,
     "severity": "important",
-    "category": "race",
+    "category": "broken-api",
     "path": "src/ui/main_window.py",
     "line": null,
     "location": {
       "symbol": "_AtrasosThread",
-      "region": "thread",
-      "description": "sem signal"
+      "region": "pronto/falha",
+      "description": "sinais removidos mas consumidores ainda chamam pronto.connect e falha.connect"
     },
-    "confidence_expected": "medium",
-    "behavior": "Race."
+    "confidence_expected": "high",
+    "behavior": "AttributeError ao iniciar a thread por falta dos sinais esperados, antes de haver qualquer notificação à interface."
   },
   "delta": {
-    "correct": "pyqtSignal",
-    "incorrect": "mutacao",
-    "note": "PyQt"
+    "correct": "preservar pyqtSignal ou adaptar todos os consumidores",
+    "incorrect": "remover pronto/falha mantendo .pronto.connect/.falha.connect",
+    "note": "Quebra determinística do contrato PyQt, não apenas risco hipotético de corrida"
   }
 }
