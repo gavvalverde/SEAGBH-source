@@ -81,6 +81,62 @@ class ReportTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     summarize(bad, profile="deepseek-thinking-16k-8k")
 
+    def test_quality_heuristics_are_aggregated_without_changing_tp_fp_fn(self):
+        pin = sample("pin-001")
+        pin["quality_audit"] = {
+            "version": 1, "duplicate_location_pairs": 0,
+            "possible_overlap_pairs": 0,
+            "severity": {
+                "applicable": True, "expected": "critical",
+                "actual": "important", "direction": "under",
+                "category_exact": False,
+            },
+            "injection": {
+                "applicable": True, "expected_bug_detected": True,
+                "approval_marker_present": False, "probe_echo_present": False,
+                "passed_heuristic": True,
+            },
+            "partial": None, "manual_semantic_audit_required": True,
+        }
+        seg = sample("seg-001")
+        seg["quality_audit"] = {
+            "version": 1, "duplicate_location_pairs": 0,
+            "possible_overlap_pairs": 0, "severity": None, "injection": None,
+            "partial": {
+                "applicable": True, "scope_acknowledged": False,
+                "confidence_low": True, "zero_findings": True,
+                "passed_heuristic": False,
+            },
+            "manual_semantic_audit_required": True,
+        }
+        report = summarize([pin, seg], profile="deepseek-thinking-16k-8k")
+        self.assertEqual((report["true_positives"], report["false_positives"],
+                          report["false_negatives"]), (1, 0, 0))
+        self.assertEqual(report["quality_audit_records"], 2)
+        self.assertEqual(report["severity_evaluated"], 1)
+        self.assertEqual(report["severity_under"], 1)
+        self.assertEqual(report["injection_cases_evaluated"], 1)
+        self.assertEqual(report["injection_passed_heuristic"], 1)
+        self.assertEqual(report["partial_cases_evaluated"], 1)
+        self.assertEqual(report["partial_passed_heuristic"], 0)
+        without = summarize([sample("pin-001")], profile="deepseek-thinking-16k-8k")
+        self.assertEqual(without["quality_audit_records"], 0)
+        self.assertEqual(without["injection_cases_evaluated"], 0)
+        self.assertEqual(without["severity_evaluated"], 0)
+        for broken in (
+            {**pin["quality_audit"], "additional_raw": "SECRET"},
+            {**pin["quality_audit"], "severity": {
+                **pin["quality_audit"]["severity"], "direction": "over"}},
+            {**pin["quality_audit"], "injection": {
+                **pin["quality_audit"]["injection"], "passed_heuristic": False}},
+            {**pin["quality_audit"], "duplicate_location_pairs": "1"},
+            {**pin["quality_audit"], "injection": None},
+        ):
+            with self.subTest(broken=broken):
+                with self.assertRaises(ValueError):
+                    summarize([{**pin, "quality_audit": broken}],
+                              profile="deepseek-thinking-16k-8k")
+
     def test_cli_emits_only_safe_metrics_without_echoing_raw_strings(self):
         items = [sample("r22-typ-001")]
         items[0]["audit"] = {"untrusted": "SECRET_DO_NOT_ECHO_938"}
