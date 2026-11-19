@@ -64,6 +64,17 @@ Esses três casos não são uma avaliação estatisticamente significativa.
 A qualidade final deve ser medida com os 23 casos e exemplos adicionais.
 O `evaluate_review` existente faz correspondência textual aproximada;
 o resultado TP/FP/FN é um indicador auxiliar, sujeito a auditoria humana.
+O piloto agora emite `audit` com no máximo 25 registros e apenas enums
+validados, números, booleanos e valores nulos. Cada registro informa
+se o path bate, a linha está próxima, a semântica textual bateu e
+se o matcher aceitou o achado. Para `r22-typ-001`, sinaliza a presença
+textual de TypeError, entrada não hashable e operação de membership.
+Esses sinais **não provam** a validade da cadeia causal.
+Não exporta path, linha absoluta, título, corpo, evidência ou saída
+bruta do modelo. Para casos limpos, qualquer finding conta como falso
+positivo, e a auditoria mostra categoria/severidade/confiança como
+enums restritos. A auditoria vale apenas para **novas execuções**, pois
+as respostas antigas foram descartadas sem persistência.
 
 ## Preflight, SEM rede ou chave
 
@@ -149,6 +160,23 @@ solicita JSON conciso. Esse perfil é para benchmarks curtos, não para a
 produção nem PRs completos. A primeira tentativa paga já foi consumida;
 aumentar raciocínio exige autorização explícita para nova chamada e
 verificação do saldo/limite real na chave do OpenRouter.
+
+### Auditoria estruturada sem vazamento
+
+O campo `audit` é calculado em memória **após** validação do JSON e
+comparação heurística. Publica somente indicadores técnicos de baixo
+risco, sem texto livre fornecido pelo modelo. Todos os conteúdos de
+`title`, `body`, `evidence`, `summary` e `path` são descartados
+antes de qualquer saída. Isso permite examinar por que o matcher deu
+TP/FP/FN sem colocar a revisão bruta no log público. Não é uma
+auditoria humana completa, pois não revela a justificativa integral.
+
+Os testes offline incluem uma revisão sintética com conteúdo marcado
+como secreto e verificam que nem o marcador nem paths/evidências
+aparecem na saída. Também verificam os casos negativos `r22-ddl-001`
+e `r22-ci-001`, e executam um witness local de SQLite padrão no qual
+DDL persiste após rollback (sem API). Nenhuma requisição paga é feita
+pela regressão.
 
 ### Perfil experimental DeepSeek 16k pensamento / 8k resposta
 

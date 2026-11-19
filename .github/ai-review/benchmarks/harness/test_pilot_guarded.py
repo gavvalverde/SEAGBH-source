@@ -3,15 +3,16 @@ import copy
 import io
 import json
 import os
+import sqlite3
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from pilot_guarded import (
     CASE_IDS, PROFILES, build_pilot_request, command, encode_request,
-    main, planned_cost_usd, run_one, send_single_request,
+    main, planned_cost_usd, run_one, safe_finding_audit, send_single_request,
 )
-from run_bench import load_cases
+from run_bench import load_cases, load_ground_truth, evaluate_review
 from transport import HttpReply, Problem
 
 
@@ -348,6 +349,98 @@ class PilotTests(unittest.TestCase):
         self.assertTrue(result["reasoning_budget_verified"])
         self.assertNotIn("summary", result)
         self.assertNotIn("review", result)
+
+    def test_audit_is_bounded_structured_and_never_leaks_provider_text(self):
+        case_id = "r22-typ-001"
+        model_secret = "NEVER_LOG_THIS_PROVIDER_CONTENT_9381"
+        finding = {
+            "severity": "minor",
+            "category": "exception-handling",
+            "path": "src/core/sync_outbox.py",
+            "line": 109,
+            "title": "TypeError on list operation",
+            "body": (
+                "A lista [] em operacao not in _OPERACOES gera TypeError "
+                "antes do ValueError esperado. " + model_secret
+            ),
+            "evidence": "if operacao not in _OPERACOES:",
+            "confidence": "high",
+        }
+        review = {"summary": "Teste sintético", "findings": [finding]}
+        audit = safe_finding_audit(review, load_ground_truth(case_id))
+        record = audit["findings"][0]
+        self.assertTrue(audit["expected_find"])
+        self.assertEqual(audit["finding_count"], 1)
+        self.assertTrue(audit["manual_audit_required"])
+        self.assertTrue(record["path_matches_expected"])
+        self.assertTrue(record["line_near_expected"])
+        self.assertTrue(record["semantic_match"])
+        self.assertTrue(record["heuristic_match"])
+        self.assertEqual(record["causal_cues"], {
+            "type_error": True, "unhashable_input": True, "membership_site": True
+        })
+        rendered = json.dumps(audit, ensure_ascii=False)
+        self.assertNotIn(model_secret, rendered)
+        self.assertNotIn(finding["path"], rendered)
+        self.assertNotIn(finding["title"], rendered)
+        self.assertNotIn(finding["body"], rendered)
+        self.assertNotIn(finding["evidence"], rendered)
+        http = FakeHTTP([fake_reply(content=json.dumps(review))])
+        result = run_one("deepseek-thinking-16k-8k", case_id,
+                         "synthetic-key", http=http)
+        self.assertEqual(len(http.calls), 1)
+        self.assertEqual((result["tp"], result["fp"], result["fn"]), (1, 0, 0))
+        self.assertEqual(result["audit"], audit)
+        self.assertNotIn(model_secret, json.dumps(result))
+        self.assertNotIn("review", result)
+        self.assertNotIn("summary", result)
+
+    def test_negative_cases_are_clean_and_audit_marks_each_finding_as_unmatched(self):
+        for case_id in ("r22-ddl-001", "r22-ci-001"):
+            with self.subTest(case_id=case_id):
+                self.assertEqual(len(load_cases(case_id=case_id)), 1)
+                gt = load_ground_truth(case_id)
+                self.assertFalse(gt["expected"]["find"])
+                clean = {"summary": "Sem defeitos", "findings": []}
+                self.assertEqual(
+                    evaluate_review(clean, gt)["fp"], 0
+                )
+                audit = safe_finding_audit(clean, gt)
+                self.assertFalse(audit["expected_find"])
+                self.assertEqual(audit["finding_count"], 0)
+                self.assertEqual(audit["findings"], [])
+                noisy = {
+                    "summary": "Alerta sintético", "findings": [{
+                        "severity": "minor", "category": "other",
+                        "path": "SECRET_NONLOGGED_PATH",
+                        "line": 1, "title": "Falso positivo",
+                        "body": "Texto privado injetado com fake secret",
+                        "evidence": "SUPER_SECRET_EVIDENCE_2951",
+                        "confidence": "low",
+                    }]
+                }
+                self.assertEqual(evaluate_review(noisy, gt)["fp"], 1)
+                flagged = safe_finding_audit(noisy, gt)
+                self.assertFalse(flagged["findings"][0]["heuristic_match"])
+                self.assertIsNone(flagged["findings"][0]["path_matches_expected"])
+                self.assertIsNone(flagged["findings"][0]["causal_cues"])
+                self.assertNotIn("SUPER_SECRET", json.dumps(flagged))
+                self.assertNotIn("SECRET_NONLOGGED_PATH", json.dumps(flagged))
+
+    def test_sqlite_default_ddl_autocommits_before_next_rollback(self):
+        # Regression witness for r22-ddl-001: no network, no model.
+        with sqlite3.connect(":memory:") as conn:
+            self.assertFalse(conn.in_transaction)
+            conn.execute("CREATE TABLE seagbh_sync_outbox (id INTEGER)")
+            self.assertFalse(conn.in_transaction)
+            conn.execute("CREATE INDEX ix_seagbh_outbox ON seagbh_sync_outbox(id)")
+            self.assertFalse(conn.in_transaction)
+            conn.rollback()
+            found = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='seagbh_sync_outbox'"
+            ).fetchone()
+            self.assertEqual(found, ("seagbh_sync_outbox",))
 
     def test_absent_reasoning_counters_do_not_count_as_verified(self):
         response = fake_reply(usage={"completion_tokens": 130})
