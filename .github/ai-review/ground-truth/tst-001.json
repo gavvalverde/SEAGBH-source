@@ -3,21 +3,21 @@
   "type": "bug",
   "expected": {
     "find": true,
-    "severity": "minor",
-    "category": "insufficient-test",
+    "severity": "important",
+    "category": "edge-case",
     "path": "src/core/database.py",
     "line": null,
     "location": {
       "symbol": "limpar_auditoria",
-      "region": "funcao nova",
-      "description": "sem teste"
+      "region": "limite negativo",
+      "description": "LIMIT negativo do SQLite preserva todos os registros mas retorna quantidade removida maior que zero"
     },
     "confidence_expected": "high",
-    "behavior": "No test."
+    "behavior": "limite=-1 gera SELECT ... LIMIT -1 sem truncar registros; DELETE não exclui linhas e a função retorna total+1, afirmando ter excluído linhas não removidas."
   },
   "delta": {
-    "correct": "nao existe",
-    "incorrect": "sem teste",
-    "note": "No test"
+    "correct": "rejeitar limite < 0 ou definir contrato explícito",
+    "incorrect": "aceitar limite=-1 sem validação, com contagem de exclusão falsa",
+    "note": "Bug concreto de limite negativo; não se presume ausência de testes externos"
   }
 }
