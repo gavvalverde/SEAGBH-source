@@ -374,6 +374,20 @@ class Integration(Offline):
         self.assertFalse(gh.posts)
         self.assertEqual(len(model.payloads), 1)
 
+    def test_same_changed_line_with_two_findings_holds_publication(self):
+        # Both are individually schema-valid and anchored, but could describe
+        # the same root cause. Never silently discard one or publish both.
+        findings = [finding(), finding(category="out-of-scope",
+                                        title="Second interpretation")]
+        out, gh, ai = self.run_case(model=FakeModel(review(findings)))
+        self.assertEqual(out.code, "quality_manual_review_required")
+        self.assertEqual(out.stage, "quality_gate")
+        self.assertEqual(out.quality_hold_count, 0)
+        self.assertEqual(out.quality_duplicate_pair_count, 1)
+        self.assertFalse(out.published)
+        self.assertFalse(gh.posts)
+        self.assertEqual(len(ai.payloads), 1)
+
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
         self.assertTrue(out.published)

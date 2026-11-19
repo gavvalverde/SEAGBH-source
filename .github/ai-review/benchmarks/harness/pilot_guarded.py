@@ -23,6 +23,7 @@ from core import validate_review
 from transport import HTTPS, Problem, _safe_output_usage, decode
 from prompt_builder import build_request
 from fixture_syntax import validate_case_syntax
+from quality_metrics import safe_quality_metrics
 from run_bench import (
     load_cases, load_ground_truth, evaluate_review, match_score,
     _line_close, _semantic_match,
@@ -381,6 +382,7 @@ def run_one(profile, case_id, key, *, http=None):
     gt = load_ground_truth(case_id)
     match = evaluate_review(result, gt)
     audit = safe_finding_audit(result, gt)
+    quality = safe_quality_metrics(result, gt, case, audit, match)
     return {
         "mode": "paid_result",
         "profile": profile,
@@ -393,6 +395,7 @@ def run_one(profile, case_id, key, *, http=None):
         "fp": match["fp"],
         "fn": match["fn"],
         "audit": audit,
+        "quality_audit": quality,
         "usage": usage,
         # If the provider omits counters, compliance remains UNVERIFIED.
         "reasoning_budget_verified": bool(

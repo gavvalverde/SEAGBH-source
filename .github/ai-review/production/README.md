@@ -4,6 +4,17 @@ The production workflow is present on `main` but disabled by default. It require
 both `AI_REVIEW_ENABLED=true` and `AI_REVIEW_TARGET_PR` equal to the exact PR
 number. Source changes and offline CI never activate paid model calls by themselves.
 
+## Conservative same-line collision hold (2026-11-19)
+
+Besides literal diff-line anchors, the publication quality gate now holds the
+whole review when two or more findings point to the exact same file and line.
+It returns `quality_manual_review_required`, logs only a numeric pair count,
+never chooses a "best" finding, and makes no additional paid API call.
+Identical locations do NOT prove identical root causes; independent valid bugs
+may require manual triage. The shared prompt now asks for a counterfactual
+independent-fix test and calibrates severity to demonstrated impact.
+Keep production disabled until evaluated on real-world cases.
+
 ## Deterministic finding-quality gate and refutation
 
 The trusted prompt now requests explicit changed code, reachable trigger,
