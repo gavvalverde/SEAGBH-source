@@ -231,7 +231,7 @@ class Integration(Offline):
         expected = core.build_payload(pinned.title, pinned.body, collected.diff,
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
-        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 8192))
+        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 16384))
         self.assertEqual(expected["reasoning"], {"effort": "low"})
 
     def test_valid_empty_review_can_publish(self):
@@ -446,8 +446,8 @@ class Transport(Offline):
         github = HTTPS()
         self.assertIsInstance(model.http, HTTPS)
         self.assertEqual(model.http.connect_timeout, 5)
-        self.assertEqual(model.http.read_timeout, 120)
-        self.assertEqual(model.http.total_timeout, 180)
+        self.assertEqual(model.http.read_timeout, 180)
+        self.assertEqual(model.http.total_timeout, 240)
         self.assertEqual(model.http.max_response, OpenRouter.MAX_RESPONSE)
         self.assertEqual((github.connect_timeout, github.read_timeout,
                           github.total_timeout), (5, 30, 60))
@@ -466,7 +466,7 @@ class Transport(Offline):
         self.assertEqual(len(http.calls), 1)
         sent = json.loads(http.calls[0][4].decode("utf-8"))
         self.assertEqual(sent["reasoning"], {"effort": "low"})
-        self.assertEqual(sent["max_tokens"], 8192)
+        self.assertEqual(sent["max_tokens"], 16384)
         self.assertEqual(sent["model"], "deepseek/deepseek-v4.1-flash-1017")
 
     def test_400_401_do_not_retry(self):
@@ -490,6 +490,53 @@ class Transport(Offline):
         with self.assertRaises(Problem) as got: OpenRouter("x", http=http, sleep=Mock()).complete({})
         self.assertEqual(got.exception.code, "network_timeout")
         self.assertEqual(len(http.calls), 1)
+
+    def test_length_diagnostic_exposes_only_bounded_numeric_usage(self):
+        def length_reply(usage):
+            value = json.loads(envelope("NEVER-LOG-RESPONSE", finish_reason="length").body)
+            value["usage"] = usage
+            value["secret_provider_field"] = "PRIVATE-DATA-DO-NOT-LOG"
+            return HttpReply(200, json.dumps(value).encode())
+
+        for usage, expected in [
+            ({"completion_tokens": 16384,
+              "completion_tokens_details": {"reasoning_tokens": 14000},
+              "raw_secret": "PRIVATE-UNTRUSTED"},
+             {"completion_tokens": 16384, "reasoning_tokens": 14000,
+              "visible_tokens": 2384}),
+            ({"completion_tokens": 16384,
+              "completion_tokens_details": {"reasoning_tokens": "PRIVATE"}},
+             {"completion_tokens": 16384}),
+            ({"completion_tokens": True}, None),
+            ({"completion_tokens": "PRIVATE"}, None),
+            ({"completion_tokens": -1}, None),
+            ({"completion_tokens": 2000000}, None),
+            ({"completion_tokens": 10,
+              "completion_tokens_details": {"reasoning_tokens": 20}},
+             {"completion_tokens": 10}),
+        ]:
+            with self.subTest(usage=expected):
+                http = FakeHTTP([length_reply(usage)])
+                with self.assertRaises(Problem) as caught:
+                    OpenRouter("synthetic-key", http=http).complete({})
+                self.assertEqual(caught.exception.code, "model_output_limit")
+                self.assertEqual(caught.exception.usage, expected)
+                self.assertNotIn("PRIVATE", str(caught.exception))
+                self.assertEqual(len(http.calls), 1)
+
+        gh = FakeGitHub()
+        model_http = FakeHTTP([length_reply({"completion_tokens": 16384,
+            "completion_tokens_details": {"reasoning_tokens": 15000}})])
+        result = r.run_review(event(), "true", gh,
+                              OpenRouter("synthetic-key", http=model_http),
+                              version="numeric-diagnostics")
+        self.assertEqual(result.code, "model_output_limit")
+        self.assertEqual(result.stage, "model")
+        self.assertFalse(result.published)
+        self.assertEqual(result.usage, {"completion_tokens": 16384,
+                                        "reasoning_tokens": 15000,
+                                        "visible_tokens": 1384})
+        self.assertFalse(gh.posts)
 
     def test_oversized_response_is_rejected(self):
         http = FakeHTTP([HttpReply(200, b'x' * (OpenRouter.MAX_RESPONSE + 1))])

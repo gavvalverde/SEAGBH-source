@@ -66,7 +66,7 @@ Binary/missing patches and metadata-only renames without patches fail safely.
 
 `core.build_payload` delegates unchanged to the published `build_request`:
 DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
-temperature 0.3, max_tokens 8192, with no tools or duplicate prompt.
+temperature 0.3, max_tokens 16384, with no tools or duplicate prompt.
 The pinned DeepSeek production request now sets `reasoning.effort=low`. OpenRouter
 model metadata (checked 2026-11-19) lists low as supported and high as default
 for `deepseek/deepseek-v4.1-flash-1017`. Its reasoning tokens can count against
@@ -74,17 +74,36 @@ the same completion budget as final JSON. This corrects a second controlled
 PR #22 failure (run 44526208632, `model_output_limit`, stage=model,
 published=false) after the timeout fix was merged. The earlier PR #22 run
 44524958394 had failed due to `network_timeout`; these are separate causes.
-The new low-effort setting keeps the 8192-token budget and may leave more
-room for final JSON; success and unchanged finding quality require a paid,
-explicitly authorized validation. Alternate benchmark model IDs retain their
-previous default reasoning settings. No auto-retry on a generation failure.
+Low effort alone did not resolve the output limit. On 2026-11-19, PR #22 run
+44527690287, both attempts, returned model_output_limit even after PR #24
+was merged. The source code does not establish whether the budget was
+spent on hidden reasoning or visible JSON. Do not infer either without token
+usage from OpenRouter Activity.
+
+The next mitigations use max_tokens 16384, retain low reasoning effort, and
+bound the length of the human-readable output in the trusted system prompt
+without asking the model to skip analysis. This doubles the possible
+completion-token expenditure per request. The longer model transport budget
+(5s connection, 180s read, 240s overall) is still subject to a 10-minute
+job timeout; GitHub requests keep 5/30/60s. This is NOT a guarantee of
+successful generation or review quality. The real spending cap is set in
+the OpenRouter API key settings, not in this repository.
+
+On finish_reason=length, if OpenRouter supplies usage metadata, logs may
+include ONLY bounded integer completion_tokens, reasoning_tokens, and
+visible_tokens counters. Missing/invalid metadata remains absent. The log
+never contains message, prompt, reasoning, secret, raw API error or model
+content. No automatic retry occurs on a generation failure. Subsequent
+paid tests require a separately approved budget and one explicit activation
+after verifying AI_REVIEW_ENABLED=false.
 
 Transport accepts only fixed HTTPS origins, never follows redirects, and bounds
 responses (GitHub 2 MiB, OpenRouter 1 MiB) and encoded model requests (256 KiB).
 GitHub API transport retains 5s connection, 30s read, and 60s total deadlines.
-The OpenRouter model transport now uses a 5s connection, 120s read and 180s
-total budget. This change follows a real PR #22 network_timeout at the model
-stage after approximately 63 seconds on 2026-11-19 (run 44524958394).
+The OpenRouter model transport initially used 5s/120s/180s after the first
+timeout, then increased to 5s/180s/240s together with the larger output
+budget. This follows the PR #22 network_timeout on 2026-11-19
+(run 44524958394).
 A longer bounded deadline accommodates slower non-streaming model responses;
 it does not guarantee success, reduce token costs, or prove the provider
 completed its work. The existing 10-minute job outer timeout remains.

@@ -79,6 +79,15 @@ class IntegrationContracts(unittest.TestCase):
         self.assertNotIn("reasoning", core.build_payload(
             "T", "B", "D", model="minimax/minimax-m2.7"))
 
+    def test_output_budget_and_concise_complete_review_guidance(self):
+        payload = core.build_payload("T", "B", "D")
+        self.assertEqual(payload["max_tokens"], 16384)
+        system = payload["messages"][0]["content"]
+        self.assertIn("RESPOSTA CONCISA", system)
+        self.assertIn("Analyze the entire supplied diff", system)
+        self.assertIn("prioritizing critical and important defects", system)
+        self.assertIn("reviewed_scope", system)
+
     def test_prompt_requires_ptbr_without_translating_schema_or_code(self):
         payload = core.build_payload("T", "B", "D")
         system = payload["messages"][0]["content"]
