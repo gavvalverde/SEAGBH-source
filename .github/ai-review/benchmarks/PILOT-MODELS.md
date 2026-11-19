@@ -67,6 +67,12 @@ nada no PR. O operador deve antes:
    variável `SEAGBH_AI_PILOT_PAID_ENABLED=owner_confirmed`.
    Não colocar secrets em argumentos ou commits.
 
+A API pode omitir os contadores de raciocínio. Nesse caso o resultado
+aparece com `reasoning_budget_verified=false`; sucesso na geração NÃO
+significa que o limite numérico foi comprovadamente respeitado. Quando
+os contadores existem, qualquer uso acima de 2048 tokens de pensamento
+ou acima dos 8192 tokens totais é rejeitado, sem repetir a cobrança.
+
 O teste é propositalmente de **um caso e um perfil por execução**.
 Mesmo em erro de rede, a primeira chamada pode gerar cobrança. O modelo
 não será substituído automaticamente e o piloto não faz novas tentativas.

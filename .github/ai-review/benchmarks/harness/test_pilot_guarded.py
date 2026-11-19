@@ -134,8 +134,25 @@ class PilotTests(unittest.TestCase):
         self.assertEqual((result["tp"], result["fn"]), (0, 1))
         self.assertEqual(result["calls_attempted"], 1)
         self.assertFalse(result["review_published"])
+        self.assertTrue(result["reasoning_budget_verified"])
         self.assertNotIn("summary", result)
         self.assertNotIn("review", result)
+
+    def test_absent_reasoning_counters_do_not_count_as_verified(self):
+        response = fake_reply(usage={"completion_tokens": 130})
+        output = run_one("gemini-thinking-2048", CASE_IDS[0],
+                         "synthetic-key", http=FakeHTTP([response]))
+        self.assertFalse(output["reasoning_budget_verified"])
+        self.assertNotIn("reasoning_tokens", output["usage"])
+
+    def test_exceeding_total_completion_budget_fails_closed(self):
+        req = build_pilot_request(load_cases(case_id=CASE_IDS[0])[0],
+                                  "gemini-thinking-2048")
+        response = fake_reply(usage={"completion_tokens": 8200,
+                       "completion_tokens_details": {"reasoning_tokens": 1000}})
+        with self.assertRaises(Problem) as result:
+            send_single_request(req, "synthetic-key", http=FakeHTTP([response]))
+        self.assertEqual(result.exception.code, "pilot_completion_budget_exceeded")
 
     def test_cli_never_prints_sensitive_provider_error(self):
         with patch.dict(os.environ, {}, clear=True), redirect_stdout(io.StringIO()) as capture:

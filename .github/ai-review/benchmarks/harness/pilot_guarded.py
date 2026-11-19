@@ -108,6 +108,9 @@ def send_single_request(request, key, *, http=None):
     if not isinstance(content, str):
         raise Problem("pilot_invalid_envelope")
     usage = _safe_output_usage(envelope)
+    if (usage is not None and
+            usage["completion_tokens"] > request["max_tokens"]):
+        raise Problem("pilot_completion_budget_exceeded", usage=usage)
     if (request.get("reasoning") == {"max_tokens": 2048}
             and usage is not None and usage.get("reasoning_tokens", 0) > 2048):
         raise Problem("pilot_reasoning_budget_exceeded", usage=usage)
@@ -136,6 +139,10 @@ def run_one(profile, case_id, key, *, http=None):
         "fp": match["fp"],
         "fn": match["fn"],
         "usage": usage,
+        # If the provider omits counters, compliance remains UNVERIFIED.
+        "reasoning_budget_verified": bool(
+            usage is not None and "reasoning_tokens" in usage
+        ),
         "calls_attempted": 1,
         "review_published": False,
     }
