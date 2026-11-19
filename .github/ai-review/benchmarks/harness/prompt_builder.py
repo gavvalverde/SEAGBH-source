@@ -206,6 +206,11 @@ def build_request(title, body, diff, context="", trunc_note="", omit_info="", mo
     # Alternate benchmark models keep their provider defaults.
     if model_id == MODEL:
         request["reasoning"] = {"effort": REASONING_EFFORT}
+        # Ask the provider to enforce JSON syntax rather than relying on
+        # prompt instructions alone. Route only to compatible endpoints.
+        # The strict local JSON Schema validator remains the security boundary.
+        request["response_format"] = {"type": "json_object"}
+        request["provider"] = {"require_parameters": True}
     return request
 
 

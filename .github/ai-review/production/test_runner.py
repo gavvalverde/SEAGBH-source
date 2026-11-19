@@ -233,6 +233,8 @@ class Integration(Offline):
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 8192))
         self.assertEqual(expected["reasoning"], {"effort": "none"})
+        self.assertEqual(expected["response_format"], {"type": "json_object"})
+        self.assertEqual(expected["provider"], {"require_parameters": True})
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
@@ -466,8 +468,32 @@ class Transport(Offline):
         self.assertEqual(len(http.calls), 1)
         sent = json.loads(http.calls[0][4].decode("utf-8"))
         self.assertEqual(sent["reasoning"], {"effort": "none"})
+        self.assertEqual(sent["response_format"], {"type": "json_object"})
+        self.assertEqual(sent["provider"], {"require_parameters": True})
         self.assertEqual(sent["max_tokens"], 8192)
         self.assertEqual(sent["model"], "deepseek/deepseek-v4.1-flash-1017")
+
+    def test_json_mode_unavailable_fails_once_without_publication(self):
+        http = FakeHTTP([HttpReply(400, b'{"error":"unsupported json mode"}')])
+        gh = FakeGitHub()
+        result = r.run_review(event(), "true", gh,
+                              OpenRouter("synthetic-key", http=http),
+                              version="json-mode-test")
+        self.assertEqual(result.code, "http_error")
+        self.assertEqual(result.stage, "model")
+        self.assertFalse(result.published)
+        self.assertEqual(len(http.calls), 1)
+        self.assertFalse(gh.posts)
+
+    def test_validation_reports_safe_fixed_reason_without_content(self):
+        gh = FakeGitHub()
+        model = FakeModel("PRIVATE-RAW-PROVIDER-MARKDOWN")
+        outcome = r.run_review(event(), "true", gh, model, version="json-diagnostic")
+        self.assertEqual(outcome.code, "parse_error")
+        self.assertEqual(outcome.stage, "validation")
+        self.assertEqual(outcome.validation_reason, "invalid_json")
+        self.assertFalse(outcome.published)
+        self.assertFalse(gh.posts)
 
     def test_400_401_do_not_retry(self):
         for code, expected in [(400, "http_error"), (401, "authentication_error")]:

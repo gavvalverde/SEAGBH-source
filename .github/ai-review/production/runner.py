@@ -43,6 +43,7 @@ class Outcome:
     published: bool = False
     stage: str = ""
     usage: dict | None = None
+    validation_reason: str | None = None
 
 
 def snapshot(pr, number):
@@ -412,7 +413,8 @@ def run_review(event, enabled, github, model, *, version):
         stage = "validation"
         result = core.process_response(content, collected.scope, expected_sha=pinned.head_sha, response_sha=pinned.head_sha)
         if not result.publishable:
-            return Outcome(result.status.value, 1, stage=stage)
+            return Outcome(result.status.value, 1, stage=stage,
+                           validation_reason=result.reason)
         ensure_current(github, pinned)
         if already_reviewed(github.reviews(pinned.number), pinned, bot_id, version):
             return Outcome("skip_duplicate")
@@ -479,6 +481,16 @@ def main():
     # No upstream content or metadata is printed to the public Actions log.
     if outcome.code in ("model_output_limit", "reasoning_control_ignored") and outcome.usage is not None:
         diagnostic["usage"] = outcome.usage
+    # Fixed application-owned labels only. Never log any model text, raw
+    # provider diagnostics, JSON snippets or user-controlled paths.
+    allowed_validation_reasons = frozenset({
+        "invalid_json", "incomplete_json", "schema_violation",
+        "missing_content", "unexpected_content_type", "response_not_complete",
+        "all_findings_rejected", "invalid_result", "invalid_scope",
+        "review_revision_mismatch",
+    })
+    if outcome.stage == "validation" and outcome.validation_reason in allowed_validation_reasons:
+        diagnostic["validation_reason"] = outcome.validation_reason
     print(json.dumps(diagnostic))
     return outcome.exit_code
 

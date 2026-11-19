@@ -274,3 +274,24 @@ https://docs.github.com/en/actions/reference/security/securely-using-pull_reques
 - A regressão offline cobre localização do prompt, modelo selecionado,
   formatação Markdown segura, defesa contra injeção, deduplicação e filtros,
   sem credenciais ou chamadas pagas.
+
+## JSON mode following PR #22 validation failure (2026-11-19)
+
+Run 44531560731 on PR #22, using merged PR #26, returned
+`{"code":"parse_error","stage":"validation","published":false}`.
+The model completed its HTTP request, but the trusted validator rejected
+its content. No raw content was logged, so the exact malformed output is
+unknown; fences/prose, duplicate keys, or invalid JSON are possibilities.
+
+The pinned DeepSeek request now uses `response_format={"type":"json_object"}`
+to request JSON at the provider level, and
+`provider={"require_parameters":true}` to avoid silently routing to a
+provider that cannot accept the required formatting and reasoning settings.
+This may fail with an HTTP error if no route is compatible. It is not a
+schema guarantee: the trusted Draft 7 validation, scope/SHA checks, strict
+parsing, and refusal to publish incomplete responses remain unchanged.
+
+A failed validation may now log a fixed, allowlisted application-owned
+`validation_reason`, never upstream content. No automatic retry or new paid
+call is introduced. Run all offline regression tests before a paid pilot;
+check the OpenRouter key budget and request explicit approval for a new call.

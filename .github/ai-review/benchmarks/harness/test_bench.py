@@ -43,6 +43,8 @@ def test_prompt():
     check("max_tokens", r["max_tokens"] == MAX_TOKENS == 8192)
     check("bounded final JSON guidance", "RESPOSTA CONCISA" in r["messages"][0]["content"])
     check("DeepSeek non-thinking pilot", r["reasoning"] == {"effort": REASONING_EFFORT} == {"effort": "none"})
+    check("DeepSeek JSON mode", r["response_format"] == {"type": "json_object"})
+    check("DeepSeek supported provider", r["provider"] == {"require_parameters": True})
     check("alternate model uses default reasoning", "reasoning" not in build_request("T", "B", "D", model="minimax/minimax-m2.7"))
     sys_c = r["messages"][0]["content"]
     check("TWO-PASS", "TWO-PASS" in sys_c)
