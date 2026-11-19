@@ -29,6 +29,14 @@ PROFILES = {
         "max_tokens": 8192,
         "reasoning": {"effort": "none"},
     },
+    "deepseek-thinking-16k-8k": {
+        "model": "deepseek/deepseek-v4.1-flash-1017",
+        # Total shared budget, NOT an independent visible-output limit.
+        "max_tokens": 24576,
+        # A requested target: providers may map this to effort, not a hard cap.
+        "reasoning": {"max_tokens": 16384},
+        "max_visible_tokens": 8192,
+    },
     "gemini-thinking-2048": {
         "model": "google/gemini-2.5-flash",
         "max_tokens": 8192,
@@ -45,6 +53,8 @@ PROFILES = {
 # Estimates exclude credit purchase fees, provider price changes and rebates.
 GEMINI_INPUT_USD_M = 0.30
 GEMINI_OUTPUT_USD_M = 2.50
+DEEPSEEK_INPUT_USD_M = 0.036
+DEEPSEEK_OUTPUT_USD_M = 0.50
 MAX_PILOT_USD = 0.05
 MAX_REQUEST_BYTES = 65536
 
@@ -64,6 +74,10 @@ def build_pilot_request(case, profile):
         request["temperature"] = 1.0
         request["response_format"] = {"type": "json_object"}
         request["provider"] = {"require_parameters": True}
+    if profile == "deepseek-thinking-16k-8k":
+        # Do not alter production. Only this allowlisted pilot profile opts in.
+        request["response_format"] = {"type": "json_object"}
+        request["provider"] = {"require_parameters": True}
     return request
 
 
@@ -76,10 +90,14 @@ def encode_request(request):
 
 def planned_cost_usd(payload_bytes, profile):
     """Proxy financeiro para planejamento, NÃO limite real de faturamento."""
-    if profile not in ("gemini-thinking-2048", "gemini-thinking-4096-compact"):
-        return None  # preço do modelo legado não fixado neste piloto
-    return round((payload_bytes * GEMINI_INPUT_USD_M
-                  + PROFILES[profile]["max_tokens"] * GEMINI_OUTPUT_USD_M)
+    if profile in ("gemini-thinking-2048", "gemini-thinking-4096-compact"):
+        input_price, output_price = GEMINI_INPUT_USD_M, GEMINI_OUTPUT_USD_M
+    elif profile == "deepseek-thinking-16k-8k":
+        input_price, output_price = DEEPSEEK_INPUT_USD_M, DEEPSEEK_OUTPUT_USD_M
+    else:
+        return None  # baseline não autorizado para piloto pago
+    return round((payload_bytes * input_price
+                  + PROFILES[profile]["max_tokens"] * output_price)
                  / 1_000_000, 6)
 
 
@@ -88,8 +106,12 @@ def send_single_request(request, key, *, http=None):
     if not isinstance(key, str) or not key or "\r" in key or "\n" in key:
         raise Problem("pilot_authentication_error")
     raw = encode_request(request)
+    # Allow the larger DeepSeek response sufficient wall time, without retries.
+    large_output = request.get("max_tokens") == 24576
     client = http if http is not None else HTTPS(
-        read_timeout=120, total_timeout=180, max_response=1024 * 1024,
+        read_timeout=240 if large_output else 120,
+        total_timeout=330 if large_output else 180,
+        max_response=1024 * 1024,
     )
     response = client.send(
         "openrouter.ai", "POST", "/api/v1/chat/completions",
@@ -122,6 +144,11 @@ def send_single_request(request, key, *, http=None):
     if (type(reasoning_limit) is int and usage is not None
             and usage.get("reasoning_tokens", 0) > reasoning_limit):
         raise Problem("pilot_reasoning_budget_exceeded", usage=usage)
+    if (request.get("model") == "deepseek/deepseek-v4.1-flash-1017"
+            and request.get("max_tokens") == 24576
+            and usage is not None and usage.get("visible_tokens", 0) > 8192):
+        # Post-response check only; not a provider-side independent cap.
+        raise Problem("pilot_visible_budget_exceeded", usage=usage)
     validated = validate_review(content)
     # Do not expose, save, copy or print the raw model content.
     if not validated.ok:
@@ -151,6 +178,9 @@ def run_one(profile, case_id, key, *, http=None):
         "reasoning_budget_verified": bool(
             usage is not None and "reasoning_tokens" in usage
         ),
+        "visible_budget_verified": bool(
+            usage is not None and "visible_tokens" in usage
+        ) if profile == "deepseek-thinking-16k-8k" else None,
         "calls_attempted": 1,
         "review_published": False,
     }
@@ -185,7 +215,8 @@ def command(args):
         ))
         if not trusted_manual_action:
             raise Problem("pilot_paid_blocked_in_ci")
-    if args.profile not in ("gemini-thinking-2048", "gemini-thinking-4096-compact"):
+    if args.profile not in ("gemini-thinking-2048", "gemini-thinking-4096-compact",
+                            "deepseek-thinking-16k-8k"):
         raise Problem("pilot_price_not_verified")
     if (not args.confirm_single_paid_call
             or os.environ.get("SEAGBH_AI_PILOT_PAID_ENABLED") != "owner_confirmed"):
