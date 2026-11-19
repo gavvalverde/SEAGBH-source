@@ -7,7 +7,9 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from pilot_guarded import CASE_IDS, PROFILES, _fixture_sha256
+from pilot_guarded import (
+    CASE_IDS, PROFILES, _fixture_sha256, _ground_truth_sha256, SCORER_REVISION,
+)
 from pilot_report import main, summarize
 from run_bench import load_ground_truth, load_cases
 
@@ -17,6 +19,8 @@ def sample(cid, *, profile="deepseek-thinking-16k-8k"):
     return {
         "case_id": cid,
         "fixture_sha256": _fixture_sha256(load_cases(case_id=cid)[0]),
+        "ground_truth_sha256": _ground_truth_sha256(load_ground_truth(cid)),
+        "scorer_revision": SCORER_REVISION,
         "syntax_status": "validated" if cid == "txn-001" else "fragment_unverifiable",
         "model": PROFILES[profile]["model"],
         "profile": profile,
@@ -74,6 +78,18 @@ class ReportTests(unittest.TestCase):
             [{**valid, "calls_attempted": 2}],
             [{**sample("txn-001"), "fixture_sha256": "0" * 64}],
             [{**sample("txn-001"), "syntax_status": "fragment_unverifiable"}],
+            [{**sample("dep-001"), "ground_truth_sha256": "0" * 64}],
+            [{**sample("dep-001"), "scorer_revision": "old-matcher"}],
+            [{k: v for k, v in sample("dep-001").items()
+              if k != "ground_truth_sha256"}],
+            [{k: v for k, v in sample("off-001").items()
+              if k != "scorer_revision"}],
+            [{k: v for k, v in sample("osc-001").items()
+              if k != "ground_truth_sha256"}],
+            [{k: v for k, v in sample("pth-001").items()
+              if k != "ground_truth_sha256"}],
+            [{k: v for k, v in sample("tst-001").items()
+              if k != "ground_truth_sha256"}],
             [{k: v for k, v in sample("txn-001").items() if k != "fixture_sha256"}],
             [{**valid, "review_published": True}],
         ]:
