@@ -8,6 +8,7 @@ um limite financeiro REAL na chave do OpenRouter antes de usar --paid.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -21,6 +22,7 @@ sys.path.insert(0, str(PRODUCTION))
 from core import validate_review
 from transport import HTTPS, Problem, _safe_output_usage, decode
 from prompt_builder import build_request
+from fixture_syntax import validate_case_syntax
 from run_bench import (
     load_cases, load_ground_truth, evaluate_review, match_score,
     _line_close, _semantic_match,
@@ -220,6 +222,29 @@ def send_single_request(request, key, *, http=None):
     return validated.review, usage
 
 
+def _fixture_sha256(case):
+    """Public fixture fingerprint, NOT model text or ground-truth data."""
+    fields = {k: case.get(k) for k in ("id", "pr_title", "pr_body", "diff", "context")}
+    body = json.dumps(fields, ensure_ascii=True, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
+
+
+def _safe_wording_overlap(left, right):
+    """Coarse fixed label only. Never output tokens, excerpts or digests of model text."""
+    def words(item):
+        text = " ".join(str(item.get(k) or "") for k in ("title", "body", "evidence"))
+        return set(re.findall(r"[a-zA-ZÀ-ÿ_][a-zA-ZÀ-ÿ_0-9]{2,31}", text.casefold())[:128])
+    a, b = words(left), words(right)
+    if len(a) < 3 or len(b) < 3:
+        return "unknown"
+    overlap = len(a & b) / min(len(a), len(b))
+    if overlap >= 0.6:
+        return "high"
+    if overlap >= 0.25:
+        return "moderate"
+    return "low"
+
+
 def safe_finding_audit(review, gt):
     """Bounded, structured diagnostics only. NEVER include provider text.
 
@@ -251,6 +276,19 @@ def safe_finding_audit(review, gt):
                     or "frozenset" in text
                 ),
             }
+        elif gt and gt.get("id") == "txn-001":
+            # Only fixed booleans. An error phrase does NOT prove an error exists.
+            cause_signals = {
+                "transaction_terms": bool(re.search(
+                    r"rollback|commit|transa[cç][aã]o|transaction|atomic|revers[aã]o",
+                    text,
+                )),
+                "syntax_terms": bool(re.search(
+                    r"indentationerror|syntaxerror|unexpected indent|"
+                    r"erro de sintaxe|indenta[cç][aã]o|indent",
+                    text,
+                )),
+            }
         diagnostics.append({
             "index": index,
             "severity": finding["severity"],
@@ -275,13 +313,61 @@ def safe_finding_audit(review, gt):
             ),
             "causal_cues": cause_signals,
         })
+    # Pairwise diagnostics are structural and bounded. They do NOT assume
+    # duplicate findings or independently valid bugs from text resemblance.
+    pairs = []
+    total_pairs = len(diagnostics) * (len(diagnostics) - 1) // 2
+    for i in range(len(diagnostics)):
+        for j in range(i + 1, len(diagnostics)):
+            if len(pairs) >= 36:
+                break
+            left, right = findings[i], findings[j]
+            same_path = left["path"] == right["path"]
+            left_line, right_line = left.get("line"), right.get("line")
+            if not same_path:
+                line_relation = "different_path"
+            elif type(left_line) is not int or type(right_line) is not int:
+                line_relation = "unknown"
+            elif left_line == right_line:
+                line_relation = "same"
+            elif abs(left_line - right_line) <= 3:
+                line_relation = "near"
+            else:
+                line_relation = "distant"
+            both_match = bool(
+                expected_find and diagnostics[i]["heuristic_match"]
+                and diagnostics[j]["heuristic_match"]
+            )
+            pairs.append({
+                "left_index": i, "right_index": j,
+                "same_path": same_path,
+                "line_relation": line_relation,
+                "same_category": left["category"] == right["category"],
+                "wording_overlap": _safe_wording_overlap(left, right),
+                "both_match_single_expected": both_match,
+                "possible_overlap": bool(same_path and (
+                    line_relation in ("same", "near") or both_match
+                )),
+                "manual_semantic_triage_required": True,
+            })
     return {
-        "version": 1,
+        "version": 2,
         "expected_find": expected_find,
         "finding_count": len(findings),
         "findings": diagnostics,
+        "pair_count": total_pairs,
+        "pairs_truncated": len(pairs) != total_pairs,
+        "pairs": pairs,
         "manual_audit_required": True,
     }
+
+
+def _preflight_fixture(case):
+    """Reject a malformed complete fixture before any billable model request."""
+    try:
+        return validate_case_syntax(case)
+    except (SyntaxError, ValueError):
+        raise Problem("pilot_fixture_syntax_invalid") from None
 
 
 def run_one(profile, case_id, key, *, http=None):
@@ -289,6 +375,7 @@ def run_one(profile, case_id, key, *, http=None):
     if case_id not in CASE_IDS or profile not in PROFILES:
         raise ValueError("pilot_not_allowlisted")
     case = load_cases(case_id=case_id)[0]
+    syntax_status = _preflight_fixture(case)
     request = build_pilot_request(case, profile)
     result, usage = send_single_request(request, key, http=http)
     gt = load_ground_truth(case_id)
@@ -298,6 +385,8 @@ def run_one(profile, case_id, key, *, http=None):
         "mode": "paid_result",
         "profile": profile,
         "case_id": case_id,
+        "fixture_sha256": _fixture_sha256(case),
+        "syntax_status": syntax_status,
         "model": PROFILES[profile]["model"],
         "status": "review_valid",
         "tp": match["tp"],
@@ -323,6 +412,7 @@ def command(args):
         raise Problem("pilot_case_not_allowed")
     if args.profile not in PROFILES:
         raise Problem("pilot_profile_not_allowed")
+    _preflight_fixture(case[0])
     request = build_pilot_request(case[0], args.profile)
     size = len(encode_request(request))
     estimate = planned_cost_usd(size, args.profile)

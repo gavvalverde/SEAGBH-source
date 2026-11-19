@@ -9,6 +9,7 @@ import unittest
 from leak_guard import check_leak
 from prompt_builder import build_request
 from run_bench import load_cases, load_ground_truth, evaluate_review
+from fixture_syntax import validate_case_syntax, SYNTAX_MODES
 
 
 class SuiteContractTests(unittest.TestCase):
@@ -16,6 +17,7 @@ class SuiteContractTests(unittest.TestCase):
         cases = load_cases()
         self.assertEqual(len(cases), 23)
         self.assertEqual(len({x["id"] for x in cases}), len(cases))
+        self.assertEqual(set(SYNTAX_MODES), {x["id"] for x in cases})
         labels = {True: 0, False: 0}
         for case in cases:
             with self.subTest(case=case["id"]):
@@ -28,6 +30,8 @@ class SuiteContractTests(unittest.TestCase):
                 self.assertFalse(check_leak(case, cid))
                 self.assertIsInstance(case.get("diff"), str)
                 self.assertTrue(case["diff"])
+                self.assertIn(validate_case_syntax(case),
+                              {"validated", "fragment_unverifiable", "non_python"})
                 self.assertIsInstance(case.get("pr_title"), str)
                 self.assertIsInstance(case.get("pr_body"), str)
                 payload = build_request(

@@ -220,6 +220,51 @@ recuperam a revisão original.
 Referências: https://openrouter.ai/docs/api-reference/overview
 e https://openrouter.ai/docs/guides/best-practices/reasoning-tokens .
 
+### Correção do fixture transacional e rastreio de versões (2026-11-19)
+
+O fixture `txn-001` anterior removia `try/except` mas mantinha
+o corpo da função com indentação de `try`, introduzindo um
+`IndentationError` independente do defeito de rollback. O patch foi
+reconstruído com a mudança real de indentação, e a regressão offline
+confere sintaxe AST de **ambas** as versões sem executar código do PR.
+O gabarito continua contendo somente a falha de rollback, agora isolada.
+
+O piloto pago também executa esse preflight AST **antes** de qualquer
+requisição OpenRouter: erro de sintaxe em trecho completo retorna
+`pilot_fixture_syntax_invalid` e nenhuma chamada é feita. Os resultados
+registram `syntax_status` com valor estático, inclusive
+`fragment_unverifiable` quando o input não permite validação integral.
+
+Um validador de sintaxe offline classifica **todos os 23 casos** como
+arquivo Python completo, método completo adicionado/reconstruído,
+fragmento parcial ou arquivo não Python. Os casos completos têm parsing
+obrigatório com `ast.parse`; casos parciais são identificados e
+reportados como não verificáveis, porque compilá-los sem o restante do
+arquivo produziria falsos erros. Novos IDs exigem classificação explícita
+em `fixture_syntax.py`; CI falha para omissões.
+
+O resultado `paid_result` passa a conter `fixture_sha256`, hash SHA-256
+do input público do benchmark (sem modelo ou gabarito). O agregador
+offline verifica a impressão digital quando presente e exige a versão
+atual para `txn-001`, impedindo que o run antigo
+https://github.com/gavvalverde/SEAGBH-source/actions/runs/44594431651
+seja comparado inadvertidamente com a versão corrigida. Outros
+resultados históricos sem hash continuam permitidos, mas podem exigir
+verificação de proveniência manual.
+
+### Auditoria de múltiplos achados, sem texto livre
+
+A auditoria estruturada v2 inclui sinais por par de achados, com
+índices, igualdade de path, proximidade de linha, sobreposição
+linguística *somente em faixas fixas* e indícios de correspondência
+ao mesmo gabarito. No caso `txn-001`, informa apenas booleanos sobre
+termos transacionais versus sintaxe, sem título, corpo, evidência,
+path, tokens lexicais, hashes de texto do modelo ou conteúdo bruto.
+No máximo 36 pares são divulgados, com `pairs_truncated=true` se
+necessário. **Nenhuma dessas heurísticas prova duplicação ou
+independência causal, nem ajusta automaticamente FP/TP.**
+O objetivo é destacar os pares para auditoria semântica humana.
+
 ### Auditoria estruturada sem vazamento
 
 O campo `audit` é calculado em memória **após** validação do JSON e

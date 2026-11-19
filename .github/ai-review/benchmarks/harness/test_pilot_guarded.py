@@ -557,6 +557,80 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn("OPENROUTER", capture.getvalue())
         self.assertIn("pilot_paid_not_authorized", capture.getvalue())
 
+    def test_malformed_python_fixture_is_blocked_before_payment(self):
+        from argparse import Namespace
+        args = Namespace(case="txn-001", profile="deepseek-thinking-16k-8k",
+                         paid=True, confirm_single_paid_call=True, max_usd=0.05)
+        with patch("pilot_guarded.validate_case_syntax",
+                   side_effect=IndentationError("PRIVATE_PATCH_TEXT")), patch(
+                   "pilot_guarded.run_one") as model, patch.dict(
+                   os.environ, {}, clear=True):
+            with self.assertRaises(Problem) as failure:
+                command(args)
+            self.assertEqual(failure.exception.code, "pilot_fixture_syntax_invalid")
+            model.assert_not_called()
+        http = FakeHTTP([fake_reply()])
+        with patch("pilot_guarded.validate_case_syntax",
+                   side_effect=SyntaxError("PRIVATE_MODEL_SENTINEL")):
+            with self.assertRaises(Problem) as failure:
+                run_one("deepseek-thinking-16k-8k", "txn-001",
+                        "synthetic-key", http=http)
+            self.assertEqual(failure.exception.code, "pilot_fixture_syntax_invalid")
+        self.assertEqual(len(http.calls), 0)
+
+    def test_txn_multiple_findings_have_bounded_pairs_and_no_raw_text(self):
+        from pilot_guarded import _fixture_sha256
+        case_id = "txn-001"
+        private = "SECRET_PROVIDER_SINCE_NEVER_PRINT_42424"
+        f1 = {
+            "severity": "important", "category": "data-integrity",
+            "confidence": "high", "path": "src/core/database.py", "line": 301,
+            "title": "Falha de rollback", "body": "Transacao sem rollback " + private,
+            "evidence": "self.conn.commit()",
+        }
+        f2 = {
+            "severity": "important", "category": "regression",
+            "confidence": "high", "path": "src/core/database.py", "line": 302,
+            "title": "IndentationError", "body": "Erro de sintaxe: unexpected indent",
+            "evidence": "self.conn.commit()",
+        }
+        review = {"summary": private, "findings": [f1, f2]}
+        audit = safe_finding_audit(review, load_ground_truth(case_id))
+        self.assertEqual(audit["version"], 2)
+        self.assertEqual(audit["finding_count"], 2)
+        self.assertEqual(audit["pair_count"], 1)
+        self.assertFalse(audit["pairs_truncated"])
+        self.assertEqual(len(audit["pairs"]), 1)
+        pair = audit["pairs"][0]
+        self.assertEqual((pair["left_index"], pair["right_index"]), (0, 1))
+        self.assertTrue(pair["same_path"])
+        self.assertEqual(pair["line_relation"], "near")
+        self.assertFalse(pair["same_category"])
+        self.assertTrue(pair["manual_semantic_triage_required"])
+        self.assertTrue(audit["findings"][0]["causal_cues"]["transaction_terms"])
+        self.assertTrue(audit["findings"][1]["causal_cues"]["syntax_terms"])
+        dumped = json.dumps(audit, ensure_ascii=False)
+        for forbidden in (private, "src/core/database.py", "IndentationError",
+                          "Falha de rollback", "self.conn.commit()"):
+            self.assertNotIn(forbidden, dumped)
+        self.assertEqual(len(_fixture_sha256(load_cases(case_id=case_id)[0])), 64)
+
+    def test_audit_pair_cap_and_no_untrusted_text_or_path(self):
+        finding = {
+            "severity": "minor", "category": "other", "confidence": "low",
+            "path": "SECRET_PATH_NOT_TO_LOG", "line": 1,
+            "title": "PRIVATE_PROVIDER_TITLE",
+            "body": "PRIVATE_PROVIDER_BODY", "evidence": "PRIVATE_PROVIDER_EVIDENCE",
+        }
+        audit = safe_finding_audit({"findings": [finding] * 20},
+                                   load_ground_truth("fp-001"))
+        self.assertEqual(audit["pair_count"], 190)
+        self.assertEqual(len(audit["pairs"]), 36)
+        self.assertTrue(audit["pairs_truncated"])
+        text = json.dumps(audit)
+        for forbidden in ("SECRET_PATH", "PRIVATE_PROVIDER", "PRIVATE_PROVIDER_BODY"):
+            self.assertNotIn(forbidden, text)
+
 
 if __name__ == "__main__":
     unittest.main()

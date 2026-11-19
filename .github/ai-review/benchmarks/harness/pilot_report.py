@@ -11,8 +11,8 @@ import argparse
 import json
 from pathlib import Path
 
-from pilot_guarded import CASE_IDS, PROFILES
-from run_bench import load_ground_truth
+from pilot_guarded import CASE_IDS, PROFILES, _fixture_sha256
+from run_bench import load_ground_truth, load_cases
 
 PAID_PROFILES = frozenset({
     "deepseek-thinking-16k-8k", "gemini-thinking-2048",
@@ -54,6 +54,16 @@ def summarize(records, *, profile):
                 or item.get("calls_attempted") != 1
                 or item.get("review_published") is not False):
             raise ValueError("invalid_validated_result")
+        # After txn-001 fixture repair, old results on the syntactically
+        # invalid diff MUST NOT be compared to the current benchmark.
+        current_case = load_cases(case_id=cid)[0]
+        fingerprint = item.get("fixture_sha256")
+        if cid == "txn-001" and fingerprint is None:
+            raise ValueError("stale_txn_fixture_result")
+        if fingerprint is not None and fingerprint != _fixture_sha256(current_case):
+            raise ValueError("fixture_revision_mismatch")
+        if cid == "txn-001" and item.get("syntax_status") != "validated":
+            raise ValueError("txn_syntax_status_unverified")
         tp, fp, fn = item.get("tp"), item.get("fp"), item.get("fn")
         if not all(_counter(v, 25) for v in (tp, fp, fn)):
             raise ValueError("invalid_counters")
