@@ -231,8 +231,8 @@ class Integration(Offline):
         expected = core.build_payload(pinned.title, pinned.body, collected.diff,
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
-        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 16384))
-        self.assertEqual(expected["reasoning"], {"effort": "low"})
+        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 8192))
+        self.assertEqual(expected["reasoning"], {"effort": "none"})
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
@@ -459,14 +459,14 @@ class Transport(Offline):
         self.assertEqual(model.complete(core.build_payload("t", "b", "d")), review())
         self.assertEqual(http.calls[0][0:3], ("openrouter.ai", "POST", "/api/v1/chat/completions"))
 
-    def test_openrouter_posts_bounded_low_effort_payload_unchanged(self):
+    def test_openrouter_posts_bounded_nonthinking_payload(self):
         http = FakeHTTP([envelope()])
         payload = core.build_payload("T", "B", "D")
         OpenRouter("synthetic-key", http=http).complete(payload)
         self.assertEqual(len(http.calls), 1)
         sent = json.loads(http.calls[0][4].decode("utf-8"))
-        self.assertEqual(sent["reasoning"], {"effort": "low"})
-        self.assertEqual(sent["max_tokens"], 16384)
+        self.assertEqual(sent["reasoning"], {"effort": "none"})
+        self.assertEqual(sent["max_tokens"], 8192)
         self.assertEqual(sent["model"], "deepseek/deepseek-v4.1-flash-1017")
 
     def test_400_401_do_not_retry(self):
@@ -537,6 +537,39 @@ class Transport(Offline):
                                         "reasoning_tokens": 15000,
                                         "visible_tokens": 1384})
         self.assertFalse(gh.posts)
+
+    def test_nonthinking_setting_ignored_by_provider_fails_closed(self):
+        reply = json.loads(envelope(review()).body)
+        reply["usage"] = {
+            "completion_tokens": 100,
+            "completion_tokens_details": {"reasoning_tokens": 91},
+        }
+        wire = HttpReply(200, json.dumps(reply).encode("utf-8"))
+        http = FakeHTTP([wire])
+        with self.assertRaises(Problem) as caught:
+            OpenRouter("synthetic-key", http=http).complete(
+                core.build_payload("T", "B", "D")
+            )
+        self.assertEqual(caught.exception.code, "reasoning_control_ignored")
+        self.assertEqual(caught.exception.usage, {
+            "completion_tokens": 100, "reasoning_tokens": 91, "visible_tokens": 9,
+        })
+        self.assertEqual(len(http.calls), 1)
+
+        github = FakeGitHub()
+        result = r.run_review(event(), "true", github,
+            OpenRouter("synthetic-key", http=FakeHTTP([wire])),
+            version="test-nonthinking")
+        self.assertEqual(result.code, "reasoning_control_ignored")
+        self.assertFalse(result.published)
+        self.assertFalse(github.posts)
+
+    def test_nonthinking_valid_completion_passes_through(self):
+        http = FakeHTTP([envelope(review())])
+        outcome = r.run_review(event(), "true", FakeGitHub(),
+            OpenRouter("synthetic-key", http=http), version="nonthink-ok")
+        self.assertTrue(outcome.published)
+        self.assertEqual(len(http.calls), 1)
 
     def test_oversized_response_is_rejected(self):
         http = FakeHTTP([HttpReply(200, b'x' * (OpenRouter.MAX_RESPONSE + 1))])

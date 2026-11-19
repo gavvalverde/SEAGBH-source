@@ -40,9 +40,9 @@ def test_prompt():
     r = build_request("Fix","Desc","diff","{}")
     check("model", r["model"] == MODEL)
     check("temp", r["temperature"] == TEMPERATURE)
-    check("max_tokens", r["max_tokens"] == MAX_TOKENS == 16384)
+    check("max_tokens", r["max_tokens"] == MAX_TOKENS == 8192)
     check("bounded final JSON guidance", "RESPOSTA CONCISA" in r["messages"][0]["content"])
-    check("DeepSeek low reasoning", r["reasoning"] == {"effort": REASONING_EFFORT} == {"effort": "low"})
+    check("DeepSeek non-thinking pilot", r["reasoning"] == {"effort": REASONING_EFFORT} == {"effort": "none"})
     check("alternate model uses default reasoning", "reasoning" not in build_request("T", "B", "D", model="minimax/minimax-m2.7"))
     sys_c = r["messages"][0]["content"]
     check("TWO-PASS", "TWO-PASS" in sys_c)

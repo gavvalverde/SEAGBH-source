@@ -11,10 +11,10 @@ from typing import Optional
 
 MODEL = "deepseek/deepseek-v4.1-flash-1017"
 TEMPERATURE = 0.3
-MAX_TOKENS = 16384
-# OpenRouter metadata: DeepSeek V4.1 Flash 1017 defaults to high reasoning.
-# Low is supported and preserves more of the same completion budget for JSON.
-REASONING_EFFORT = "low"
+MAX_TOKENS = 8192
+# PR #22 used 15,097 of 16,384 completion tokens on reasoning even with low.
+# Non-thinking mode is a controlled pilot, not verified for every provider.
+REASONING_EFFORT = "none"
 
 
 def _system_prompt() -> str:
@@ -202,8 +202,8 @@ def build_request(title, body, diff, context="", trunc_note="", omit_info="", mo
         "temperature": TEMPERATURE,
         "max_tokens": MAX_TOKENS,
     }
-    # Only the pinned production model has a verified low-effort setting.
-    # Alternate benchmark models keep their existing provider defaults.
+    # Only the pinned DeepSeek model opts out of hidden reasoning.
+    # Alternate benchmark models keep their provider defaults.
     if model_id == MODEL:
         request["reasoning"] = {"effort": REASONING_EFFORT}
     return request
