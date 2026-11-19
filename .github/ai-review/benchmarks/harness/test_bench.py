@@ -360,7 +360,7 @@ def test_evaluate():
 
 def test_loaders():
     print("\n── loaders ──")
-    check(f"20 cases", len(load_cases()) == 20)
+    check("23 benchmark cases (20 historical + 3 PR22)", len(load_cases()) == 23)
     check("single", len(load_cases("off-001")) == 1)
     check("filter", len(load_cases(tag_filter="security")) > 0)
     check("gt", load_ground_truth("off-001") is not None)
