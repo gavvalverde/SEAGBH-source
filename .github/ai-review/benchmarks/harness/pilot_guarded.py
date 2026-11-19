@@ -34,6 +34,12 @@ PROFILES = {
         "max_tokens": 8192,
         "reasoning": {"max_tokens": 2048},
     },
+    "gemini-thinking-4096-compact": {
+        "model": "google/gemini-2.5-flash",
+        # Shared ceiling for hidden reasoning and visible JSON.
+        "max_tokens": 6144,
+        "reasoning": {"max_tokens": 4096},
+    },
 }
 # USD per million tokens, OpenRouter list price consulted 2026-11-19.
 # Estimates exclude credit purchase fees, provider price changes and rebates.
@@ -54,7 +60,7 @@ def build_pilot_request(case, profile):
     # Apply only the reviewed, static allowlist; no caller-provided model IDs.
     request["max_tokens"] = selected["max_tokens"]
     request["reasoning"] = dict(selected["reasoning"])
-    if profile == "gemini-thinking-2048":
+    if profile in ("gemini-thinking-2048", "gemini-thinking-4096-compact"):
         request["temperature"] = 1.0
         request["response_format"] = {"type": "json_object"}
         request["provider"] = {"require_parameters": True}
@@ -70,7 +76,7 @@ def encode_request(request):
 
 def planned_cost_usd(payload_bytes, profile):
     """Proxy financeiro para planejamento, NÃO limite real de faturamento."""
-    if profile != "gemini-thinking-2048":
+    if profile not in ("gemini-thinking-2048", "gemini-thinking-4096-compact"):
         return None  # preço do modelo legado não fixado neste piloto
     return round((payload_bytes * GEMINI_INPUT_USD_M
                   + PROFILES[profile]["max_tokens"] * GEMINI_OUTPUT_USD_M)
@@ -111,8 +117,10 @@ def send_single_request(request, key, *, http=None):
     if (usage is not None and
             usage["completion_tokens"] > request["max_tokens"]):
         raise Problem("pilot_completion_budget_exceeded", usage=usage)
-    if (request.get("reasoning") == {"max_tokens": 2048}
-            and usage is not None and usage.get("reasoning_tokens", 0) > 2048):
+    reasoning = request.get("reasoning")
+    reasoning_limit = reasoning.get("max_tokens") if isinstance(reasoning, dict) else None
+    if (type(reasoning_limit) is int and usage is not None
+            and usage.get("reasoning_tokens", 0) > reasoning_limit):
         raise Problem("pilot_reasoning_budget_exceeded", usage=usage)
     validated = validate_review(content)
     # Do not expose, save, copy or print the raw model content.
@@ -177,7 +185,7 @@ def command(args):
         ))
         if not trusted_manual_action:
             raise Problem("pilot_paid_blocked_in_ci")
-    if args.profile != "gemini-thinking-2048":
+    if args.profile not in ("gemini-thinking-2048", "gemini-thinking-4096-compact"):
         raise Problem("pilot_price_not_verified")
     if (not args.confirm_single_paid_call
             or os.environ.get("SEAGBH_AI_PILOT_PAID_ENABLED") != "owner_confirmed"):
