@@ -252,6 +252,86 @@ class PilotTests(unittest.TestCase):
                     send_single_request(payload, "synthetic-key", http=http)
                 self.assertEqual(len(http.calls), 1)
 
+    def test_incomplete_response_reports_safe_finish_code_and_token_counters(self):
+        from pilot_guarded import INCOMPLETE_FINISH_CODES
+        for finish, expected in (
+            ("length", "pilot_incomplete_length"),
+            ("content_filter", "pilot_incomplete_content_filter"),
+            ("tool_calls", "pilot_incomplete_tool_calls"),
+            ("error", "pilot_incomplete_provider_error"),
+            ("UPSTREAM_SECRET_DO_NOT_PRINT", "pilot_incomplete_response"),
+        ):
+            with self.subTest(finish=finish):
+                http = FakeHTTP([fake_reply(
+                    content="PRIVATE_RESPONSE_82937", finish=finish,
+                    usage={"completion_tokens": 24576,
+                           "completion_tokens_details": {"reasoning_tokens": 24500}},
+                )])
+                env = {
+                    "OPENROUTER_API_KEY": "synthetic-key",
+                    "SEAGBH_AI_PILOT_PAID_ENABLED": "owner_confirmed",
+                }
+                with patch.dict(os.environ, env, clear=True), patch(
+                    "pilot_guarded.HTTPS", return_value=http
+                ), redirect_stdout(io.StringIO()) as out:
+                    code = main([
+                        "--case", "r22-ddl-001",
+                        "--profile", "deepseek-thinking-16k-8k",
+                        "--paid", "--confirm-single-paid-call",
+                        "--max-usd", "0.05",
+                    ])
+                self.assertEqual(code, 1)
+                self.assertEqual(len(http.calls), 1)
+                result = json.loads(out.getvalue())
+                self.assertEqual(result["code"], expected)
+                self.assertEqual(result["reported_usage"], {
+                    "completion_tokens": 24576,
+                    "reasoning_tokens": 24500,
+                    "visible_tokens": 76,
+                })
+                self.assertEqual(result["requested_max_completion_tokens"], 24576)
+                self.assertEqual(result["requested_reasoning_tokens"], 16384)
+                self.assertTrue(result["calls_may_be_billed"])
+                self.assertNotIn("PRIVATE_RESPONSE", out.getvalue())
+                self.assertNotIn("UPSTREAM_SECRET", out.getvalue())
+                self.assertNotIn("synthetic-key", out.getvalue())
+        self.assertEqual(len(INCOMPLETE_FINISH_CODES), 4)
+
+    def test_incomplete_response_without_valid_usage_exposes_no_provider_data(self):
+        from pilot_guarded import _safe_incomplete_usage
+        for usage in (
+            None, {}, {"completion_tokens": "STOLEN_TEXT"},
+            {"completion_tokens": -1},
+            {"completion_tokens": 5, "reasoning_tokens": 10, "visible_tokens": -5},
+        ):
+            with self.subTest(usage=usage):
+                if isinstance(usage, dict) and usage.get("completion_tokens") == 5:
+                    self.assertEqual(_safe_incomplete_usage(usage),
+                                     {"completion_tokens": 5})
+                else:
+                    self.assertIsNone(_safe_incomplete_usage(usage))
+        http = FakeHTTP([fake_reply(
+            content="PRIVATE_RESPONSE_8200", finish="length",
+            usage={"completion_tokens": "SECRET_UPSTREAM_USAGE"},
+        )])
+        with patch.dict(os.environ, {
+            "OPENROUTER_API_KEY": "synthetic-key",
+            "SEAGBH_AI_PILOT_PAID_ENABLED": "owner_confirmed",
+        }, clear=True), patch("pilot_guarded.HTTPS", return_value=http), redirect_stdout(
+            io.StringIO()
+        ) as out:
+            code = main([
+                "--case", "r22-ddl-001", "--profile", "deepseek-thinking-16k-8k",
+                "--paid", "--confirm-single-paid-call", "--max-usd", "0.05",
+            ])
+        self.assertEqual(code, 1)
+        self.assertEqual(len(http.calls), 1)
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["code"], "pilot_incomplete_length")
+        self.assertIsNone(result["reported_usage"])
+        self.assertNotIn("SECRET", out.getvalue())
+        self.assertNotIn("PRIVATE_RESPONSE", out.getvalue())
+
     def test_compact_profile_limits_are_checked_without_network_or_retry(self):
         case = load_cases(case_id=CASE_IDS[0])[0]
         req = build_pilot_request(case, "gemini-thinking-4096-compact")
