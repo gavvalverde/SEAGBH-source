@@ -22,6 +22,7 @@ sys.path.insert(0, str(PRODUCTION))
 from core import validate_review
 from transport import HTTPS, Problem, _safe_output_usage, decode
 from prompt_builder import build_request
+from fixture_syntax import validate_case_syntax
 from run_bench import (
     load_cases, load_ground_truth, evaluate_review, match_score,
     _line_close, _semantic_match,
@@ -361,11 +362,20 @@ def safe_finding_audit(review, gt):
     }
 
 
+def _preflight_fixture(case):
+    """Reject a malformed complete fixture before any billable model request."""
+    try:
+        return validate_case_syntax(case)
+    except (SyntaxError, ValueError):
+        raise Problem("pilot_fixture_syntax_invalid") from None
+
+
 def run_one(profile, case_id, key, *, http=None):
     """Returns only numeric grading metrics and fixed model/case metadata."""
     if case_id not in CASE_IDS or profile not in PROFILES:
         raise ValueError("pilot_not_allowlisted")
     case = load_cases(case_id=case_id)[0]
+    syntax_status = _preflight_fixture(case)
     request = build_pilot_request(case, profile)
     result, usage = send_single_request(request, key, http=http)
     gt = load_ground_truth(case_id)
@@ -376,6 +386,7 @@ def run_one(profile, case_id, key, *, http=None):
         "profile": profile,
         "case_id": case_id,
         "fixture_sha256": _fixture_sha256(case),
+        "syntax_status": syntax_status,
         "model": PROFILES[profile]["model"],
         "status": "review_valid",
         "tp": match["tp"],
@@ -401,6 +412,7 @@ def command(args):
         raise Problem("pilot_case_not_allowed")
     if args.profile not in PROFILES:
         raise Problem("pilot_profile_not_allowed")
+    _preflight_fixture(case[0])
     request = build_pilot_request(case[0], args.profile)
     size = len(encode_request(request))
     estimate = planned_cost_usd(size, args.profile)
