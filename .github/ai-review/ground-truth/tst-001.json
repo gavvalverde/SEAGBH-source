@@ -13,7 +13,8 @@
       "description": "LIMIT negativo do SQLite preserva todos os registros mas retorna quantidade removida maior que zero"
     },
     "confidence_expected": "high",
-    "behavior": "limite=-1 gera SELECT ... LIMIT -1 sem truncar registros; DELETE não exclui linhas e a função retorna total+1, afirmando ter excluído linhas não removidas."
+    "behavior": "limite=-1 gera SELECT ... LIMIT -1 sem truncar registros; DELETE não exclui linhas e a função retorna total+1, afirmando ter excluído linhas não removidas.",
+    "mechanism_contract": "negative_sqlite_limit"
   },
   "delta": {
     "correct": "rejeitar limite < 0 ou definir contrato explícito",
