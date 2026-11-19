@@ -75,7 +75,7 @@ class IntegrationContracts(unittest.TestCase):
         payload = core.build_payload("Title", "Body", "Diff")
         self.assertEqual(payload["model"], "deepseek/deepseek-v4.1-flash-1017")
         self.assertEqual(payload["reasoning"], {"effort": "low"})
-        self.assertEqual(payload["max_tokens"], 8192)
+        self.assertEqual(payload["max_tokens"], 16384)
         self.assertNotIn("reasoning", core.build_payload(
             "T", "B", "D", model="minimax/minimax-m2.7"))
 
