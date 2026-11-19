@@ -67,6 +67,10 @@ def test_prompt():
     # Granularity rule present
     check("GRANULARITY", "FINDING GRANULARITY" in sys_c)
     check("GRANULARITY rule", "at most ONE finding per independent root cause" in sys_c)
+    check("Root cause counterfactual check", "FINAL ROOT-CAUSE COLLISION CHECK" in sys_c
+          and "counterfactual" in sys_c and "independently actionable fixes" in sys_c)
+    check("Severity calibration", "SEVERITY AND CATEGORY CALIBRATION" in sys_c
+          and "actual exploitability" in sys_c and "primary category" in sys_c)
     check("GRANULARITY preserve existing", "TWO-PASS" in sys_c and "EVIDENCE" in sys_c
           and "SEVERITY" in sys_c)
 
