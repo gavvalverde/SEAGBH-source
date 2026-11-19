@@ -69,14 +69,19 @@ DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
 temperature 0.3, max_tokens 8192, with no tools or duplicate prompt.
 Transport accepts only fixed HTTPS origins, never follows redirects, and bounds
 responses (GitHub 2 MiB, OpenRouter 1 MiB) and encoded model requests (256 KiB).
-Socket connection/read timeouts are 5/30 seconds; the response-read deadline is
-60 seconds from request start. The connection timeout is passed to HTTPSConnection;
-the read timeout is set on the connected socket before request/headers. The body
-loop retains that socket reference across getresponse(), checks the monotonic
-deadline and applies min(30, remaining) before each read1. It stops when the
-response closes its file and explicitly closes response/connection in finally,
-including Connection: close and error paths. The job has a 10-minute outer
-timeout. DNS/platform timeout behavior and the actual Ubuntu runtime still need operational review.
+GitHub API transport retains 5s connection, 30s read, and 60s total deadlines.
+The OpenRouter model transport now uses a 5s connection, 120s read and 180s
+total budget. This change follows a real PR #22 network_timeout at the model
+stage after approximately 63 seconds on 2026-11-19 (run 44524958394).
+A longer bounded deadline accommodates slower non-streaming model responses;
+it does not guarantee success, reduce token costs, or prove the provider
+completed its work. The existing 10-minute job outer timeout remains.
+The connection timeout is passed to HTTPSConnection and the read timeout is
+set on the socket before request/headers. The body loop retains that socket
+reference across getresponse(), checks the monotonic deadline and applies
+min(read_timeout, remaining) before each read1. It closes resources in
+finally, including Connection: close and error paths. Actual network
+conditions and provider latency may still trigger a timeout.
 
 At most two OpenRouter attempts: one retry with a 1-second backoff for 429/5xx.
 400/401 and network errors are not automatically retried. A network failure may

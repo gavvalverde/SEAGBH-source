@@ -96,7 +96,12 @@ class OpenRouter:
         if not isinstance(key, str) or not key or "\n" in key or "\r" in key:
             raise Problem("authentication_error")
         self._key = key
-        self.http = http or HTTPS(max_response=self.MAX_RESPONSE)
+        # Reviews with 8192 output tokens can exceed the GitHub API's tighter
+        # transport budget. Keep the model request bounded, but allow enough
+        # time for inference without weakening GitHub API timeouts.
+        self.http = http if http is not None else HTTPS(
+            read_timeout=120, total_timeout=180, max_response=self.MAX_RESPONSE,
+        )
         self.sleep = sleep
 
     def complete(self, payload):

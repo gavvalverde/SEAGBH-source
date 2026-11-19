@@ -440,6 +440,19 @@ class Integration(Offline):
 
 
 class Transport(Offline):
+    def test_model_transport_has_longer_bounded_deadline_than_github(self):
+        model = OpenRouter("synthetic-key")
+        github = HTTPS()
+        self.assertIsInstance(model.http, HTTPS)
+        self.assertEqual(model.http.connect_timeout, 5)
+        self.assertEqual(model.http.read_timeout, 120)
+        self.assertEqual(model.http.total_timeout, 180)
+        self.assertEqual(model.http.max_response, OpenRouter.MAX_RESPONSE)
+        self.assertEqual((github.connect_timeout, github.read_timeout,
+                          github.total_timeout), (5, 30, 60))
+        custom_http = FakeHTTP([envelope()])
+        self.assertIs(OpenRouter("synthetic-key", http=custom_http).http, custom_http)
+
     def test_openrouter_200_returns_content_for_core_validation(self):
         http = FakeHTTP([envelope()]);model = OpenRouter("synthetic-key", http=http)
         self.assertEqual(model.complete(core.build_payload("t", "b", "d")), review())
