@@ -12,6 +12,26 @@ on:
           - r22-typ-001
           - r22-ddl-001
           - r22-ci-001
+          - brk-001
+          - cln-001
+          - dep-001
+          - exc-001
+          - fp-001
+          - frk-001
+          - grn-001
+          - inj-001
+          - lic-001
+          - mnt-001
+          - off-001
+          - off-002
+          - osc-001
+          - pin-001
+          - pth-001
+          - rac-001
+          - sec-001
+          - seg-001
+          - tst-001
+          - txn-001
       reasoning_profile:
         description: Perfil allowlisted Gemini ou DeepSeek (um teste por vez)
         type: choice
