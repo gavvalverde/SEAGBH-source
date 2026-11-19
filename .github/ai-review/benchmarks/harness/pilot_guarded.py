@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import sys
 
@@ -20,7 +21,10 @@ sys.path.insert(0, str(PRODUCTION))
 from core import validate_review
 from transport import HTTPS, Problem, _safe_output_usage, decode
 from prompt_builder import build_request
-from run_bench import load_cases, load_ground_truth, evaluate_review
+from run_bench import (
+    load_cases, load_ground_truth, evaluate_review, match_score,
+    _line_close, _semantic_match,
+)
 
 CASE_IDS = ("r22-typ-001", "r22-ddl-001", "r22-ci-001")
 PROFILES = {
@@ -156,6 +160,70 @@ def send_single_request(request, key, *, http=None):
     return validated.review, usage
 
 
+def safe_finding_audit(review, gt):
+    """Bounded, structured diagnostics only. NEVER include provider text.
+
+    NOT a proof of semantic correctness and NOT a replacement for human audit.
+    Paths, titles, bodies, evidence, symbols and raw model text are excluded.
+    Severity/category/confidence are schema-constrained enums.
+    """
+    findings = review.get("findings", [])
+    expected = gt.get("expected", {}) if gt else {}
+    expected_find = expected.get("find") is True
+    diagnostics = []
+    for index, finding in enumerate(findings[:25]):
+        location = expected.get("location", {}) if expected_find else {}
+        line = finding.get("line")
+        text = " ".join(
+            str(finding.get(key) or "") for key in ("title", "body", "evidence")
+        ).casefold()
+        cause_signals = None
+        if gt and gt.get("id") == "r22-typ-001":
+            # Coarse heuristic cues, not quotes or a verdict on correctness.
+            cause_signals = {
+                "type_error": bool(re.search(r"\\btypeerror\\b", text)),
+                "unhashable_input": bool(re.search(
+                    r"unhash|n[aã]o.hash|lista|dicion|\\blist\\b|\\bdict\\b|\\[\\]|\\{\\}",
+                    text,
+                )),
+                "membership_site": (
+                    "_operacoes" in text or "operacao not in" in text
+                    or "frozenset" in text
+                ),
+            }
+        diagnostics.append({
+            "index": index,
+            "severity": finding["severity"],
+            "category": finding["category"],
+            "confidence": finding["confidence"],
+            "path_matches_expected": (
+                finding.get("path") == expected.get("path")
+                if expected_find else None
+            ),
+            "line_supplied": line is not None,
+            "line_near_expected": (
+                _line_close(line, expected["line"])
+                if expected_find and line is not None
+                and expected.get("line") is not None else None
+            ),
+            "semantic_match": (
+                _semantic_match(finding, location)
+                if expected_find else None
+            ),
+            "heuristic_match": (
+                match_score(finding, gt) >= 0 if expected_find else False
+            ),
+            "causal_cues": cause_signals,
+        })
+    return {
+        "version": 1,
+        "expected_find": expected_find,
+        "finding_count": len(findings),
+        "findings": diagnostics,
+        "manual_audit_required": True,
+    }
+
+
 def run_one(profile, case_id, key, *, http=None):
     """Returns only numeric grading metrics and fixed model/case metadata."""
     if case_id not in CASE_IDS or profile not in PROFILES:
@@ -163,7 +231,9 @@ def run_one(profile, case_id, key, *, http=None):
     case = load_cases(case_id=case_id)[0]
     request = build_pilot_request(case, profile)
     result, usage = send_single_request(request, key, http=http)
-    match = evaluate_review(result, load_ground_truth(case_id))
+    gt = load_ground_truth(case_id)
+    match = evaluate_review(result, gt)
+    audit = safe_finding_audit(result, gt)
     return {
         "mode": "paid_result",
         "profile": profile,
@@ -173,6 +243,7 @@ def run_one(profile, case_id, key, *, http=None):
         "tp": match["tp"],
         "fp": match["fp"],
         "fn": match["fn"],
+        "audit": audit,
         "usage": usage,
         # If the provider omits counters, compliance remains UNVERIFIED.
         "reasoning_budget_verified": bool(
