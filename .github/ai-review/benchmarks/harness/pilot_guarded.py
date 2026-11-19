@@ -62,6 +62,35 @@ DEEPSEEK_OUTPUT_USD_M = 0.50
 MAX_PILOT_USD = 0.05
 MAX_REQUEST_BYTES = 65536
 
+# Fixed, non-provider-controlled diagnostic codes. Never log native_finish_reason,
+# raw response, message content, provider error text or unrecognized strings.
+INCOMPLETE_FINISH_CODES = {
+    "length": "pilot_incomplete_length",
+    "content_filter": "pilot_incomplete_content_filter",
+    "tool_calls": "pilot_incomplete_tool_calls",
+    "error": "pilot_incomplete_provider_error",
+}
+INCOMPLETE_CODES = frozenset(INCOMPLETE_FINISH_CODES.values()) | {
+    "pilot_incomplete_response",
+}
+
+
+def _safe_incomplete_usage(usage):
+    """Fail closed: export only small validated numeric counters."""
+    if not isinstance(usage, dict):
+        return None
+    completed = usage.get("completion_tokens")
+    if type(completed) is not int or not 0 <= completed <= 1_000_000:
+        return None
+    result = {"completion_tokens": completed}
+    reasoning = usage.get("reasoning_tokens")
+    visible = usage.get("visible_tokens")
+    if (type(reasoning) is int and type(visible) is int
+            and 0 <= reasoning <= completed and visible == completed - reasoning):
+        result["reasoning_tokens"] = reasoning
+        result["visible_tokens"] = visible
+    return result
+
 
 def build_pilot_request(case, profile):
     if profile not in PROFILES:
@@ -132,7 +161,12 @@ def send_single_request(request, key, *, http=None):
         raise Problem("pilot_invalid_envelope")
     choice = choices[0]
     if choice.get("finish_reason") != "stop":
-        raise Problem("pilot_incomplete_response", usage=_safe_output_usage(envelope))
+        # OpenRouter normalizes finish_reason; only our mapped codes are exposed.
+        # Incomplete output may already be billed; NEVER retry automatically.
+        code = INCOMPLETE_FINISH_CODES.get(
+            choice.get("finish_reason"), "pilot_incomplete_response"
+        ) if type(choice.get("finish_reason")) is str else "pilot_incomplete_response"
+        raise Problem(code, usage=_safe_output_usage(envelope))
     message = choice.get("message")
     if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
         raise Problem("pilot_invalid_envelope")
@@ -315,9 +349,20 @@ def main(argv=None):
         print(json.dumps(output, sort_keys=True, ensure_ascii=True))
         return 0
     except Problem as error:
-        # Fixed codes only. Never print exception context, raw messages or key.
-        print(json.dumps({"mode": "blocked_or_failed", "code": error.code,
-                          "calls_may_be_billed": bool(args.paid)}, sort_keys=True))
+        # Fixed codes and validated counts only. Never print provider strings,
+        # raw messages or keys. A previous incomplete response cannot be recovered.
+        output = {"mode": "blocked_or_failed", "code": error.code,
+                  "calls_may_be_billed": bool(args.paid)}
+        if error.code in INCOMPLETE_CODES:
+            output["reported_usage"] = _safe_incomplete_usage(error.usage)
+            # Trusted static profile limits for reading token consumption.
+            selected = PROFILES.get(args.profile)
+            if selected is not None:
+                output["requested_max_completion_tokens"] = selected["max_tokens"]
+                budget = selected["reasoning"].get("max_tokens")
+                if type(budget) is int:
+                    output["requested_reasoning_tokens"] = budget
+        print(json.dumps(output, sort_keys=True))
         return 1
 
 

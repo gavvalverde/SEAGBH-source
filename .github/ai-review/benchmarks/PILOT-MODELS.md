@@ -161,6 +161,33 @@ produção nem PRs completos. A primeira tentativa paga já foi consumida;
 aumentar raciocínio exige autorização explícita para nova chamada e
 verificação do saldo/limite real na chave do OpenRouter.
 
+### Falha de completude e diagnóstico seguro (2026-11-19)
+
+O teste pago `r22-ddl-001` no run
+https://github.com/gavvalverde/SEAGBH-source/actions/runs/44583258190
+retornou `pilot_incomplete_response`. O código anterior rejeitava qualquer
+`finish_reason != stop` mas omitira `finish_reason` e `usage` do log:
+não é possível recuperar a causa ou os tokens daquela execução.
+A OpenRouter documenta `finish_reason=length` quando o orçamento total
+é consumido, inclusive somente por raciocínio, mas **não há prova de que
+isso aconteceu** nessa execução. Uma chamada pode ser faturada mesmo
+quando falha.
+
+Novas execuções registram apenas códigos derivados de razões conhecidas:
+`pilot_incomplete_length`, `pilot_incomplete_content_filter`,
+`pilot_incomplete_tool_calls`, `pilot_incomplete_provider_error`;
+valores desconhecidos são reduzidos a `pilot_incomplete_response`.
+Para falhas de completude, o CLI mostra contadores inteiros validados de
+conclusão/raciocínio/resposta quando o provedor os informa, além dos tetos
+solicitados pelo perfil estático. **Não** registra strings do provedor,
+`native_finish_reason`, conteúdo, headers ou prompt. O caminho permanece
+fail-closed, sem reenvio da chamada e sem publicação. Essas métricas
+ajudam a distinguir truncamento de outras interrupções, mas não
+recuperam a revisão original.
+
+Referências: https://openrouter.ai/docs/api-reference/overview
+e https://openrouter.ai/docs/guides/best-practices/reasoning-tokens .
+
 ### Auditoria estruturada sem vazamento
 
 O campo `audit` é calculado em memória **após** validação do JSON e
