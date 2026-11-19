@@ -7,15 +7,16 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from pilot_guarded import CASE_IDS, PROFILES
+from pilot_guarded import CASE_IDS, PROFILES, _fixture_sha256
 from pilot_report import main, summarize
-from run_bench import load_ground_truth
+from run_bench import load_ground_truth, load_cases
 
 
 def sample(cid, *, profile="deepseek-thinking-16k-8k"):
     positive = load_ground_truth(cid)["expected"]["find"] is True
     return {
         "case_id": cid,
+        "fixture_sha256": _fixture_sha256(load_cases(case_id=cid)[0]),
         "model": PROFILES[profile]["model"],
         "profile": profile,
         "mode": "paid_result",
@@ -70,6 +71,8 @@ class ReportTests(unittest.TestCase):
             [{**valid, "usage": {"completion_tokens": 1, "reasoning_tokens": 2,
                                 "visible_tokens": -1}}],
             [{**valid, "calls_attempted": 2}],
+            [{**sample("txn-001"), "fixture_sha256": "0" * 64}],
+            [{k: v for k, v in sample("txn-001").items() if k != "fixture_sha256"}],
             [{**valid, "review_published": True}],
         ]:
             with self.subTest(bad=bad):
