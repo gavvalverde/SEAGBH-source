@@ -1,10 +1,12 @@
 # Piloto de modelos do AI Reviewer | fase A/B controlada
 
-Estado: **um piloto pago executado em 2026-11-19; perfil alternativo preparado offline**.
+Estado: **dois pilotos pagos Gemini executados em 2026-11-19; DeepSeek 16k/8k preparado offline**.
 A primeira execução (`r22-typ-001`, workflow 44573862648) retornou JSON válido,
 `tp=0, fp=1, fn=1` pelo avaliador heurístico, 1.698 tokens de raciocínio
-e 380 tokens visíveis. Isso não é auditoria semântica do finding, pois a
-resposta bruta não é armazenada. Nenhuma repetição paga está autorizada
+e 380 tokens visíveis. O segundo teste (`44577308359`) consumiu 2478
+tokens de raciocínio e 309 visíveis, com os mesmos TP/FP/FN.
+Isso não é auditoria semântica do finding, pois a resposta bruta não
+é armazenada. Nenhuma repetição paga está autorizada
 automaticamente. Produção não muda: DeepSeek V4.1 Flash 1017 sem raciocínio.
 
 ## Escolha do primeiro candidato
@@ -18,9 +20,17 @@ automaticamente. Produção não muda: DeepSeek V4.1 Flash 1017 sem raciocínio.
   inclui raciocínio e resposta JSON; restam 2048 tokens se usar 4096 para
   raciocínio. Como o primeiro teste usou 1698 de 2048, não atingiu seu teto:
   aumentá-lo NÃO garante mais pensamento nem melhor detecção.
-- Ambos os perfis mantêm `response_format=json_object`, provedor obrigado a
-  suportar parâmetros e `temperature=1`. O novo perfil mantém o mesmo prompt
-  e gabarito, isolando a mudança de orçamento como variável do experimento.
+- Os perfis Gemini mantêm `response_format=json_object`, provedor obrigado
+  a suportar parâmetros e `temperature=1`.
+- Perfil DeepSeek proposto: `deepseek-thinking-16k-8k`, mesmo modelo
+  de produção `deepseek/deepseek-v4.1-flash-1017`, mas com raciocínio
+  solicitado de 16.384 tokens (`reasoning.max_tokens=16384`) e
+  `max_tokens=24576` para raciocínio + JSON. A diferença (8192) é **espaço
+  reservado condicional**, não um limite independente de saída visível.
+  Se o roteador converter `reasoning.max_tokens` para nível de esforço,
+  o teto de pensamento poderá ser aproximado ou não garantido. O cliente
+  valida contadores retornados quando disponíveis, mas isso ocorre após
+  possível cobrança. O JSON/require_parameters e o prompt são preservados.
 
 O Gemini 2.5 Flash foi escolhido porque a documentação do OpenRouter anuncia
 controle direto do orçamento de pensamento, suporte a saída estruturada e
@@ -35,8 +45,11 @@ Referências:
 - https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
 - https://ai.google.dev/gemini-api/docs/pricing
 
-Preços consultados para texto: US$ 0,30/M tokens de entrada e
-US$ 2,50/M tokens de saída (pensamento incluído). Podem mudar.
+Preços consultados para texto: Gemini US$ 0,30/M entrada e US$ 2,50/M
+saída; DeepSeek Flash 1017 US$ 0,036/M entrada e US$ 0,50/M saída
+(pensamento incluído). Podem mudar. O orçamento DeepSeek 24.576 tokens
+de saída equivale a aproximadamente US$ 0,0123 de saída no preço listado,
+além da entrada, não a garantia de custo final.
 O estimador mostra custo aproximado por requisição; **não é um teto real**.
 O limite de gasto confiável precisa ser configurado na própria chave
 OpenRouter antes de qualquer teste. Não podemos verificar isso pelo GitHub.
@@ -81,8 +94,11 @@ nada no PR. O operador deve antes:
 A API pode omitir os contadores de raciocínio. Nesse caso o resultado
 aparece com `reasoning_budget_verified=false`; sucesso na geração NÃO
 significa que o limite numérico foi comprovadamente respeitado. Quando
-os contadores existem, qualquer uso acima do limite do perfil (2048/8192
-ou 4096/6144, raciocínio/total) é rejeitado, sem repetir a cobrança.
+os contadores existem, qualquer uso acima do limite do perfil (Gemini
+2048/8192 ou 4096/6144; DeepSeek 16384/24576, raciocínio/total) é
+rejeitado, sem repetir a cobrança. Para DeepSeek também se rejeita
+contagem visível acima de 8192 **se o provedor fornecer os contadores**.
+A rejeição acontece após a resposta; não garante o teto no provedor.
 
 O teste é propositalmente de **um caso e um perfil por execução**.
 Mesmo em erro de rede, a primeira chamada pode gerar cobrança. O modelo
@@ -133,6 +149,24 @@ solicita JSON conciso. Esse perfil é para benchmarks curtos, não para a
 produção nem PRs completos. A primeira tentativa paga já foi consumida;
 aumentar raciocínio exige autorização explícita para nova chamada e
 verificação do saldo/limite real na chave do OpenRouter.
+
+### Perfil experimental DeepSeek 16k pensamento / 8k resposta
+
+O perfil `deepseek-thinking-16k-8k` está no mesmo menu manual, **desabilitado
+por padrão** e isolado da produção. O `reasoning.max_tokens=16384` é
+tentativa de orçamento preciso; a documentação OpenRouter afirma que em
+modelos sem controle direto de orçamento esse valor é traduzido em um
+`effort` aproximado. A rota compatível ainda NÃO foi comprovada com essa
+combinação de parâmetros. Não afirmar que houve pensamento até 16k por
+mera configuração: medir `reasoning_tokens`, `visible_tokens` e
+`finish_reason`. Sem contadores, verificar manualmente que o limite
+permanece não comprovado. Qualidade é aferida com `r22-typ-001` e avaliação
+heurística sujeita a auditoria. Nenhum achado será publicado em PR.
+
+O primeiro teste requer nova autorização explícita, saldo e limite real
+na chave OpenRouter. Nenhuma mudança de produção é parte deste experimento.
+A estimativa é derivada da tarifa publicada em 2026-11-19 e não é um
+limite rígido de cobrança.
 
 ### Diagnóstico sem custo de API
 
