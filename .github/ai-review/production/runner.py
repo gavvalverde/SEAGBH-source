@@ -14,6 +14,7 @@ import threading
 from urllib.parse import quote
 
 import core
+import evidence
 from transport import HTTPS, Problem, decode
 
 REPOSITORY = "gavvalverde/SEAGBH-source"
@@ -172,6 +173,7 @@ class Collected:
     diff: str = field(repr=False)
     scope: core.ReviewScope = field(repr=False)
     manifest: dict = field(repr=False)
+    code_lines: dict = field(default_factory=dict, repr=False)
 
 
 def collect(github, pinned):
@@ -187,6 +189,7 @@ def collect(github, pinned):
     except (KeyError, TypeError):
         raise Problem("diff_incomplete") from None
     chunks, supplied, entries, omitted, seen = [], {}, [], [], set()
+    code_lines = {}
     for item in files:
         if not isinstance(item, dict):
             raise Problem("diff_invalid")
@@ -213,6 +216,7 @@ def collect(github, pinned):
             continue
         chunks.append(chunk)
         entries.append(entry)
+        code_lines[path] = evidence.new_file_lines(item["patch"])
         supplied[path] = core.FileScope(diff_ranges=tuple(map(tuple, ranges)), allow_file_level=entry["status"] == "removed")
     if not chunks:
         raise Problem("diff_no_reviewable_content")
@@ -222,7 +226,7 @@ def collect(github, pinned):
         raise Problem("context_limit")
     # The API is queried again to detect a changing PR; patches themselves came from fixed SHAs.
     ensure_current(github, pinned)
-    return Collected("".join(chunks), core.ReviewScope(pinned.head_sha, supplied), manifest)
+    return Collected("".join(chunks), core.ReviewScope(pinned.head_sha, supplied), manifest, code_lines)
 
 
 def source_context(github, pinned, collected):
@@ -450,6 +454,12 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
             "",
             "**Evidência no código**",
             _html_code(item["evidence"], block=True),
+            "",
+            ("**Conferência textual:** citação da linha localizada no diff; "
+             "isso não comprova a existência do defeito."
+             if evidence.has_literal_code_anchor(item, collected.code_lines) else
+             "**Conferência textual:** citação literal da linha não confirmada "
+             "automaticamente; avaliação humana necessária."),
         ])
     if not review["findings"]:
         parts.extend(["", "Nenhum achado validado no escopo efetivamente analisado."])
@@ -530,7 +540,7 @@ def run_review(event, enabled, github, model, *, version):
 
 def reviewer_version():
     base = Path(__file__).resolve().parent
-    files = [base / name for name in ("core.py", "runner.py", "transport.py", "requirements.txt")]
+    files = [base / name for name in ("core.py", "runner.py", "transport.py", "evidence.py", "requirements.txt")]
     files += [base.parent / "review-schema.json", base.parent / "benchmarks/harness/prompt_builder.py"]
     digest = hashlib.sha256()
     for file in files:

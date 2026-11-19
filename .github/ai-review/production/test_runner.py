@@ -320,6 +320,26 @@ class Integration(Offline):
         self.assertLessEqual(len(gh.source_requests), r.MAX_SOURCE_FILES)
         self.assertLessEqual(len(excerpts), r.MAX_SOURCE_FILES)
 
+    def test_verified_and_unverified_textual_evidence_is_labeled_conservatively(self):
+        gh = FakeGitHub()
+        # A literal line quote is detected only for a concrete changed line.
+        gh.files[0]["patch"] = "@@ -1,2 +1,2 @@\n keep\n-old\n+new_func(value)"
+        complete = finding(evidence="new_func(value) produces the failure")
+        out, gh, _ = self.run_case(github=gh, model=FakeModel(review([complete])))
+        self.assertTrue(out.published)
+        self.assertIn("citação da linha localizada no diff", gh.posts[0][1])
+        self.assertIn("não comprova a existência do defeito", gh.posts[0][1])
+
+        gh2 = FakeGitHub()
+        gh2.files[0]["patch"] = "@@ -1,2 +1,2 @@\n keep\n-old\n+new_func(value)"
+        out2, gh2, _ = self.run_case(
+            github=gh2,
+            model=FakeModel(review([finding(evidence="Unrelated problem assumption")]))
+        )
+        self.assertTrue(out2.published)
+        self.assertIn("não confirmada automaticamente", gh2.posts[0][1])
+        self.assertNotIn("citação da linha localizada no diff", gh2.posts[0][1])
+
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
         self.assertTrue(out.published)

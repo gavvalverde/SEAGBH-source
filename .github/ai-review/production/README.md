@@ -310,3 +310,25 @@ de review permitidas; o filtro de SHA e diff permanece obrigatório.
 Dados incorretos ou coordenadas inconsistentes falham antes da API paga.
 Trechos extras aumentam tokens de entrada, por isso a coleta é limitada.
 Nenhuma chave ou configuração financeira é alterada.
+
+## Auditoria textual de evidências (primeira fase, não semântica)
+
+O revisor compara a linha de código indicada em cada achado com a evidência
+escrita pelo modelo. Usa exclusivamente linhas de contexto/adição dos patches
+já verificados em `parse_patch` e fixados ao SHA do PR. Não executa o código,
+não busca dependências extras, não acessa arquivos omitidos nem envia
+requisições adicionais ao OpenRouter.
+
+A revisão publicada sinaliza se a evidência cita textualmente o conteúdo
+da linha referenciada (mínimo de 12 caracteres significativos, ignorando
+diferenças de espaçamento). Se não houver uma citação literal, o resultado
+será **não confirmado automaticamente**, e NÃO significa um bug falso.
+
+Mesmo uma citação literal verdadeira **não confirma** a consequência causal
+afirmada pelo modelo. No PR #22, citar `conexao.in_transaction` era possível,
+mas a conclusão sobre DDL do SQLite não se sustentava no ambiente padrão.
+A validação da hipótese técnica ainda exige análise e/ou reprodução real.
+
+Essa fase não bloqueia a publicação de achados, não altera schema nem o
+comportamento de filtros SHA/escopo. Os testes utilizam patches simulados
+e modelos falsos, sem rede e sem custos.
