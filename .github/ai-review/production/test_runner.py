@@ -322,14 +322,16 @@ class Integration(Offline):
 
     def test_verified_and_unverified_textual_evidence_is_labeled_conservatively(self):
         gh = FakeGitHub()
-        # The model evidence actually contains the source added-line text.
-        complete = finding(evidence="The changed line uses new")
+        # A literal line quote is detected only for a concrete changed line.
+        gh.files[0]["patch"] = "@@ -1,2 +1,2 @@\n keep\n-old\n+new_func(value)"
+        complete = finding(evidence="new_func(value) produces the failure")
         out, gh, _ = self.run_case(github=gh, model=FakeModel(review([complete])))
         self.assertTrue(out.published)
         self.assertIn("citação da linha localizada no diff", gh.posts[0][1])
         self.assertIn("não comprova a existência do defeito", gh.posts[0][1])
 
         gh2 = FakeGitHub()
+        gh2.files[0]["patch"] = "@@ -1,2 +1,2 @@\n keep\n-old\n+new_func(value)"
         out2, gh2, _ = self.run_case(
             github=gh2,
             model=FakeModel(review([finding(evidence="Unrelated problem assumption")]))
