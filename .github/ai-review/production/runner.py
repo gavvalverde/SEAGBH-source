@@ -1,6 +1,8 @@
 """Trusted Actions entrypoint. All PR input is data; no PR code is fetched/executed."""
 from __future__ import annotations
 from dataclasses import dataclass, field
+import base64
+import binascii
 import hashlib
 import html
 import json
@@ -21,6 +23,10 @@ MAX_DIFF = 81920
 MAX_CONTEXT = 16384
 MAX_PATCH = 32768
 MAX_REVIEWS = 1000
+MAX_SOURCE_FILES = 3
+MAX_SOURCE_FILE_BYTES = 32768
+MAX_SOURCE_SNIPPET_BYTES = 4096
+SOURCE_RADIUS = 12
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
 _LOCKS = {}
@@ -218,6 +224,45 @@ def collect(github, pinned):
     return Collected("".join(chunks), core.ReviewScope(pinned.head_sha, supplied), manifest)
 
 
+def source_context(github, pinned, collected):
+    """Read only bounded same-file Python context from the immutable head SHA.
+
+    The snippets are untrusted PR data and never expand ReviewScope.
+    """
+    excerpts = []
+    for entry in collected.manifest["files"]:
+        if len(excerpts) >= MAX_SOURCE_FILES:
+            break
+        path = entry["path"]
+        if (not path.startswith("src/") or not path.endswith(".py")
+                or entry["status"] == "removed"):
+            continue
+        ranges = entry["added_new"] or entry["context_new"]
+        if not ranges:
+            continue
+        body = github.source_at(pinned.head_sha, path)
+        if body is None:
+            continue
+        lines = body.splitlines()
+        selected = set()
+        for lo, hi in ranges:
+            if type(lo) is not int or type(hi) is not int or lo < 1 or hi < lo or hi > len(lines):
+                raise Problem("source_mismatch")
+            selected.update(range(max(1, lo - SOURCE_RADIUS),
+                                  min(len(lines), hi + SOURCE_RADIUS) + 1))
+        snippet, size = [], 0
+        for number in sorted(selected):
+            row = f"L{number}: {lines[number-1]}\n"
+            length = len(row.encode("utf-8"))
+            if size + length > MAX_SOURCE_SNIPPET_BYTES:
+                break
+            snippet.append(row)
+            size += length
+        if snippet:
+            excerpts.append({"path": path, "source_lines": "".join(snippet)})
+    return excerpts
+
+
 class GitHub:
     def __init__(self, token, *, http=None):
         if not isinstance(token, str) or not token or "\n" in token or "\r" in token:
@@ -242,6 +287,34 @@ class GitHub:
 
     def compare(self, pinned):
         return self.api("GET", f"/repos/{REPOSITORY}/compare/{pinned.base_sha}...{pinned.head_sha}?per_page=100&page=1")
+
+    def source_at(self, sha, path):
+        """Request small plain-text files, never untrusted executable code."""
+        if (not core._full_sha(sha) or not core._safe_path(path)
+                or not path.startswith("src/") or not path.endswith(".py")):
+            raise Problem("source_invalid")
+        data = self.api("GET",
+            f"/repos/{REPOSITORY}/contents/{quote(path, safe='/')}?ref={sha}")
+        if not isinstance(data, dict) or data.get("path") != path:
+            raise Problem("source_mismatch")
+        if data.get("type") != "file":
+            return None
+        size = data.get("size")
+        if type(size) is not int or size < 0:
+            raise Problem("source_invalid")
+        if size > MAX_SOURCE_FILE_BYTES:
+            return None
+        if data.get("encoding") != "base64" or not isinstance(data.get("content"), str):
+            raise Problem("source_invalid")
+        try:
+            raw = base64.b64decode(
+                data["content"].replace("\n", "").replace("\r", ""),
+                validate=True)
+            if len(raw) != size:
+                raise Problem("source_mismatch")
+            return raw.decode("utf-8")
+        except (UnicodeError, ValueError, binascii.Error):
+            raise Problem("source_invalid") from None
 
     def bot(self):
         user = self.api("GET", "/users/" + quote(BOT_LOGIN, safe=""))
@@ -400,11 +473,15 @@ def run_review(event, enabled, github, model, *, version):
             return Outcome("skip_duplicate")
         stage = "collection"
         collected = collect(github, pinned)
+        excerpts = source_context(github, pinned, collected)
         title = pinned.title.encode("utf-8")[:1024].decode("utf-8", errors="ignore")
         body = pinned.body.encode("utf-8")[:4096].decode("utf-8", errors="ignore")
         collected.manifest["partial"] |= title != pinned.title or body != pinned.body
+        context = dict(collected.manifest)
+        if excerpts:
+            context["source_snippets"] = excerpts
         payload = core.build_payload(title, body, collected.diff,
-            context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True),
+            context=json.dumps(context, ensure_ascii=True, sort_keys=True),
             trunc_note="[PARTIAL REVIEW]" if collected.manifest["partial"] else "",
             omit_info=json.dumps(collected.manifest["omitted"], ensure_ascii=True) if collected.manifest["omitted"] else "")
         ensure_current(github, pinned)

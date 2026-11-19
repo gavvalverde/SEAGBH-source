@@ -295,3 +295,16 @@ A failed validation may now log a fixed, allowlisted application-owned
 `validation_reason`, never upstream content. No automatic retry or new paid
 call is introduced. Run all offline regression tests before a paid pilot;
 check the OpenRouter key budget and request explicit approval for a new call.
+
+## Contexto de código limitado (primeira etapa)
+
+O Reviewer recebe trechos próximos às alterações dos **mesmos arquivos**
+Python modificados sob `src/`, obtidos no SHA fixado do PR. Nunca executa
+código nem busca arquivos não alterados. Limites: 3 arquivos, até 32 KiB
+por arquivo, até 12 linhas vizinhas e no máximo 4 KiB por excerto.
+
+O contexto adicional é dado **não confiável**. Não expande as coordenadas
+de review permitidas; o filtro de SHA e diff permanece obrigatório.
+Dados incorretos ou coordenadas inconsistentes falham antes da API paga.
+Trechos extras aumentam tokens de entrada, por isso a coleta é limitada.
+Nenhuma chave ou configuração financeira é alterada.

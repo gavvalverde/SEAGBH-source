@@ -1,5 +1,6 @@
 """Offline orchestration, HTTP and workflow security contracts. Network is blocked."""
 import copy
+import base64
 import io
 import http.client
 import os
@@ -65,6 +66,12 @@ class FakeGitHub:
         self.comparisons = []
         self.post_error = None
         self.accept_then_error = False
+        self.sources = {}
+        self.source_requests = []
+
+    def source_at(self, sha, path):
+        self.source_requests.append((sha, path))
+        return self.sources.get(path)
 
     def pr(self, number):
         assert number == 7
@@ -235,6 +242,49 @@ class Integration(Offline):
         self.assertEqual(expected["reasoning"], {"effort": "none"})
         self.assertEqual(expected["response_format"], {"type": "json_object"})
         self.assertEqual(expected["provider"], {"require_parameters": True})
+
+    def test_source_snippet_uses_pinned_sha_and_does_not_expand_review_scope(self):
+        gh = FakeGitHub()
+        gh.sources[FILE] = "\n".join(f"line_{i} = {i}" for i in range(1, 130)) + "\n"
+        gh.sources["src/unmodified.py"] = "UNRELATED_SENTINEL"
+        out, gh, ai = self.run_case(github=gh, model=FakeModel(review([])))
+        self.assertTrue(out.published)
+        self.assertEqual(gh.source_requests, [(HEAD, FILE)])
+        prompt = ai.payloads[0]["messages"][1]["content"]
+        self.assertIn("source_snippets", prompt)
+        self.assertIn("L14: line_14", prompt)
+        self.assertNotIn("L80:", prompt)
+        self.assertNotIn("UNRELATED_SENTINEL", prompt)
+        collected = r.collect(gh, r.event_snapshot(event(), "true"))
+        self.assertEqual(collected.scope.files[FILE].diff_ranges, ((1, 2),))
+        excerpts = r.source_context(gh, r.event_snapshot(event(), "true"), collected)
+        self.assertLessEqual(len(excerpts[0]["source_lines"].encode()), r.MAX_SOURCE_SNIPPET_BYTES)
+
+    def test_source_mismatch_stops_before_model(self):
+        gh = FakeGitHub()
+        gh.sources[FILE] = "only one line\n"
+        out, gh, model = self.run_case(github=gh)
+        self.assertEqual((out.code, out.stage), ("source_mismatch", "collection"))
+        self.assertFalse(model.payloads or gh.posts)
+
+    def test_source_metadata_is_validated_before_model(self):
+        path = "src/example.py"
+        value = {"path": path, "type": "file", "size": 8,
+                 "encoding": "base64",
+                 "content": base64.b64encode(b"hi\nthere").decode()}
+        def client(response):
+            http = FakeHTTP([HttpReply(200, json.dumps(response).encode())])
+            return r.GitHub("token", http=http), http
+        github, http = client(value)
+        self.assertEqual(github.source_at(HEAD, path), "hi\nthere")
+        self.assertIn("?ref=" + HEAD, http.calls[0][2])
+        for invalid in ({**value, "path": "src/other.py"},
+                        {**value, "size": 7}, {**value, "content": "!!"}):
+            with self.assertRaises(Problem):
+                client(invalid)[0].source_at(HEAD, path)
+        self.assertIsNone(client({**value, "size": 50000})[0].source_at(HEAD, path))
+        with self.assertRaises(Problem):
+            client(value)[0].source_at(HEAD, "../invalid.py")
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
