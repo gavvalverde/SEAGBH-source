@@ -93,7 +93,8 @@ class SuiteContractTests(unittest.TestCase):
         self.assertNotIn('-        if self.entry_user.text() == "admin"', frk["diff"])
         dep = load_cases(case_id="dep-001")[0]
         dep_context = json.loads(dep["context"])["src/ui/tab_equipamentos.py"]
-        self.assertIn("não está definido", dep_context["description"])
+        self.assertNotIn("_atualizar_contador", dep_context["symbols"])
+        self.assertIn("__getattr__", dep_context["description"])
         self.assertEqual(load_ground_truth("dep-001")["expected"]["path"],
                          "src/ui/tab_equipamentos.py")
         pth = load_cases(case_id="pth-001")[0]
