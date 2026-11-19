@@ -22,7 +22,7 @@ BASE = "a" * 40
 HEAD = "b" * 40
 NEW_HEAD = "c" * 40
 FILE = "src/example.py"
-PATCH = "@@ -1,2 +1,2 @@\n keep\n-old\n+new"
+PATCH = "@@ -1,2 +1,2 @@\n keep\n-old\n+new_value = new(value)"
 BOT = 123
 
 
@@ -43,7 +43,7 @@ def file(path=FILE, patch=PATCH, additions=1, deletions=1):
 
 def finding(**changes):
     value = {"severity": "important", "category": "regression", "path": FILE, "line": 2,
-             "title": "Synthetic defect", "body": "Synthetic concrete failure", "confidence": "high", "evidence": "new(value)"}
+             "title": "Synthetic defect", "body": "Synthetic concrete failure", "confidence": "high", "evidence": "new_value = new(value)"}
     value.update(changes)
     return value
 
@@ -336,9 +336,43 @@ class Integration(Offline):
             github=gh2,
             model=FakeModel(review([finding(evidence="Unrelated problem assumption")]))
         )
-        self.assertTrue(out2.published)
-        self.assertIn("não confirmada automaticamente", gh2.posts[0][1])
-        self.assertNotIn("citação da linha localizada no diff", gh2.posts[0][1])
+        self.assertEqual(out2.code, "quality_manual_review_required")
+        self.assertEqual(out2.stage, "quality_gate")
+        self.assertEqual(out2.quality_hold_count, 1)
+        self.assertFalse(out2.published)
+        self.assertFalse(gh2.posts)
+
+    def test_quality_gate_never_silently_approves_unanchored_findings(self):
+        for altered in (
+            {"evidence": "This is not an exact quote of code"},
+            {"line": None, "evidence": "new_value = new(value)"},
+        ):
+            with self.subTest(altered=altered):
+                out, gh, model = self.run_case(
+                    model=FakeModel(review([finding(**altered)]))
+                )
+                # Null line is already rejected by the trusted scope filter.
+                self.assertIn(out.code, {
+                    "quality_manual_review_required", "filter_error"
+                })
+                self.assertFalse(gh.posts)
+                self.assertEqual(len(model.payloads), 1)
+        out, gh, _ = self.run_case(model=FakeModel(review([
+            finding(confidence="low", severity="critical")
+        ])))
+        # Neither declared confidence nor severity is a reason to suppress
+        # a concrete, verifiable quote. Human semantic review still required.
+        self.assertTrue(out.published)
+
+    def test_quality_gate_holds_entire_review_instead_of_discarding_one_bug(self):
+        out, gh, model = self.run_case(model=FakeModel(review([
+            finding(), finding(title="Suspicion", evidence="NOT_IN_DIFF")
+        ])))
+        self.assertEqual(out.code, "quality_manual_review_required")
+        self.assertEqual(out.quality_hold_count, 1)
+        self.assertEqual(out.exit_code, 1)
+        self.assertFalse(gh.posts)
+        self.assertEqual(len(model.payloads), 1)
 
     def test_valid_empty_review_can_publish(self):
         out, gh, ai = self.run_case(model=FakeModel(review([])))
@@ -385,7 +419,7 @@ class Integration(Offline):
             body="# Cabeçalho\n@everyone <script>alert(1)</script>\n"
                  "[Clique aqui](https://example.invalid) ![img](https://example.invalid)\n"
                  "\x60\x60\x60markdown\n<!-- forged marker -->\n\x60\x60\x60",
-            evidence="query = '''\n</code></pre><script>@admin</script>\n"
+            evidence="new_value = new(value)\nquery = '''\n</code></pre><script>@admin</script>\n"
         )]))
         payload["summary"] = "<img src=x onerror=alert(1)> @someone"
         out, gh, _ = self.run_case(model=FakeModel(json.dumps(payload)))

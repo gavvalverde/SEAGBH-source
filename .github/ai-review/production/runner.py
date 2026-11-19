@@ -15,6 +15,7 @@ from urllib.parse import quote
 
 import core
 import evidence
+import quality_gate
 from transport import HTTPS, Problem, decode
 
 REPOSITORY = "gavvalverde/SEAGBH-source"
@@ -52,6 +53,7 @@ class Outcome:
     stage: str = ""
     usage: dict | None = None
     validation_reason: str | None = None
+    quality_hold_count: int = 0
 
 
 def snapshot(pr, number):
@@ -510,6 +512,13 @@ def run_review(event, enabled, github, model, *, version):
         if not result.publishable:
             return Outcome(result.status.value, 1, stage=stage,
                            validation_reason=result.reason)
+        # An unanchored claim remains a manual-review candidate, NEVER a clean
+        # review and NEVER an automatically published defect. No new model call.
+        assessment = quality_gate.assess(result.review["findings"], collected.code_lines)
+        if assessment.requires_manual_review:
+            return Outcome("quality_manual_review_required", 1,
+                           stage="quality_gate",
+                           quality_hold_count=assessment.unanchored_count)
         ensure_current(github, pinned)
         if already_reviewed(github.reviews(pinned.number), pinned, bot_id, version):
             return Outcome("skip_duplicate")
@@ -540,7 +549,7 @@ def run_review(event, enabled, github, model, *, version):
 
 def reviewer_version():
     base = Path(__file__).resolve().parent
-    files = [base / name for name in ("core.py", "runner.py", "transport.py", "evidence.py", "requirements.txt")]
+    files = [base / name for name in ("core.py", "runner.py", "transport.py", "evidence.py", "quality_gate.py", "requirements.txt")]
     files += [base.parent / "review-schema.json", base.parent / "benchmarks/harness/prompt_builder.py"]
     digest = hashlib.sha256()
     for file in files:
@@ -586,6 +595,8 @@ def main():
     })
     if outcome.stage == "validation" and outcome.validation_reason in allowed_validation_reasons:
         diagnostic["validation_reason"] = outcome.validation_reason
+    if outcome.code == "quality_manual_review_required":
+        diagnostic["quality_hold_count"] = outcome.quality_hold_count
     print(json.dumps(diagnostic))
     return outcome.exit_code
 

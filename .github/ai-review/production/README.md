@@ -4,6 +4,35 @@ The production workflow is present on `main` but disabled by default. It require
 both `AI_REVIEW_ENABLED=true` and `AI_REVIEW_TARGET_PR` equal to the exact PR
 number. Source changes and offline CI never activate paid model calls by themselves.
 
+## Deterministic finding-quality gate and refutation
+
+The trusted prompt now requests explicit changed code, reachable trigger,
+failure mechanism, user/data impact and fix, and a **verbatim diff line** for
+each finding. It explicitly checks Python sqlite3 DDL transaction defaults,
+stdlib imports versus dependencies, and evidence for GitHub Actions failures.
+These rules are NOT exemptions for real concurrency, security, schema,
+transaction, or CI bugs. The prompt is shared between the benchmark and
+production; no ground truth is included in API requests.
+
+The production runner now gates each accepted finding against the literal
+NEW-file line at the exact reported path and line. Missing/short/unverifiable
+quotes cause **quality_manual_review_required**, a non-zero status without
+posting anything; it does not relabel a suspected bug as "clean". It applies
+regardless of reported confidence or severity and does not infer truth from
+the quote. The GitHub Action prints only a fixed code and the number of
+unanchored findings, never provider text or source paths. This is a
+conservative release gate and may hold valid bugs for manual examination.
+**Do not enable the production workflow until manually evaluating the
+false-negative trade-off.** In particular, file-level findings and findings
+whose exact affected line is shorter than the minimum quote length will
+require manual handling.
+
+The offline 23-case suite checks paired fixtures, no ground-truth leakage,
+the matcher on empty and synthetic-noisy responses, and coverage of both
+positive and negative labels. It is **not** evidence that the model has
+passed 23 live cases. Live OpenRouter calls remain manual and separately
+authorized, with no automatic retries or publishing from the pilot.
+
 ## Trust and activation
 
 The workflow uses `pull_request_target` because executable workflow/Python must
