@@ -172,6 +172,8 @@ def command(args):
             os.environ.get("GITHUB_REPOSITORY") == "gavvalverde/SEAGBH-source",
             os.environ.get("GITHUB_REF") == "refs/heads/main",
             os.environ.get("GITHUB_ACTOR") == "gavvalverde",
+            os.environ.get("GITHUB_TRIGGERING_ACTOR") == "gavvalverde",
+            os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
         ))
         if not trusted_manual_action:
             raise Problem("pilot_paid_blocked_in_ci")
