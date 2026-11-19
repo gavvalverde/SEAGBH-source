@@ -115,6 +115,38 @@ O teste é propositalmente de **um caso e um perfil por execução**.
 Mesmo em erro de rede, a primeira chamada pode gerar cobrança. O modelo
 não será substituído automaticamente e o piloto não faz novas tentativas.
 
+## Preparação para a avaliação ampliada dos 23 casos
+
+O menu manual de `ai-review-pilot.yml` agora aceita os 23 IDs de
+`benchmarks/cases/` e `ground-truth/`, por allowlist estática.
+Continua **um caso e uma chamada por dispatch**, com `CHECK_ONLY`
+como padrão, `AI_REVIEW_PILOT_ENABLED=true` temporário e confirmação
+`ONE_PAID_CALL` obrigatória. O checkout permanece fixado em
+`github.workflow_sha`; nenhum dado do PR é executado e nenhuma
+revisão é publicada. Ter 23 casos selecionáveis **não é autorização**
+para 23 chamadas pagas automáticas.
+
+Para consolidar resultados reais, copie **somente a linha JSON
+`mode=paid_result` de cada job**, sem copiar logs completos, em um arquivo
+JSON Lines local (uma revisão por linha), e execute offline:
+
+```bash
+python -B .github/ai-review/benchmarks/harness/pilot_report.py \
+  --profile deepseek-thinking-16k-8k --input resultados-seguros.jsonl
+```
+
+A ferramenta recusa casos desconhecidos, duplicatas, modelo incorreto,
+contadores incompatíveis, registros que pareçam conter conteúdo bruto
+e uma origem que não seja o resultado validado do piloto. Produz apenas
+métricas numéricas e metadados allowlisted. `coverage_complete=false`
+quando faltam casos. TP/FP/FN continuam heurísticos, e a comparação
+entre versões do prompt exige conjuntos pareados, revisão semântica humana
+e atenção a amostras contaminadas por regras específicas de PR #22.
+Não informa custo real porque logs de tokens não são faturamento.
+
+A regressão offline de `test_suite_contract.py` verifica todos os pares
+de fixture, mas não representa execução de 23 requisições contra modelos.
+
 ## Critérios de decisão
 
 Só avaliar troca de modelo após executar o mesmo conjunto de casos e
