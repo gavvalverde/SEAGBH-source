@@ -1,0 +1,76 @@
+name: AI Reviewer Gemini Pilot (manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      case_id:
+        description: Um caso do benchmark por execucao
+        type: choice
+        required: true
+        default: r22-typ-001
+        options:
+          - r22-typ-001
+          - r22-ddl-001
+          - r22-ci-001
+      confirm:
+        description: Confirmar UMA chamada paga apos limitar a chave
+        type: choice
+        required: true
+        default: DO_NOT_RUN
+        options:
+          - DO_NOT_RUN
+          - ONE_PAID_CALL
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-review-pilot-manual-owner
+  cancel-in-progress: false
+
+jobs:
+  single_paid_pilot:
+    if: >-
+      vars.AI_REVIEW_PILOT_ENABLED == 'true' &&
+      github.repository == 'gavvalverde/SEAGBH-source' &&
+      github.actor == 'gavvalverde' &&
+      github.event_name == 'workflow_dispatch' &&
+      github.ref == 'refs/heads/main' &&
+      inputs.confirm == 'ONE_PAID_CALL'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout trusted main workflow SHA only
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gavvalverde/SEAGBH-source
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          fetch-depth: 1
+          submodules: false
+          lfs: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/ai-review/benchmarks/cases/
+            /.github/ai-review/ground-truth/
+            /.github/ai-review/benchmarks/harness/
+            /.github/ai-review/production/
+            /.github/ai-review/review-schema.json
+      - name: Install pinned test dependencies
+        shell: bash
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/ai-pilot-venv"
+          "$RUNNER_TEMP/ai-pilot-venv/bin/python" -m pip --isolated --disable-pip-version-check install --only-binary=:all: --index-url https://pypi.org/simple -r .github/ai-review/production/requirements-test.txt
+      - name: Execute exactly one approved paid comparison
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          SEAGBH_AI_PILOT_PAID_ENABLED: owner_confirmed
+          SEAGBH_AI_PILOT_TRUSTED_ACTIONS: 'true'
+          PILOT_CASE: ${{ inputs.case_id }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          "$RUNNER_TEMP/ai-pilot-venv/bin/python" -B .github/ai-review/benchmarks/harness/pilot_guarded.py \
+            --case "$PILOT_CASE" \
+            --profile gemini-thinking-2048 \
+            --paid --confirm-single-paid-call --max-usd 0.05

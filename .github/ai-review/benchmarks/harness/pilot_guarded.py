@@ -166,7 +166,15 @@ def command(args):
             "calls_attempted": 0, "note": "estimate_is_not_a_billing_cap",
         }
     if os.environ.get("CI", "").lower() == "true":
-        raise Problem("pilot_paid_blocked_in_ci")
+        trusted_manual_action = all((
+            os.environ.get("SEAGBH_AI_PILOT_TRUSTED_ACTIONS") == "true",
+            os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch",
+            os.environ.get("GITHUB_REPOSITORY") == "gavvalverde/SEAGBH-source",
+            os.environ.get("GITHUB_REF") == "refs/heads/main",
+            os.environ.get("GITHUB_ACTOR") == "gavvalverde",
+        ))
+        if not trusted_manual_action:
+            raise Problem("pilot_paid_blocked_in_ci")
     if args.profile != "gemini-thinking-2048":
         raise Problem("pilot_price_not_verified")
     if (not args.confirm_single_paid_call

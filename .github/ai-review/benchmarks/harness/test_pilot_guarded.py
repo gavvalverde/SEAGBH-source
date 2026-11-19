@@ -90,6 +90,61 @@ class PilotTests(unittest.TestCase):
                 command(args)
             self.assertEqual(y.exception.code, "pilot_paid_blocked_in_ci")
 
+    def test_ci_paid_requires_owner_dispatched_trusted_workflow(self):
+        from argparse import Namespace
+        args = Namespace(case=CASE_IDS[0], profile="gemini-thinking-2048",
+                         paid=True, confirm_single_paid_call=True, max_usd=0.05)
+        authorized = {
+            "CI": "true",
+            "SEAGBH_AI_PILOT_TRUSTED_ACTIONS": "true",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_REPOSITORY": "gavvalverde/SEAGBH-source",
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_ACTOR": "gavvalverde",
+            "SEAGBH_AI_PILOT_PAID_ENABLED": "owner_confirmed",
+            "OPENROUTER_API_KEY": "synthetic-key",
+        }
+        for name in ("SEAGBH_AI_PILOT_TRUSTED_ACTIONS",
+                     "GITHUB_EVENT_NAME", "GITHUB_REPOSITORY",
+                     "GITHUB_REF", "GITHUB_ACTOR"):
+            with self.subTest(key=name):
+                with patch.dict(os.environ, {**authorized, name: "bad"}, clear=True):
+                    with self.assertRaises(Problem) as result:
+                        command(args)
+                    self.assertEqual(result.exception.code, "pilot_paid_blocked_in_ci")
+        with patch.dict(os.environ, authorized, clear=True), patch(
+            "pilot_guarded.run_one", return_value={"calls_attempted": 1}
+        ) as mocked:
+            result = command(args)
+        self.assertEqual(result["calls_attempted"], 1)
+        mocked.assert_called_once_with("gemini-thinking-2048",
+                                       CASE_IDS[0], "synthetic-key")
+
+    def test_manual_workflow_is_explicit_owner_only_and_pinned(self):
+        from pathlib import Path
+        import yaml
+        text = (Path(__file__).resolve().parents[3]
+                / "workflows" / "ai-review-pilot.yml").read_text()
+        value = yaml.load(text, Loader=yaml.BaseLoader)
+        self.assertEqual(set(value["on"]), {"workflow_dispatch"})
+        job = value["jobs"]["single_paid_pilot"]
+        self.assertIn("vars.AI_REVIEW_PILOT_ENABLED == 'true'", job["if"])
+        self.assertIn("github.actor == 'gavvalverde'", job["if"])
+        self.assertIn("inputs.confirm == 'ONE_PAID_CALL'", job["if"])
+        self.assertIn("github.ref == 'refs/heads/main'", job["if"])
+        self.assertEqual(value["permissions"], {"contents": "read"})
+        checkout = job["steps"][0]
+        self.assertRegex(checkout["uses"], r"^actions/checkout@[0-9a-f]{40}$")
+        self.assertEqual(checkout["with"]["ref"], "${{ github.workflow_sha }}")
+        self.assertEqual(checkout["with"]["persist-credentials"], "false")
+        self.assertEqual(set(value["on"]["workflow_dispatch"]["inputs"]["case_id"]["options"]),
+                         set(CASE_IDS))
+        run_step = job["steps"][-1]
+        self.assertNotIn("${{", run_step["run"])
+        self.assertIn("--max-usd 0.05", run_step["run"])
+        self.assertIn("--confirm-single-paid-call", run_step["run"])
+        self.assertEqual(run_step["env"]["SEAGBH_AI_PILOT_TRUSTED_ACTIONS"], "true")
+
     def test_pricing_is_estimate_not_hard_cap(self):
         self.assertIsNone(planned_cost_usd(1000, "deepseek-baseline"))
         self.assertGreater(planned_cost_usd(1000, "gemini-thinking-2048"), 0)

@@ -89,3 +89,20 @@ depende das medições, não da reputação do modelo.
 Não executar `run_bench.py` na fase piloto: ferramenta legada tem
 tentativas adicionais e persistência de respostas brutas, diferentes das
 garantias deste novo runner.
+
+## Piloto manual opcional no GitHub Actions
+
+A integração inclui um workflow separado `ai-review-pilot.yml` que só recebe
+`workflow_dispatch` e exige **todas** as condições: variável do repositório
+`AI_REVIEW_PILOT_ENABLED=true`, ator `gavvalverde`, branch `main` e confirmação
+`ONE_PAID_CALL`. O checkout usa `github.workflow_sha`, não o código da PR.
+
+Após a aprovação explícita de UMA chamada paga e a configuração de limite
+financeiro real na chave OpenRouter, definir a variável do piloto em
+Settings > Secrets and variables > Actions > Variables, então abrir
+Actions > AI Reviewer Gemini Pilot (manual) > Run workflow e escolher um caso.
+Voltar a variável para `false` após o teste. O workflow limita-se a uma
+requisição sem retry. A cobrança pode ocorrer mesmo quando houver falha.
+
+O Reviewer normal continua controlado por `AI_REVIEW_ENABLED`, que deve
+permanecer `false`. O piloto não publica comentários nem grava saídas brutas.
