@@ -1,0 +1,14 @@
+{
+  "id": "r22-ci-001",
+  "tags": [
+    "real-pr",
+    "pr22",
+    "clean",
+    "ci",
+    "false-positive"
+  ],
+  "pr_title": "Testar o módulo SQLite outbox em GitHub Actions",
+  "pr_body": "Executa os testes de regressão do módulo isolado em Python 3.12 no runner Ubuntu.",
+  "diff": "--- /dev/null\n+++ b/.github/workflows/sync-outbox-ci.yml\n@@ -0,0 +1,25 @@\n+name: SQLite Outbox Offline Regression\n+on:\n+  pull_request:\n+    branches: [main]\n+permissions:\n+  contents: read\n+jobs:\n+  test:\n+    runs-on: ubuntu-24.04\n+    timeout-minutes: 5\n+    steps:\n+      - name: Checkout PR code without persisted credentials\n+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1\n+        with:\n+          persist-credentials: false\n+          submodules: false\n+      - name: Run SQLite outbox tests\n+        env:\n+          PYTHONDONTWRITEBYTECODE: \"1\"\n+        run: python3.12 -B -m unittest -v tests.unit.test_sync_outbox\n",
+  "context": "{\"tests/unit/test_sync_outbox.py\":{\"imports\":[\"import sqlite3\",\"import tempfile\",\"import unittest\",\"from pathlib import Path\",\"from uuid import UUID\"],\"symbols\":[\"OutboxSQLite\"],\"description\":\"O módulo testado utiliza somente a biblioteca padrão do Python. A execução real do GitHub Actions #44523352425 terminou com sucesso.\"}}"
+}

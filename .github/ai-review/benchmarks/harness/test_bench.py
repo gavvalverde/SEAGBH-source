@@ -656,8 +656,50 @@ def test_output_format_json_example():
     } <= finding.keys())
 
 
+def test_pr22_regression_fixtures_offline():
+    """Confere estrutura, rótulos e avaliação sem chamar modelos pagos."""
+    print("\n-- evidências reais PR #22 --")
+    ids = {"r22-typ-001", "r22-ddl-001", "r22-ci-001"}
+    cases = {case["id"]: case for case in load_cases()
+             if case["id"] in ids}
+    check("PR22: três casos presentes", set(cases) == ids)
+    from leak_guard import check_leak
+    for cid in sorted(ids):
+        case = cases.get(cid)
+        gt = load_ground_truth(cid)
+        check(f"{cid}: arquivo e gabarito", case is not None and gt is not None)
+        if case is None or gt is None:
+            continue
+        check(f"{cid}: sem vazamento de gabarito", not check_leak(case, cid))
+        check(f"{cid}: contexto e patch presente",
+              bool(case.get("diff")) and isinstance(case.get("context"), str))
+        check(f"{cid}: identidade do caso", case["id"] == gt["id"])
+    if not all(case_id in cases for case_id in ids):
+        return
+    positive = load_ground_truth("r22-typ-001")
+    check("PR22: TypeError classificado como bug",
+          positive["expected"]["find"] is True
+          and positive["expected"]["path"] == "src/core/sync_outbox.py")
+    valid_finding = _f(
+        path="src/core/sync_outbox.py",
+        line=109, severity="minor", category="exception-handling",
+        title="TypeError em operacao",
+        evidence="registrar_alteracao: operacao not in _OPERACOES lança TypeError",
+    )
+    check("PR22: matcher reconhece o achado concreto",
+          one_to_one_match([valid_finding], positive)[:3] == (1, 0, 0))
+    for cid in ("r22-ddl-001", "r22-ci-001"):
+        gt = load_ground_truth(cid)
+        check(f"{cid}: nao deve exigir achado", gt["expected"]["find"] is False)
+        check(f"{cid}: review vazio nao gera falso positivo",
+              one_to_one_match([], gt)[:3] == (0, 0, 0))
+        check(f"{cid}: achado indevido e contado como FP",
+              one_to_one_match([valid_finding], gt)[:3] == (0, 1, 0))
+
+
 def main():
     test_leak_guard(); test_prompt(); test_match(); test_output_format_json_example()
+    test_pr22_regression_fixtures_offline()
     test_evaluate(); test_loaders(); test_parse()
     test_none_review(); test_classify_error(); test_sanitize(); test_fpfn_counting(); test_special_cases(); test_model_override(); test_detection_with_intermediate_scores(); test_detection_with_direct_scores(); test_semantic_adversarial(); test_false_match_adversarial(); test_finding_granularity(); test_evidence_to_publish()
     test_same_region_multiple_defects(); test_partial_truncated_diff()

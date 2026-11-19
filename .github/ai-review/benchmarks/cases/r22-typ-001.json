@@ -1,0 +1,13 @@
+{
+  "id": "r22-typ-001",
+  "tags": [
+    "real-pr",
+    "pr22",
+    "exception-handling",
+    "bug"
+  ],
+  "pr_title": "Criar fila local de alterações para sincronização do SQLite",
+  "pr_body": "Novo módulo registra alterações de dados e valida operações para a futura sincronização.",
+  "diff": "--- /dev/null\n+++ b/src/core/sync_outbox.py\n@@ -0,0 +18,1 @@\n+_OPERACOES = frozenset({\"upsert\", \"delete\"})\n@@ -0,0 +102,9 @@ def registrar_alteracao(...):\n+    empresa = _uuid(empresa_id, \"empresa_id\")\n+    dispositivo = _uuid(dispositivo_id, \"dispositivo_id\")\n+    registro = _uuid(registro_id, \"registro_id\")\n+    eid = uuid4() if evento_id is None else evento_id\n+    eid_texto = _uuid(eid, \"evento_id\")\n+    tipo = _tipo(tipo_registro)\n+    if operacao not in _OPERACOES:\n+        raise ValueError(\"operacao deve ser upsert ou delete\")\n+    if not isinstance(dados, dict):\n+        raise ValueError(\"dados deve ser um objeto JSON\")\n",
+  "context": "{\"src/core/sync_outbox.py\":{\"symbols\":[\"registrar_alteracao\",\"_OPERACOES\"],\"description\":\"Fronteira pública da fila SQLite usada por chamadas Python. O parâmetro operacao não possui anotação de tipo em runtime.\",\"source_revision\":\"Código do PR #22 antes da correção fbae0a7, recortado para avaliação independente.\"}}"
+}

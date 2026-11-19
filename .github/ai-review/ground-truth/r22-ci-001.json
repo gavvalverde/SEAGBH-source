@@ -1,0 +1,12 @@
+{
+  "id": "r22-ci-001",
+  "type": "clean",
+  "expected": {
+    "find": false
+  },
+  "delta": {
+    "correct": "CI real #44523352425 instalou/resolveu os imports padrão e executou todos os testes; python3.12 presente no runner.",
+    "incorrect": "Afirmar falha de import/dependências sem considerar execução bem-sucedida e biblioteca padrão.",
+    "note": "Falso positivo do DeepSeek em PR22. Se o ambiente GitHub for atualizado, revalidar o contexto."
+  }
+}
