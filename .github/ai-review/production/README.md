@@ -67,6 +67,18 @@ Binary/missing patches and metadata-only renames without patches fail safely.
 `core.build_payload` delegates unchanged to the published `build_request`:
 DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
 temperature 0.3, max_tokens 8192, with no tools or duplicate prompt.
+The pinned DeepSeek production request now sets `reasoning.effort=low`. OpenRouter
+model metadata (checked 2026-11-19) lists low as supported and high as default
+for `deepseek/deepseek-v4.1-flash-1017`. Its reasoning tokens can count against
+the same completion budget as final JSON. This corrects a second controlled
+PR #22 failure (run 44526208632, `model_output_limit`, stage=model,
+published=false) after the timeout fix was merged. The earlier PR #22 run
+44524958394 had failed due to `network_timeout`; these are separate causes.
+The new low-effort setting keeps the 8192-token budget and may leave more
+room for final JSON; success and unchanged finding quality require a paid,
+explicitly authorized validation. Alternate benchmark model IDs retain their
+previous default reasoning settings. No auto-retry on a generation failure.
+
 Transport accepts only fixed HTTPS origins, never follows redirects, and bounds
 responses (GitHub 2 MiB, OpenRouter 1 MiB) and encoded model requests (256 KiB).
 GitHub API transport retains 5s connection, 30s read, and 60s total deadlines.
