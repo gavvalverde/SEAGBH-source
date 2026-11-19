@@ -68,6 +68,13 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(compact["temperature"], 1.0)
         self.assertNotIn("ground_truth", json.dumps(compact))
         deepseek = build_pilot_request(case, "deepseek-baseline")
+        thinking = build_pilot_request(case, "deepseek-thinking-16k-8k")
+        self.assertEqual(thinking["model"], "deepseek/deepseek-v4.1-flash-1017")
+        self.assertEqual(thinking["reasoning"], {"max_tokens": 16384})
+        self.assertEqual(thinking["max_tokens"], 24576)
+        self.assertEqual(thinking["response_format"], {"type": "json_object"})
+        self.assertEqual(thinking["provider"], {"require_parameters": True})
+        self.assertNotIn("ground_truth", json.dumps(thinking))
         self.assertEqual(deepseek["reasoning"], {"effort": "none"})
         self.assertEqual(deepseek["model"], "deepseek/deepseek-v4.1-flash-1017")
         self.assertNotIn("ground_truth", json.dumps(gemini).lower())
@@ -166,7 +173,8 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(dispatch_inputs["reasoning_profile"]["default"],
                          "gemini-thinking-2048")
         self.assertEqual(set(dispatch_inputs["reasoning_profile"]["options"]),
-                         {"gemini-thinking-2048", "gemini-thinking-4096-compact"})
+                         {"gemini-thinking-2048", "gemini-thinking-4096-compact",
+                          "deepseek-thinking-16k-8k"})
         diagnostic = value["jobs"]["diagnose_authorization"]
         self.assertEqual(diagnostic["permissions"], {})
         self.assertNotIn("if", diagnostic)
@@ -208,6 +216,7 @@ class PilotTests(unittest.TestCase):
         self.assertGreater(planned_cost_usd(1000, "gemini-thinking-4096-compact"), 0)
         self.assertLess(planned_cost_usd(1000, "gemini-thinking-4096-compact"),
                         planned_cost_usd(1000, "gemini-thinking-2048"))
+        self.assertLess(planned_cost_usd(65536, "deepseek-thinking-16k-8k"), 0.05)
 
     def test_one_wire_post_no_retry_and_strict_review(self):
         case = load_cases(case_id=CASE_IDS[0])[0]
@@ -278,6 +287,55 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(dry["mode"], "dry_run")
         self.assertEqual(dry["reasoning"], {"max_tokens": 4096})
         self.assertEqual(dry["max_completion_tokens"], 6144)
+        self.assertEqual(dry["calls_attempted"], 0)
+
+    def test_deepseek_thinking_profile_bounds_without_network_or_retry(self):
+        req = build_pilot_request(load_cases(case_id=CASE_IDS[0])[0],
+                                  "deepseek-thinking-16k-8k")
+        self.assertEqual(req["max_tokens"] - req["reasoning"]["max_tokens"], 8192)
+        for usage, expected_code in (
+            ({"completion_tokens": 20000,
+              "completion_tokens_details": {"reasoning_tokens": 16385}},
+             "pilot_reasoning_budget_exceeded"),
+            ({"completion_tokens": 24500,
+              "completion_tokens_details": {"reasoning_tokens": 16000}},
+             "pilot_visible_budget_exceeded"),
+            ({"completion_tokens": 24577,
+              "completion_tokens_details": {"reasoning_tokens": 16000}},
+             "pilot_completion_budget_exceeded"),
+        ):
+            with self.subTest(expected_code=expected_code):
+                http = FakeHTTP([fake_reply(usage=usage)])
+                with self.assertRaises(Problem) as exceeded:
+                    send_single_request(req, "synthetic-key", http=http)
+                self.assertEqual(exceeded.exception.code, expected_code)
+                self.assertEqual(len(http.calls), 1)
+        http = FakeHTTP([fake_reply(usage={"completion_tokens": 15000,
+                         "completion_tokens_details": {"reasoning_tokens": 14500}})])
+        review, usage = send_single_request(req, "synthetic-key", http=http)
+        self.assertEqual(review["findings"], [])
+        self.assertEqual(usage["visible_tokens"], 500)
+        self.assertEqual(len(http.calls), 1)
+
+    def test_deepseek_thinking_paid_guard_and_dry_run(self):
+        from argparse import Namespace
+        args = Namespace(case=CASE_IDS[0], profile="deepseek-thinking-16k-8k",
+                         paid=True, confirm_single_paid_call=True, max_usd=0.05)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(Problem) as blocked:
+                command(args)
+            self.assertEqual(blocked.exception.code, "pilot_paid_not_authorized")
+            os.environ["SEAGBH_AI_PILOT_PAID_ENABLED"] = "owner_confirmed"
+            with self.assertRaises(Problem) as missing_key:
+                command(args)
+            self.assertEqual(missing_key.exception.code, "pilot_authentication_error")
+        with patch.dict(os.environ, {}, clear=True):
+            args.paid = False
+            dry = command(args)
+        self.assertEqual(dry["mode"], "dry_run")
+        self.assertEqual(dry["model"], "deepseek/deepseek-v4.1-flash-1017")
+        self.assertEqual(dry["reasoning"], {"max_tokens": 16384})
+        self.assertEqual(dry["max_completion_tokens"], 24576)
         self.assertEqual(dry["calls_attempted"], 0)
 
     def test_score_is_numeric_and_raw_provider_content_is_not_exposed(self):
