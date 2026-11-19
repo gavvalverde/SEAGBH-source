@@ -50,6 +50,17 @@ def test_prompt():
     check("TWO-PASS", "TWO-PASS" in sys_c)
     check("UNTRUSTED", "UNTRUSTED" in sys_c)
     check("EVIDENCE", "EVIDENCE" in sys_c)
+    check("Causal chain: explicit failure mechanism", "CAUSAL PROOF AND REPRODUCIBILITY" in sys_c
+          and "reachable trigger" in sys_c and "runtime mechanism" in sys_c
+          and "user-visible or data/security impact" in sys_c)
+    check("Refutation: SQLite transaction semantics", "ADV E R S A R I A L" not in sys_c
+          and "ADVERSARIAL REFUTATION CHECKLIST" in sys_c
+          and "Python sqlite3" in sys_c and "explicit transaction" in sys_c)
+    check("Refutation: CI/stdlib evidence", "standard-library imports" in sys_c
+          and "proven failed workflow" in sys_c)
+    check("Refutation: does not excuse real bugs",
+          "Real transaction, CI" in sys_c and "still be reported" in sys_c)
+    check("Requires verbatim changed line", "quote verbatim the full changed line" in sys_c)
     usr_c = r["messages"][1]["content"]
     check("PR METADATA", "PR METADATA" in usr_c)
     check("DIFF", "DIFF" in usr_c)
