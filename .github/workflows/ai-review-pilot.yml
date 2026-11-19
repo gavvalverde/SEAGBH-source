@@ -1,4 +1,4 @@
-name: AI Reviewer Gemini Pilot (manual)
+name: AI Reviewer Model Pilot (manual)
 
 on:
   workflow_dispatch:
@@ -13,13 +13,14 @@ on:
           - r22-ddl-001
           - r22-ci-001
       reasoning_profile:
-        description: Perfil de raciocinio allowlisted (2048 baseline, 4096 experimental)
+        description: Perfil allowlisted Gemini ou DeepSeek (um teste por vez)
         type: choice
         required: true
         default: gemini-thinking-2048
         options:
           - gemini-thinking-2048
           - gemini-thinking-4096-compact
+          - deepseek-thinking-16k-8k
       mode:
         description: CHECK_ONLY nunca executa chamada paga
         type: choice
