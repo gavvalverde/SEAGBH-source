@@ -59,6 +59,14 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(gemini["response_format"], {"type": "json_object"})
         self.assertEqual(gemini["provider"], {"require_parameters": True})
         self.assertEqual(gemini["temperature"], 1.0)
+        compact = build_pilot_request(case, "gemini-thinking-4096-compact")
+        self.assertEqual(compact["model"], "google/gemini-2.5-flash")
+        self.assertEqual(compact["max_tokens"], 6144)
+        self.assertEqual(compact["reasoning"], {"max_tokens": 4096})
+        self.assertEqual(compact["response_format"], {"type": "json_object"})
+        self.assertEqual(compact["provider"], {"require_parameters": True})
+        self.assertEqual(compact["temperature"], 1.0)
+        self.assertNotIn("ground_truth", json.dumps(compact))
         deepseek = build_pilot_request(case, "deepseek-baseline")
         self.assertEqual(deepseek["reasoning"], {"effort": "none"})
         self.assertEqual(deepseek["model"], "deepseek/deepseek-v4.1-flash-1017")
@@ -155,6 +163,10 @@ class PilotTests(unittest.TestCase):
         self.assertEqual(dispatch_inputs["mode"]["default"], "CHECK_ONLY")
         self.assertEqual(set(dispatch_inputs["mode"]["options"]),
                          {"CHECK_ONLY", "EXECUTE_PAID"})
+        self.assertEqual(dispatch_inputs["reasoning_profile"]["default"],
+                         "gemini-thinking-2048")
+        self.assertEqual(set(dispatch_inputs["reasoning_profile"]["options"]),
+                         {"gemini-thinking-2048", "gemini-thinking-4096-compact"})
         diagnostic = value["jobs"]["diagnose_authorization"]
         self.assertEqual(diagnostic["permissions"], {})
         self.assertNotIn("if", diagnostic)
@@ -184,11 +196,18 @@ class PilotTests(unittest.TestCase):
         self.assertNotIn("${{", run_step["run"])
         self.assertIn("--max-usd 0.05", run_step["run"])
         self.assertIn("--confirm-single-paid-call", run_step["run"])
+        self.assertEqual(run_step["env"]["PILOT_PROFILE"],
+                         "${{ inputs.reasoning_profile }}")
+        self.assertIn('--profile "$PILOT_PROFILE"', run_step["run"])
+        self.assertNotIn("gemini-thinking-4096-compact", run_step["run"])
         self.assertEqual(run_step["env"]["SEAGBH_AI_PILOT_TRUSTED_ACTIONS"], "true")
 
     def test_pricing_is_estimate_not_hard_cap(self):
         self.assertIsNone(planned_cost_usd(1000, "deepseek-baseline"))
         self.assertGreater(planned_cost_usd(1000, "gemini-thinking-2048"), 0)
+        self.assertGreater(planned_cost_usd(1000, "gemini-thinking-4096-compact"), 0)
+        self.assertLess(planned_cost_usd(1000, "gemini-thinking-4096-compact"),
+                        planned_cost_usd(1000, "gemini-thinking-2048"))
 
     def test_one_wire_post_no_retry_and_strict_review(self):
         case = load_cases(case_id=CASE_IDS[0])[0]
@@ -222,6 +241,44 @@ class PilotTests(unittest.TestCase):
                 with self.assertRaises(Problem):
                     send_single_request(payload, "synthetic-key", http=http)
                 self.assertEqual(len(http.calls), 1)
+
+    def test_compact_profile_limits_are_checked_without_network_or_retry(self):
+        case = load_cases(case_id=CASE_IDS[0])[0]
+        req = build_pilot_request(case, "gemini-thinking-4096-compact")
+        self.assertEqual(req["max_tokens"] - req["reasoning"]["max_tokens"], 2048)
+        http = FakeHTTP([fake_reply(usage={"completion_tokens": 4500,
+                         "completion_tokens_details": {"reasoning_tokens": 4097}})])
+        with self.assertRaises(Problem) as exceeded:
+            send_single_request(req, "synthetic-key", http=http)
+        self.assertEqual(exceeded.exception.code, "pilot_reasoning_budget_exceeded")
+        self.assertEqual(len(http.calls), 1)
+
+        http2 = FakeHTTP([fake_reply(usage={"completion_tokens": 6150,
+                          "completion_tokens_details": {"reasoning_tokens": 3800}})])
+        with self.assertRaises(Problem) as total:
+            send_single_request(req, "synthetic-key", http=http2)
+        self.assertEqual(total.exception.code, "pilot_completion_budget_exceeded")
+        self.assertEqual(len(http2.calls), 1)
+
+    def test_compact_profile_is_paid_only_with_explicit_pilot_opt_in(self):
+        from argparse import Namespace
+        args = Namespace(case=CASE_IDS[0], profile="gemini-thinking-4096-compact",
+                         paid=True, confirm_single_paid_call=True, max_usd=0.05)
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(Problem) as blocked:
+                command(args)
+            self.assertEqual(blocked.exception.code, "pilot_paid_not_authorized")
+            os.environ["SEAGBH_AI_PILOT_PAID_ENABLED"] = "owner_confirmed"
+            with self.assertRaises(Problem) as missing_key:
+                command(args)
+            self.assertEqual(missing_key.exception.code, "pilot_authentication_error")
+        with patch.dict(os.environ, {}, clear=True):
+            args.paid = False
+            dry = command(args)
+        self.assertEqual(dry["mode"], "dry_run")
+        self.assertEqual(dry["reasoning"], {"max_tokens": 4096})
+        self.assertEqual(dry["max_completion_tokens"], 6144)
+        self.assertEqual(dry["calls_attempted"], 0)
 
     def test_score_is_numeric_and_raw_provider_content_is_not_exposed(self):
         http = FakeHTTP([fake_reply()])
