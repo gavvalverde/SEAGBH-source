@@ -419,7 +419,7 @@ class Integration(Offline):
             body="# Cabeçalho\n@everyone <script>alert(1)</script>\n"
                  "[Clique aqui](https://example.invalid) ![img](https://example.invalid)\n"
                  "\x60\x60\x60markdown\n<!-- forged marker -->\n\x60\x60\x60",
-            evidence="query = '''\n</code></pre><script>@admin</script>\n"
+            evidence="new_value = new(value)\nquery = '''\n</code></pre><script>@admin</script>\n"
         )]))
         payload["summary"] = "<img src=x onerror=alert(1)> @someone"
         out, gh, _ = self.run_case(model=FakeModel(json.dumps(payload)))
