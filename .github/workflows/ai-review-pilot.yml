@@ -12,6 +12,14 @@ on:
           - r22-typ-001
           - r22-ddl-001
           - r22-ci-001
+      reasoning_profile:
+        description: Perfil de raciocinio allowlisted (2048 baseline, 4096 experimental)
+        type: choice
+        required: true
+        default: gemini-thinking-2048
+        options:
+          - gemini-thinking-2048
+          - gemini-thinking-4096-compact
       mode:
         description: CHECK_ONLY nunca executa chamada paga
         type: choice
@@ -110,9 +118,10 @@ jobs:
           SEAGBH_AI_PILOT_PAID_ENABLED: owner_confirmed
           SEAGBH_AI_PILOT_TRUSTED_ACTIONS: 'true'
           PILOT_CASE: ${{ inputs.case_id }}
+          PILOT_PROFILE: ${{ inputs.reasoning_profile }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           "$RUNNER_TEMP/ai-pilot-venv/bin/python" -B .github/ai-review/benchmarks/harness/pilot_guarded.py \
             --case "$PILOT_CASE" \
-            --profile gemini-thinking-2048 \
+            --profile "$PILOT_PROFILE" \
             --paid --confirm-single-paid-call --max-usd 0.05
