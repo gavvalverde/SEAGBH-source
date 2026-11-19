@@ -262,9 +262,11 @@ def _mechanism_contract_match(finding, contract):
     has = lambda pattern: bool(_re.search(pattern, text, flags=_re.I))
     if contract == "exact_24h_grace_boundary":
         has_threshold = has(r"(?<!\w)24(?:\s*(?:h|horas?|hours?))?(?!\d)")
-        has_boundary = has(
-            r"exat\w*|fronteira|limite|igualdad\w*|boundary|equal(?:ity)?|"
-            r"(?<![=!<>])<=?\s*24"
+        # Mentioning the new expression alone is not evidence of a bug.
+        # Require explicit equality/boundary language or both old/new operators.
+        has_boundary = (
+            has(r"exat\w*|fronteira|igualdad\w*|boundary|equal(?:ity)?")
+            or (has(r"<=\s*24") and has(r"(?<![<>=])<\s*24"))
         )
         has_consequence = has(
             r"grace|expired?|expir\w*|revog\w*|revok\w*|toler[aâ]nc\w*"
@@ -282,13 +284,17 @@ def _mechanism_contract_match(finding, contract):
     if contract == "negative_sqlite_limit":
         has_negative = has(r"(?<![\d])-1(?![\d])|negativ\w*|menor\s+qu[ea]\s+zero|<\s*0")
         has_limit = has(r"\blimit\b|\blimite\b")
-        has_mismatch = has(
+        has_no_deletion = has(
             r"nenhum\w*\s+(?:registro\w*\s+)?(?:removid\w*|exclu[ií]d\w*)|"
             r"n[aã]o\s+(?:apaga|remove|exclui|deleta)|"
-            r"retorn\w*|contage\w*|quantidade|preserv\w*|"
-            r"without deleting|returns?\s+incorrect|no rows deleted"
+            r"sem\s+(?:remo[cç][aã]o|exclus[aã]o|apagar)|"
+            r"preserv\w*|without deleting|no rows deleted|keeps? all"
         )
-        return has_negative and has_limit and has_mismatch
+        has_wrong_count = has(
+            r"retorn\w*|contage\w*|quantidade|report\w*|"
+            r"contabiliz\w*|inconsisten\w*|diverg\w*"
+        )
+        return has_negative and has_limit and has_no_deletion and has_wrong_count
     # New mechanism contracts must have an explicit evaluator.
     return False
 
