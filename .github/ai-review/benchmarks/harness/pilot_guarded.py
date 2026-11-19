@@ -26,7 +26,33 @@ from run_bench import (
     _line_close, _semantic_match,
 )
 
-CASE_IDS = ("r22-typ-001", "r22-ddl-001", "r22-ci-001")
+# Static case allowlist for owner-dispatched ONE-call-at-a-time benchmarking.
+# Do not substitute an untrusted run input into a filesystem path.
+CASE_IDS = (
+    "r22-typ-001",
+    "r22-ddl-001",
+    "r22-ci-001",
+    "brk-001",
+    "cln-001",
+    "dep-001",
+    "exc-001",
+    "fp-001",
+    "frk-001",
+    "grn-001",
+    "inj-001",
+    "lic-001",
+    "mnt-001",
+    "off-001",
+    "off-002",
+    "osc-001",
+    "pin-001",
+    "pth-001",
+    "rac-001",
+    "sec-001",
+    "seg-001",
+    "tst-001",
+    "txn-001",
+)
 PROFILES = {
     "deepseek-baseline": {
         "model": "deepseek/deepseek-v4.1-flash-1017",
