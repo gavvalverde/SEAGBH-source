@@ -13,7 +13,8 @@
       "description": "acesso a metodo inexistente durante construcao da interface"
     },
     "confidence_expected": "high",
-    "behavior": "AttributeError antes da interface de busca ser exibida."
+    "behavior": "AttributeError antes da interface de busca ser exibida.",
+    "mechanism_contract": "missing_ui_callback"
   },
   "delta": {
     "correct": "conectar somente um metodo existente ou implementa-lo",
