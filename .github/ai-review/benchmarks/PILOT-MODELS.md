@@ -1,15 +1,26 @@
 # Piloto de modelos do AI Reviewer | fase A/B controlada
 
-Estado: **preparado, não executado contra API paga**. Produção não muda.
-O Reviewer principal continua DeepSeek V4.1 Flash 1017, sem raciocínio.
+Estado: **um piloto pago executado em 2026-11-19; perfil alternativo preparado offline**.
+A primeira execução (`r22-typ-001`, workflow 44573862648) retornou JSON válido,
+`tp=0, fp=1, fn=1` pelo avaliador heurístico, 1.698 tokens de raciocínio
+e 380 tokens visíveis. Isso não é auditoria semântica do finding, pois a
+resposta bruta não é armazenada. Nenhuma repetição paga está autorizada
+automaticamente. Produção não muda: DeepSeek V4.1 Flash 1017 sem raciocínio.
 
 ## Escolha do primeiro candidato
 
 - Referência: `deepseek/deepseek-v4.1-flash-1017`, `reasoning.effort=none`,
   `max_tokens=8192`; apenas para preflight e comparação histórica nesta fase.
-- Candidato: `google/gemini-2.5-flash`, `reasoning.max_tokens=2048`,
-  `max_tokens=8192`, `response_format=json_object`, provedor obrigado a
-  suportar parâmetros, `temperature=1`.
+- Candidato já testado: `google/gemini-2.5-flash`,
+  `reasoning.max_tokens=2048`, `max_tokens=8192`.
+- Perfil experimental adicional: `gemini-thinking-4096-compact`, mesmo
+  modelo, `reasoning.max_tokens=4096` e `max_tokens=6144`. O teto total
+  inclui raciocínio e resposta JSON; restam 2048 tokens se usar 4096 para
+  raciocínio. Como o primeiro teste usou 1698 de 2048, não atingiu seu teto:
+  aumentá-lo NÃO garante mais pensamento nem melhor detecção.
+- Ambos os perfis mantêm `response_format=json_object`, provedor obrigado a
+  suportar parâmetros e `temperature=1`. O novo perfil mantém o mesmo prompt
+  e gabarito, isolando a mudança de orçamento como variável do experimento.
 
 O Gemini 2.5 Flash foi escolhido porque a documentação do OpenRouter anuncia
 controle direto do orçamento de pensamento, suporte a saída estruturada e
@@ -70,8 +81,8 @@ nada no PR. O operador deve antes:
 A API pode omitir os contadores de raciocínio. Nesse caso o resultado
 aparece com `reasoning_budget_verified=false`; sucesso na geração NÃO
 significa que o limite numérico foi comprovadamente respeitado. Quando
-os contadores existem, qualquer uso acima de 2048 tokens de pensamento
-ou acima dos 8192 tokens totais é rejeitado, sem repetir a cobrança.
+os contadores existem, qualquer uso acima do limite do perfil (2048/8192
+ou 4096/6144, raciocínio/total) é rejeitado, sem repetir a cobrança.
 
 O teste é propositalmente de **um caso e um perfil por execução**.
 Mesmo em erro de rede, a primeira chamada pode gerar cobrança. O modelo
@@ -110,6 +121,18 @@ requisição sem retry e rejeita **re-runs do mesmo workflow**. Isso NÃO impede
 outro disparo manual independente; desabilitar a variável após o teste e manter
 o teto real de gastos na chave OpenRouter são indispensáveis. A cobrança pode
 ocorrer mesmo quando houver falha.
+
+### Perfil experimental de raciocínio 4096 (NÃO executar sem nova autorização)
+
+O workflow manual inclui `reasoning_profile`, com padrão
+`gemini-thinking-2048` e opção `gemini-thinking-4096-compact`.
+A seleção é uma allowlist estática, não aceita modelo ou teto arbitrário.
+No perfil 4096, `max_tokens=6144` é o teto combinado, **não** um
+limite independente de 2048 tokens somente para a mensagem. O prompt já
+solicita JSON conciso. Esse perfil é para benchmarks curtos, não para a
+produção nem PRs completos. A primeira tentativa paga já foi consumida;
+aumentar raciocínio exige autorização explícita para nova chamada e
+verificação do saldo/limite real na chave do OpenRouter.
 
 ### Diagnóstico sem custo de API
 
