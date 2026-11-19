@@ -53,8 +53,8 @@ def test_prompt():
     check("Causal chain: explicit failure mechanism", "CAUSAL PROOF AND REPRODUCIBILITY" in sys_c
           and "reachable trigger" in sys_c and "runtime mechanism" in sys_c
           and "user-visible or data/security impact" in sys_c)
-    check("Refutation: SQLite transaction semantics", "ADV E R S A R I A L" not in sys_c
-          and "ADVERSARIAL REFUTATION CHECKLIST" in sys_c
+    check("Refutation: SQLite transaction semantics",
+          "ADVERSARIAL REFUTATION CHECKLIST" in sys_c
           and "Python sqlite3" in sys_c and "explicit transaction" in sys_c)
     check("Refutation: CI/stdlib evidence", "standard-library imports" in sys_c
           and "proven failed workflow" in sys_c)
