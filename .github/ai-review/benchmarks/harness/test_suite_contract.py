@@ -86,6 +86,26 @@ class SuiteContractTests(unittest.TestCase):
                     if expected:
                         self.assertEqual(match_score({**f, "path": "other.py"}, gt), -1)
 
+    def test_mechanism_contract_rejects_code_echo_without_failure_chain(self):
+        samples = (
+            ("off-001",
+             "if horas < 24: estado = ESTADO_REVOKED_GRACE"),
+            ("tst-001",
+             "limite=-1 usa LIMIT -1 e retorna um valor."),
+            ("dep-001",
+             "textChanged.connect(self._atualizar_contador) atualiza a interface."),
+        )
+        for cid, shallow in samples:
+            gt = load_ground_truth(cid)
+            finding = {
+                "path": gt["expected"]["path"], "line": 1,
+                "title": "Copia de linha", "body": shallow, "evidence": shallow,
+                "category": gt["expected"]["category"],
+                "severity": gt["expected"]["severity"],
+            }
+            with self.subTest(case=cid):
+                self.assertEqual(match_score(finding, gt), -1)
+
     def test_fixture_specific_regressions_are_independent_and_observable(self):
         frk = load_cases(case_id="frk-001")[0]
         self.assertIn("-        if self.entry_user.text() == os.environ.get(", frk["diff"])
