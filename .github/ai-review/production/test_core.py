@@ -79,6 +79,17 @@ class IntegrationContracts(unittest.TestCase):
         self.assertNotIn("reasoning", core.build_payload(
             "T", "B", "D", model="minimax/minimax-m2.7"))
 
+    def test_json_mode_only_for_pinned_deepseek(self):
+        payload = core.build_payload("T", "B", "D")
+        self.assertEqual(payload["response_format"], {"type": "json_object"})
+        self.assertEqual(payload["provider"], {"require_parameters": True})
+        self.assertEqual(payload["reasoning"], {"effort": "none"})
+        self.assertEqual(payload["max_tokens"], 8192)
+        alternative = core.build_payload("T", "B", "D", model="minimax/minimax-m2.7")
+        self.assertNotIn("response_format", alternative)
+        self.assertNotIn("provider", alternative)
+        self.assertNotIn("reasoning", alternative)
+
     def test_output_budget_and_concise_complete_review_guidance(self):
         payload = core.build_payload("T", "B", "D")
         self.assertEqual(payload["max_tokens"], 8192)
