@@ -113,7 +113,7 @@ def summarize(records, *, profile):
         "visible_tokens_total": totals["visible_tokens"],
         "usage_records": usage_count,
         "manual_semantic_audit_required": True,
-        "is_live_model_accuracy": bool(records),
+        "provenance_unverified": True,
     }
 
 
