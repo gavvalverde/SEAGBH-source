@@ -239,7 +239,7 @@ class Integration(Offline):
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
-                         ("deepseek/deepseek-v4.1-flash-1017", 0.3, 24576))
+                         ("deepseek/deepseek-v4.1-flash-1017", 0.3, 65536))
         self.assertEqual(expected["reasoning"], {"max_tokens": 16384})
         self.assertEqual(expected["response_format"], {"type": "json_object"})
         self.assertEqual(expected["provider"], {"require_parameters": True})
@@ -250,7 +250,7 @@ class Integration(Offline):
         self.assertEqual(original["max_tokens"], 8192)
         prod = r.build_production_payload("T", "B", "D")
         self.assertEqual(prod["model"], original["model"])
-        self.assertEqual(prod["max_tokens"], 24576)
+        self.assertEqual(prod["max_tokens"], 65536)
         self.assertEqual(prod["reasoning"], {"max_tokens": 16384})
         self.assertEqual(prod["response_format"], {"type": "json_object"})
         self.assertEqual(prod["provider"], {"require_parameters": True})
@@ -634,8 +634,8 @@ class Transport(Offline):
         github = HTTPS()
         self.assertIsInstance(model.http, HTTPS)
         self.assertEqual(model.http.connect_timeout, 5)
-        self.assertEqual(model.http.read_timeout, 180)
-        self.assertEqual(model.http.total_timeout, 240)
+        self.assertEqual(model.http.read_timeout, 480)
+        self.assertEqual(model.http.total_timeout, 600)
         self.assertEqual(model.http.max_response, OpenRouter.MAX_RESPONSE)
         self.assertEqual((github.connect_timeout, github.read_timeout,
                           github.total_timeout), (5, 30, 60))
@@ -646,6 +646,27 @@ class Transport(Offline):
         http = FakeHTTP([envelope()]);model = OpenRouter("synthetic-key", http=http)
         self.assertEqual(model.complete(core.build_payload("t", "b", "d")), review())
         self.assertEqual(http.calls[0][0:3], ("openrouter.ai", "POST", "/api/v1/chat/completions"))
+
+    def test_successful_model_request_reports_only_numeric_telemetry(self):
+        payload = json.loads(envelope().body)
+        payload["usage"] = {
+            "completion_tokens": 900,
+            "completion_tokens_details": {"reasoning_tokens": 700},
+            "sensitive_provider_field": "PRIVATE_SENTINEL",
+        }
+        model = OpenRouter("synthetic-key", http=FakeHTTP([
+            HttpReply(200, json.dumps(payload).encode("utf-8"))]))
+        self.assertIsNone(model.last_usage)
+        self.assertIsNone(model.last_http_elapsed_ms)
+        self.assertEqual(model.complete({"max_tokens": 65536}), review())
+        self.assertEqual(model.last_usage, {
+            "completion_tokens": 900, "reasoning_tokens": 700,
+            "visible_tokens": 200,
+        })
+        self.assertIsInstance(model.last_http_elapsed_ms, int)
+        self.assertGreaterEqual(model.last_http_elapsed_ms, 0)
+        self.assertLessEqual(model.last_http_elapsed_ms, 1000000)
+        self.assertNotIn("PRIVATE_SENTINEL", repr(model.last_usage))
 
     def test_openrouter_posts_bounded_nonthinking_payload(self):
         http = FakeHTTP([envelope()])
@@ -726,6 +747,10 @@ class Transport(Offline):
             return HttpReply(200, json.dumps(value).encode())
 
         for usage, expected in [
+            ({"completion_tokens": 65536,
+              "completion_tokens_details": {"reasoning_tokens": 65536}},
+             {"completion_tokens": 65536, "reasoning_tokens": 65536,
+              "visible_tokens": 0}),
             ({"completion_tokens": 16384,
               "completion_tokens_details": {"reasoning_tokens": 14000},
               "raw_secret": "PRIVATE-UNTRUSTED"},
@@ -932,7 +957,7 @@ class Workflow(Offline):
         self.assertEqual(self.job["permissions"], {"contents": "read", "pull-requests": "write"})
         self.assertIn("pull_request.number", self.data["concurrency"]["group"])
         self.assertEqual(self.data["concurrency"]["cancel-in-progress"], "false")
-        self.assertEqual(self.job["timeout-minutes"], "10")
+        self.assertEqual(self.job["timeout-minutes"], "15")
 
     def test_no_pr_code_secret_interpolation_or_silent_failure(self):
         steps = self.job["steps"]
@@ -1140,6 +1165,7 @@ class StrictActivation(Offline):
         data = yaml.load((Path(__file__).resolve().parents[2] / 'workflows/ai-review.yml').read_text(encoding='utf8'), Loader=yaml.BaseLoader)
         steps = data['jobs']['review']['steps']
         gate = steps[0]
+        self.assertEqual(data['jobs']['review']['timeout-minutes'], '15')
         self.assertEqual(gate.get('id'), 'activation')
         self.assertEqual(gate.get('shell'), 'bash')
         self.assertNotIn('secrets', json.dumps(gate))
