@@ -30,6 +30,12 @@ MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
 MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
+# Exact profile used for the 23-case DeepSeek pilot (16K reasoning / 8K
+# requested visible allowance within a shared completion ceiling).
+PRODUCTION_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+PRODUCTION_REASONING_MAX_TOKENS = 16384
+PRODUCTION_MAX_TOKENS = 24576
+PRODUCTION_MAX_REQUEST_BYTES = 131072
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
 _LOCKS = {}
@@ -475,6 +481,25 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
     return body
 
 
+def build_production_payload(title, body, diff, *, context="", trunc_note="", omit_info=""):
+    """Pinned DeepSeek thinking profile, not the shared non-thinking default.
+
+    The pilot's token budgets are requested targets, not an independent
+    guarantee on visible/reasoning token allocation or a dollar cost cap.
+    """
+    payload = core.build_payload(
+        title, body, diff, context=context, trunc_note=trunc_note,
+        omit_info=omit_info,
+    )
+    if payload.get("model") != PRODUCTION_MODEL:
+        raise Problem("production_model_mismatch")
+    payload["reasoning"] = {"max_tokens": PRODUCTION_REASONING_MAX_TOKENS}
+    payload["max_tokens"] = PRODUCTION_MAX_TOKENS
+    if len(json.dumps(payload, ensure_ascii=True, allow_nan=False).encode("utf-8")) > PRODUCTION_MAX_REQUEST_BYTES:
+        raise Problem("production_request_size_limit")
+    return payload
+
+
 def run_review(event, enabled, github, model, *, version):
     """Mocks may implement the small GitHub and model interfaces. No hidden retry of POST."""
     try:
@@ -501,7 +526,7 @@ def run_review(event, enabled, github, model, *, version):
         context = dict(collected.manifest)
         if excerpts:
             context["source_snippets"] = excerpts
-        payload = core.build_payload(title, body, collected.diff,
+        payload = build_production_payload(title, body, collected.diff,
             context=json.dumps(context, ensure_ascii=True, sort_keys=True),
             trunc_note="[PARTIAL REVIEW]" if collected.manifest["partial"] else "",
             omit_info=json.dumps(collected.manifest["omitted"], ensure_ascii=True) if collected.manifest["omitted"] else "")
@@ -564,6 +589,10 @@ def main():
     if os.environ.get("AI_REVIEW_ENABLED") != "true":
         print('{"code":"skip_disabled"}')
         return 0
+    # Treat an Actions re-run as NO authorization for another paid request.
+    if os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+        print('{"code":"skip_rerun"}')
+        return 0
     try:
         trusted = os.environ.get("AI_REVIEW_TRUSTED_SHA")
         if (os.environ.get("GITHUB_EVENT_NAME") != "pull_request_target"
@@ -577,7 +606,8 @@ def main():
         event_snapshot(event, "true")
         from transport import OpenRouter
         outcome = run_review(event, "true", GitHub(os.environ.get("GITHUB_TOKEN")),
-                             OpenRouter(os.environ.get("OPENROUTER_API_KEY")), version=reviewer_version())
+                             OpenRouter(os.environ.get("OPENROUTER_API_KEY"),
+                                        max_attempts=1), version=reviewer_version())
     except Problem as error:
         outcome = Outcome(error.code, 0 if error.code.startswith("skip_") else 1)
     except Exception:

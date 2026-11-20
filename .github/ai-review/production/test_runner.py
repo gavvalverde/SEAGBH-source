@@ -235,13 +235,32 @@ class Integration(Offline):
     def test_payload_is_exact_shared_contract(self):
         gh = FakeGitHub();pinned = r.event_snapshot(event(), "true");collected = r.collect(gh, pinned)
         out, _, ai = self.run_case(github=gh)
-        expected = core.build_payload(pinned.title, pinned.body, collected.diff,
+        expected = r.build_production_payload(pinned.title, pinned.body, collected.diff,
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
-        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]), ("deepseek/deepseek-v4.1-flash-1017", 0.3, 8192))
-        self.assertEqual(expected["reasoning"], {"effort": "none"})
+        self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
+                         ("deepseek/deepseek-v4.1-flash-1017", 0.3, 24576))
+        self.assertEqual(expected["reasoning"], {"max_tokens": 16384})
         self.assertEqual(expected["response_format"], {"type": "json_object"})
         self.assertEqual(expected["provider"], {"require_parameters": True})
+
+    def test_production_profile_is_explicit_and_bounded(self):
+        original = core.build_payload("T", "B", "D")
+        self.assertEqual(original["reasoning"], {"effort": "none"})
+        self.assertEqual(original["max_tokens"], 8192)
+        prod = r.build_production_payload("T", "B", "D")
+        self.assertEqual(prod["model"], original["model"])
+        self.assertEqual(prod["max_tokens"], 24576)
+        self.assertEqual(prod["reasoning"], {"max_tokens": 16384})
+        self.assertEqual(prod["response_format"], {"type": "json_object"})
+        self.assertEqual(prod["provider"], {"require_parameters": True})
+        with self.assertRaises(Problem) as size:
+            r.build_production_payload("T", "B", "x" * 150000)
+        self.assertEqual(size.exception.code, "production_request_size_limit")
+        with patch.object(core, "build_payload", return_value={**original, "model": "other/provider"}):
+            with self.assertRaises(Problem) as wrong_model:
+                r.build_production_payload("T", "B", "D")
+        self.assertEqual(wrong_model.exception.code, "production_model_mismatch")
 
     def test_source_snippet_uses_pinned_sha_and_does_not_expand_review_scope(self):
         gh = FakeGitHub()
@@ -583,9 +602,24 @@ class Integration(Offline):
             client.assert_not_called()
 
     def test_cli_rejects_untrusted_execution_context(self):
-        with patch.dict("os.environ", {"AI_REVIEW_ENABLED": "true", "GITHUB_EVENT_NAME": "pull_request"}, clear=True), patch.object(r, "GitHub") as client, patch("builtins.print"):
+        with patch.dict("os.environ", {
+            "AI_REVIEW_ENABLED": "true",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_EVENT_NAME": "pull_request",
+        }, clear=True), patch.object(r, "GitHub") as client, patch("builtins.print"):
             self.assertEqual(r.main(), 1)
             client.assert_not_called()
+
+    def test_cli_replay_skips_before_credentials_clients_or_paid_calls(self):
+        for attempt in (None, "", "2", "3", "bogus"):
+            with self.subTest(attempt=attempt):
+                variables = {"AI_REVIEW_ENABLED": "true"}
+                if attempt is not None:
+                    variables["GITHUB_RUN_ATTEMPT"] = attempt
+                with patch.dict("os.environ", variables, clear=True), patch.object(r, "GitHub") as client, patch("builtins.print") as report:
+                    self.assertEqual(r.main(), 0)
+                    client.assert_not_called()
+                    report.assert_called_once_with('{"code":"skip_rerun"}')
 
     def test_render_cannot_consume_unfiltered_result(self):
         pinned = r.event_snapshot(event(), "true")
@@ -663,6 +697,21 @@ class Transport(Offline):
             with self.assertRaises(Problem): OpenRouter("x", http=http, sleep=Mock()).complete({})
             self.assertEqual(len(http.calls), 2)
 
+    def test_production_429_or_5xx_never_retries_a_paid_request(self):
+        for code in (429, 500, 503):
+            http = FakeHTTP([HttpReply(code, b'{}'), envelope()])
+            sleep = Mock()
+            with self.subTest(code=code), self.assertRaises(Problem) as got:
+                OpenRouter("x", http=http, sleep=sleep, max_attempts=1).complete(
+                    r.build_production_payload("T", "B", "D")
+                )
+            self.assertEqual(got.exception.code, "http_error")
+            self.assertEqual(len(http.calls), 1)
+            sleep.assert_not_called()
+        for invalid in (0, 3, True, "1"):
+            with self.subTest(invalid=invalid), self.assertRaises(Problem):
+                OpenRouter("x", max_attempts=invalid)
+
     def test_network_failure_is_not_retried(self):
         http = FakeHTTP([Problem("network_timeout")])
         with self.assertRaises(Problem) as got: OpenRouter("x", http=http, sleep=Mock()).complete({})
@@ -735,12 +784,14 @@ class Transport(Offline):
         self.assertEqual(len(http.calls), 1)
 
         github = FakeGitHub()
+        # Production opts in to thinking; positive reasoning usage is expected.
         result = r.run_review(event(), "true", github,
-            OpenRouter("synthetic-key", http=FakeHTTP([wire])),
-            version="test-nonthinking")
-        self.assertEqual(result.code, "reasoning_control_ignored")
-        self.assertFalse(result.published)
-        self.assertFalse(github.posts)
+            OpenRouter("synthetic-key", http=FakeHTTP([wire]),
+                       max_attempts=1),
+            version="test-thinking")
+        self.assertEqual(result.code, "published")
+        self.assertTrue(result.published)
+        self.assertEqual(len(github.posts), 1)
 
     def test_nonthinking_valid_completion_passes_through(self):
         http = FakeHTTP([envelope(review())])
@@ -857,9 +908,11 @@ class Workflow(Offline):
         self.assertEqual(self.data["on"]["pull_request_target"]["branches"], ["main"])
         self.assertIn("ready_for_review", self.data["on"]["pull_request_target"]["types"])
         condition = self.job["if"]
-        for required in ["vars.AI_REVIEW_ENABLED == 'true'", "head.repo.full_name == 'gavvalverde/SEAGBH-source'",
+        for required in ["vars.AI_REVIEW_ENABLED == 'true'", "github.run_attempt == 1",
+                         "head.repo.full_name == 'gavvalverde/SEAGBH-source'",
                          "base.ref == 'main'", "draft == false", "state == 'open'"]:
             self.assertIn(required, condition)
+        self.assertNotIn("AI_REVIEW_TARGET_PR", self.text)
         self.assertNotIn("workflow_dispatch", self.data["on"])
 
     def test_checkout_is_immutable_and_never_pr_head(self):
