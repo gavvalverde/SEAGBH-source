@@ -1,0 +1,76 @@
+name: Licenciamento Offline Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/main_qt.py"
+      - "src/core/__init__.py"
+      - "src/core/licenca.py"
+      - "src/core/multiativacao_dominio.py"
+      - "src/ui/licenca_dialog.py"
+      - "tests/__init__.py"
+      - "tests/unit/__init__.py"
+      - "tests/conftest.py"
+      - "tests/unit/licenciamento/**"
+      - "tests/requirements-licenciamento.txt"
+      - ".github/workflows/licenciamento-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/main_qt.py"
+      - "src/core/__init__.py"
+      - "src/core/licenca.py"
+      - "src/core/multiativacao_dominio.py"
+      - "src/ui/licenca_dialog.py"
+      - "tests/__init__.py"
+      - "tests/unit/__init__.py"
+      - "tests/conftest.py"
+      - "tests/unit/licenciamento/**"
+      - "tests/requirements-licenciamento.txt"
+      - ".github/workflows/licenciamento-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: licenciamento-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  licenciamento:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
+      TMPDIR: ${{ runner.temp }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout PR code without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+      - name: Install isolated licensing test dependencies
+        run: |
+          set -euo pipefail
+          python -B -m venv "$RUNNER_TEMP/licenciamento-ci-venv"
+          PY="$RUNNER_TEMP/licenciamento-ci-venv/bin/python"
+          "$PY" -B -m pip --isolated --disable-pip-version-check --no-input install --only-binary=:all: --require-hashes --index-url https://pypi.org/simple -r tests/requirements-licenciamento.txt
+          "$PY" -B -m pip --isolated --disable-pip-version-check check
+      - name: Run complete offline licensing regression suite
+        run: |
+          set -euo pipefail
+          PY="$RUNNER_TEMP/licenciamento-ci-venv/bin/python"
+          "$PY" -B -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version; print(sys.version)'
+          "$PY" -B -m pytest -q -p no:cacheprovider tests/unit/licenciamento
