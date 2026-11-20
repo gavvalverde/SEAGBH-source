@@ -242,7 +242,9 @@ class Integration(Offline):
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
                          ("moonshotai/kimi-k2.6", 0.3, 8192))
         self.assertEqual(expected["reasoning"], {"enabled": False})
-        self.assertEqual(expected["response_format"], {"type": "json_object"})
+        self.assertEqual(expected["response_format"]["type"], "json_schema")
+        self.assertEqual(expected["response_format"]["json_schema"]["schema"], r._production_remote_schema())
+        self.assertIs(expected["response_format"]["json_schema"]["strict"], False)
         self.assertEqual(expected["provider"], {"only": ["baidu"],
             "allow_fallbacks": False, "require_parameters": True,
             "max_price": {"prompt": 0.42, "completion": 1.75}})
@@ -256,11 +258,14 @@ class Integration(Offline):
             prod = r.build_production_payload("T", "B", "D")
         self.assertEqual(builder.call_args.kwargs["model"], "moonshotai/kimi-k2.6")
         self.assertEqual(prod["model"], "moonshotai/kimi-k2.6")
-        self.assertEqual(prod["messages"], original["messages"])
+        self.assertEqual(prod["messages"][1], original["messages"][1])
+        self.assertTrue(prod["messages"][0]["content"].startswith(original["messages"][0]["content"]))
+        self.assertIn("COPY THE FULL EXACT SOURCE CODE LINE", prod["messages"][0]["content"])
         self.assertNotIn("deepseek", json.dumps({k: v for k, v in prod.items() if k != "messages"}))
         self.assertEqual(prod["max_tokens"], 8192)
         self.assertEqual(prod["reasoning"], {"enabled": False})
-        self.assertEqual(prod["response_format"], {"type": "json_object"})
+        self.assertEqual(prod["response_format"]["type"], "json_schema")
+        self.assertEqual(prod["response_format"]["json_schema"]["schema"], r._production_remote_schema())
         self.assertEqual(prod["provider"], {"only": ["baidu"],
             "allow_fallbacks": False, "require_parameters": True,
             "max_price": {"prompt": 0.42, "completion": 1.75}})
@@ -273,6 +278,14 @@ class Integration(Offline):
             with self.assertRaises(Problem) as wrong_model:
                 r.build_production_payload("T", "B", "D")
         self.assertEqual(wrong_model.exception.code, "production_model_mismatch")
+
+    def test_kimi_remote_schema_does_not_modify_local_draft7(self):
+        remote = r._production_remote_schema()
+        self.assertNotIn("allOf", remote["properties"]["findings"]["items"])
+        self.assertIn("allOf", core._schema["properties"]["findings"]["items"])
+        remote["properties"]["findings"]["items"]["properties"].clear()
+        self.assertIn("evidence", r._production_remote_schema()["properties"]["findings"]["items"]["properties"])
+        self.assertFalse(core.validate_review('{"summary":"x","findings":[{"path":"a.py"}]}').ok)
 
     def test_source_snippet_uses_pinned_sha_and_does_not_expand_review_scope(self):
         gh = FakeGitHub()
@@ -919,7 +932,7 @@ class Transport(Offline):
     def test_kimi_failures_never_remove_parameters_retry_fallback_or_publish(self):
         cases = [("unsupported_" + parameter, HttpReply(status,
                     json.dumps({"error": "PRIVATE_" + parameter}).encode()), "http_error")
-                 for parameter, status in [("json_object", 400), ("reasoning.enabled", 404),
+                 for parameter, status in [("json_schema", 400), ("reasoning.enabled", 404),
                                             ("temperature", 422)]]
         cases += [("http_" + str(status), HttpReply(status, b'{}'), "http_error")
                   for status in (429, 500, 503)]
@@ -958,11 +971,23 @@ class Transport(Offline):
                 self.assertEqual((sent["model"], sent["temperature"], sent["max_tokens"]),
                                  ("moonshotai/kimi-k2.6", 0.3, 8192))
                 self.assertEqual(sent["reasoning"], {"enabled": False})
-                self.assertEqual(sent["response_format"], {"type": "json_object"})
+                self.assertEqual(sent["response_format"]["type"], "json_schema")
+                self.assertEqual(sent["response_format"]["json_schema"]["schema"], r._production_remote_schema())
                 self.assertEqual(sent["provider"], {"only": ["baidu"],
                     "allow_fallbacks": False, "require_parameters": True,
                     "max_price": {"prompt": 0.42, "completion": 1.75}})
                 self.assertNotIn("models", sent)
+
+    def test_kimi_structured_mode_does_not_repair_invalid_json_or_retry(self):
+        http = FakeHTTP([envelope('{"summary":'), envelope(review([]))])
+        gh = FakeGitHub()
+        outcome = r.run_review(event(), "true", gh,
+            OpenRouter("synthetic-key", http=http, max_attempts=1),
+            version="schema-incomplete")
+        self.assertEqual((outcome.code, outcome.stage), ("incomplete_response", "validation"))
+        self.assertFalse(outcome.published or gh.posts)
+        self.assertEqual(len(http.calls), 1)
+        self.assertEqual(json.loads(http.calls[0][4])["response_format"]["type"], "json_schema")
 
     def test_kimi_8192_output_cap_rejects_truncated_json_without_publishing(self):
         reply = json.loads(envelope(finish_reason="length").body)

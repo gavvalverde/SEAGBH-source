@@ -39,6 +39,18 @@ PRODUCTION_MAX_TOKENS = 8192
 PRODUCTION_INPUT_USD_M_CEILING = 0.42
 PRODUCTION_OUTPUT_USD_M_CEILING = 1.75
 PRODUCTION_MAX_REQUEST_BYTES = 131072
+_KIMI_OUTPUT_RULES = (
+    "\n\n## KIMI: JSON AND LITERAL EVIDENCE\n"
+    "Return one complete JSON object only; leave room for closing brackets. "
+    "Keep each finding concise, with its trigger, mechanism and impact.\n"
+    "In EACH finding evidence field, COPY THE FULL EXACT SOURCE CODE LINE "
+    "at the cited path and NEW-file line from the diff. Remove only the diff "
+    "prefix + (or context space) and surrounding indentation. No fragments, "
+    "paraphrases, invented code, line numbers instead of code, or approximate "
+    "quotes. If the exact full line cannot be copied, OMIT that finding.\n"
+    "Only publish independent bugs with concrete and reproducible impact.\n"
+)
+
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
 _LOCKS = {}
@@ -487,6 +499,16 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
     return body
 
 
+def _production_remote_schema():
+    """Detached provider-friendly view; trusted local Draft 7 stays authoritative."""
+    schema = json.loads(json.dumps(core._schema, allow_nan=False))
+    schema.pop("$schema", None)
+    schema.pop("$id", None)
+    # Preserve full conditional validation exclusively in the local validator.
+    schema["properties"]["findings"]["items"].pop("allOf", None)
+    return schema
+
+
 def build_production_payload(title, body, diff, *, context="", trunc_note="", omit_info=""):
     """Pinned Kimi K2.6/Baidu non-thinking profile; shared prompt unchanged.
 
@@ -501,7 +523,12 @@ def build_production_payload(title, body, diff, *, context="", trunc_note="", om
         raise Problem("production_model_mismatch")
     payload["reasoning"] = {"enabled": PRODUCTION_REASONING_ENABLED}
     payload["max_tokens"] = PRODUCTION_MAX_TOKENS
-    payload["response_format"] = {"type": "json_object"}
+    payload["messages"][0]["content"] += _KIMI_OUTPUT_RULES
+    payload["response_format"] = {
+        "type": "json_schema",
+        "json_schema": {"name": "seagbh_code_review", "strict": False,
+                        "schema": _production_remote_schema()},
+    }
     payload["provider"] = {
         "only": [PRODUCTION_PROVIDER], "allow_fallbacks": False,
         "require_parameters": True,
