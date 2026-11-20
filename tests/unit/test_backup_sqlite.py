@@ -257,6 +257,29 @@ class BackupSQLite(unittest.TestCase):
         self.assert_erro("origem_na_pasta_de_backups", lambda: servico.criar_backup(
             backend="sqlite", origem=self.origem, pasta=self.raiz))
 
+    def test_origem_em_subdiretorios_de_backups_recusada_sem_alteracoes(self):
+        self.criar(manter=None)
+        for subpasta in ("subpasta", "subpasta/nivel2/nivel3"):
+            with self.subTest(subpasta=subpasta):
+                origem = self.pasta / subpasta / "origem.db"
+                origem.parent.mkdir(parents=True, exist_ok=True)
+                with closing(sqlite3.connect(origem)) as conn:
+                    conn.executescript(DDL)
+                    conn.commit()
+                servico.validar_backup(backend="sqlite", caminho=origem)
+                hash_origem = sha(origem)
+                antes = {p.relative_to(self.pasta): sha(p) if p.is_file() else None
+                         for p in self.pasta.rglob("*")}
+
+                self.assert_erro("origem_na_pasta_de_backups", lambda: servico.criar_backup(
+                    backend="sqlite", origem=origem, pasta=self.pasta, manter=1))
+
+                depois = {p.relative_to(self.pasta): sha(p) if p.is_file() else None
+                          for p in self.pasta.rglob("*")}
+                self.assertEqual(depois, antes)
+                self.assertEqual(sha(origem), hash_origem)
+                self.assert_sem_staging()
+
     def test_hardlink_de_origem_recusado(self):
         alias = self.raiz / "alias.db"
         os.link(self.origem, alias)

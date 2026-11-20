@@ -357,8 +357,8 @@ def criar_backup(*, backend: str, origem: str | Path, pasta: str | Path,
                  progresso: Callable[[int, int], None] | None = None) -> ResultadoBackup:
     """Publica snapshot validado; manter=None desabilita retenção.
 
-    Não altera dados/journal_mode da origem. Recusa origem na própria pasta de
-    backups. Cancelamento anterior à publicação não publica nem roda retenção;
+    Não altera dados/journal_mode da origem. Recusa origem em qualquer nível da
+    árvore de backups. Cancelamento anterior à publicação não publica nem roda retenção;
     após o hard link, a criação está concluída e falhas posteriores viram avisos.
     O chamador deve apresentar esses avisos (inclusive limpeza/retencão).
     """
@@ -368,7 +368,7 @@ def criar_backup(*, backend: str, origem: str | Path, pasta: str | Path,
         raise ErroBackup("argumentos", "progresso_invalido")
     origem = _caminho(origem)
     pasta = _caminho(pasta, diretorio=True)
-    if origem.parent == pasta:
+    if origem.is_relative_to(pasta):
         raise ErroBackup("argumentos", "origem_na_pasta_de_backups")
     controle.verificar("preparacao")
     avisos: list[str] = []
