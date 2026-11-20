@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 import yaml
 import core
+import experimental_profiles as experimental
 import runner as r
 from transport import HTTPS, HttpReply, OpenRouter, Problem
 
@@ -628,7 +629,333 @@ class Integration(Offline):
         with self.assertRaises(Problem): r.render(raw, collected, pinned, BOT, "v1", model_id=core.build_payload("t", "b", "d")["model"])
 
 
+class ExperimentalProfiles(Offline):
+    def capabilities(self, name):
+        selected = experimental.PROFILES[name]
+        # Synthetic declaration for offline tests, NOT a verified remote snapshot.
+        return experimental.EndpointCapabilities(selected.model, selected.provider,
+            frozenset({"max_tokens", "temperature", "reasoning", "response_format"}),
+            json_object=True, max_completion_tokens=8192,
+            can_disable_reasoning=selected.disable_reasoning,
+            reasoning_efforts=frozenset({"low"}) if not selected.disable_reasoning else frozenset())
+
+    def payload(self, name="kimi-k26-nonthinking", **kwargs):
+        return experimental.build_experimental_payload(name, "T", "B", PATCH,
+            capabilities=self.capabilities(name), **kwargs)
+
+    def client(self, name, reply):
+        http = FakeHTTP([reply])
+        model = experimental.experimental_transport(name, "synthetic-key",
+            capabilities=self.capabilities(name), http=http)
+        return model, http
+
+    def response(self, *, completion=100, reasoning=0, content=None, **changes):
+        value = json.loads(envelope(content, **changes).body)
+        value["usage"] = {"completion_tokens": completion,
+            "completion_tokens_details": {"reasoning_tokens": reasoning}}
+        return HttpReply(200, json.dumps(value).encode())
+
+    def test_exact_profiles_and_unchanged_shared_messages(self):
+        for name, model, provider, reasoning in [
+            ("kimi-k26-nonthinking", "moonshotai/kimi-k2.6", "moonshotai", {"enabled": False}),
+            ("glm53-flash-low", "z-ai/glm-5.3-flash", "deepinfra", {"effort": "low"}),
+        ]:
+            with self.subTest(name=name):
+                got = self.payload(name, context='{"untrusted":"context"}', trunc_note="partial", omit_info="omitted")
+                expected = core.build_payload("T", "B", PATCH, model=model,
+                    context='{"untrusted":"context"}', trunc_note="partial", omit_info="omitted")
+                self.assertEqual(got["messages"], expected["messages"])
+                self.assertEqual(got["model"], model)
+                self.assertEqual(got["reasoning"], reasoning)
+                self.assertEqual((got["temperature"], got["max_tokens"]), (0.3, 8192))
+                self.assertEqual(got["response_format"], {"type": "json_object"})
+                self.assertEqual(got["provider"]["only"], [provider])
+                self.assertIs(got["provider"]["allow_fallbacks"], False)
+                self.assertIs(got["provider"]["require_parameters"], True)
+                self.assertNotIn("thinking", got)
+        self.assertEqual(core.build_payload("T", "B", "D")["model"], r.PRODUCTION_MODEL)
+        self.assertEqual(r.build_production_payload("T", "B", "D")["max_tokens"], 65536)
+
+    def test_unknown_profile_and_unverified_endpoint_stop_before_builder(self):
+        with patch.object(core, "build_payload") as builder:
+            for name in ("auto", "moonshotai/kimi-latest", {}, None):
+                with self.subTest(name=repr(name)), self.assertRaises(Problem) as caught:
+                    experimental.build_experimental_payload(name, "T", "B", "D")
+                self.assertEqual(caught.exception.code, "experimental_profile_not_allowed")
+            for name in experimental.PROFILES:
+                with self.assertRaises(Problem) as caught:
+                    experimental.build_experimental_payload(name, "T", "B", "D")
+                self.assertEqual(caught.exception.code, "experimental_endpoint_unverified")
+            builder.assert_not_called()
+
+    def test_endpoint_identity_parameters_and_output_mode_are_required(self):
+        from dataclasses import replace
+        for name in experimental.PROFILES:
+            valid = self.capabilities(name)
+            invalid = [
+                replace(valid, model="other/model"), replace(valid, provider="other"),
+                replace(valid, json_object=None), replace(valid, json_object=False),
+                replace(valid, max_completion_tokens=8191), replace(valid, max_completion_tokens=True),
+                replace(valid, supported_parameters=set(valid.supported_parameters)),
+                *[replace(valid, supported_parameters=valid.supported_parameters - {p})
+                  for p in valid.supported_parameters],
+            ]
+            for cap in invalid:
+                with self.subTest(name=name, cap=cap), self.assertRaises(Problem):
+                    experimental.build_experimental_payload(name, "T", "B", "D", capabilities=cap)
+            with self.assertRaises(Problem) as caught:
+                experimental.build_experimental_payload(name, "T", "B", "D", capabilities={})
+            self.assertEqual(caught.exception.code, "experimental_endpoint_invalid")
+
+    def test_reasoning_capability_is_model_specific_and_never_assumed(self):
+        from dataclasses import replace
+        for name in experimental.PROFILES:
+            valid = self.capabilities(name)
+            for cap in ([replace(valid, can_disable_reasoning=v) for v in (None, False, 1)]
+                        if name.startswith("kimi") else
+                        [replace(valid, reasoning_efforts=v) for v in (frozenset(), None, {"low"})]):
+                with self.subTest(name=name), self.assertRaises(Problem) as caught:
+                    experimental.build_experimental_payload(name, "T", "B", "D", capabilities=cap)
+                self.assertEqual(caught.exception.code, "experimental_reasoning_unsupported")
+
+    def test_returned_payload_is_detached_and_size_is_bounded(self):
+        first = self.payload()
+        first["provider"]["only"].append("other")
+        first["reasoning"]["enabled"] = True
+        second = self.payload()
+        self.assertEqual(second["provider"]["only"], ["moonshotai"])
+        self.assertEqual(second["reasoning"], {"enabled": False})
+        with self.assertRaises(TypeError):
+            experimental.PROFILES["other"] = experimental.PROFILES["kimi-k26-nonthinking"]
+        with self.assertRaises(Problem) as caught:
+            self.payload(context="x" * 65536)
+        self.assertEqual(caught.exception.code, "experimental_request_size_limit")
+        original = core.build_payload("T", "B", "D")
+        with patch.object(core, "build_payload", return_value=original):
+            with self.assertRaises(Problem) as caught:
+                self.payload()
+        self.assertEqual(caught.exception.code, "experimental_model_mismatch")
+
+    def test_historical_case_inputs_keep_same_messages_without_gt_reads(self):
+        cases = Path(__file__).resolve().parent.parent / "benchmarks/cases"
+        fixtures = [(p, json.loads(p.read_text(encoding="utf-8"))) for p in sorted(cases.glob("*.json"))]
+        self.assertEqual(len(fixtures), 23)
+        with patch.object(Path, "read_text", side_effect=AssertionError("No GT or files during payload build")):
+            for path, case in fixtures:
+                common = (case["pr_title"], case["pr_body"], case["diff"])
+                context = case.get("context", "")
+                reference = core.build_payload(*common, context=context)
+                for name in experimental.PROFILES:
+                    payload = experimental.build_experimental_payload(name, *common,
+                        context=context, capabilities=self.capabilities(name))
+                    self.assertEqual(payload["messages"], reference["messages"], path.name)
+        with self.assertRaises(TypeError):
+            self.payload(ground_truth={"PRIVATE_GT_SENTINEL": True})
+
+    def test_transport_is_explicit_single_attempt_and_has_no_live_default(self):
+        for name in experimental.PROFILES:
+            with self.assertRaises(TypeError):
+                experimental.experimental_transport(name, "synthetic-key", capabilities=self.capabilities(name))
+            with self.assertRaises(Problem) as caught:
+                experimental.experimental_transport(name, "synthetic-key", capabilities=self.capabilities(name), http=None)
+            self.assertEqual(caught.exception.code, "experimental_transport_required")
+            for status in (400, 404, 422, 429, 500, 503):
+                model, http = self.client(name, HttpReply(status, b'{"error":"PRIVATE_PROVIDER_TEXT"}'))
+                with self.assertRaises(Problem) as caught:
+                    model.complete(self.payload(name))
+                self.assertEqual(caught.exception.code, "http_error")
+                self.assertNotIn("PRIVATE", str(caught.exception))
+                self.assertEqual(len(http.calls), 1)
+                self.assertEqual(model.max_attempts, 1)
+
+    def test_disabled_reasoning_rejects_positive_usage_or_returned_reasoning(self):
+        for field in (None, "reasoning", "reasoning_details", "reasoning_content"):
+            reply = self.response(reasoning=20 if field is None else 0)
+            value = json.loads(reply.body)
+            if field:
+                value["choices"][0]["message"][field] = ["PRIVATE_REASONING_SENTINEL"]
+            model, http = self.client("kimi-k26-nonthinking", HttpReply(200, json.dumps(value).encode()))
+            with self.subTest(field=field), self.assertRaises(Problem) as caught:
+                model.complete(self.payload())
+            self.assertEqual(caught.exception.code, "reasoning_control_ignored")
+            self.assertEqual(model.last_reasoning_control, "disabled_ignored")
+            self.assertNotIn("PRIVATE", repr(vars(caught.exception)))
+            self.assertEqual(len(http.calls), 1)
+
+    def test_candidate_transport_rejects_mutated_or_production_payload_before_http(self):
+        variants = [r.build_production_payload("T", "B", "D")]
+        for key, value in [("model", "other/model"), ("max_tokens", 65536),
+                           ("reasoning", {"enabled": True}),
+                           ("provider", {"require_parameters": False}),
+                           ("response_format", {"type": "text"}), ("tools", [])]:
+            payload = self.payload()
+            payload[key] = value
+            variants.append(payload)
+        payload = self.payload()
+        payload["messages"][1]["content"] = "x" * 65536
+        variants.append(payload)
+        for payload in variants:
+            model, http = self.client("kimi-k26-nonthinking", self.response())
+            with self.assertRaises(Problem):
+                model.complete(payload)
+            self.assertFalse(http.calls)
+        model, http = self.client("kimi-k26-nonthinking", self.response())
+        model.complete(self.payload())
+        self.assertIsNotNone(model.last_usage)
+        with self.assertRaises(Problem):
+            model.complete(variants[0])
+        self.assertIsNone(model.last_usage)
+        self.assertIsNone(model.last_http_elapsed_ms)
+        self.assertIsNone(model.last_reasoning_control)
+        self.assertEqual(len(http.calls), 1)
+
+    def test_kimi_missing_or_invalid_reasoning_usage_is_not_proof_of_disabled(self):
+        for tokens in (None, True, -1, "PRIVATE_COUNTER", 101):
+            reply = self.response(reasoning=tokens)
+            model, _ = self.client("kimi-k26-nonthinking", reply)
+            with self.subTest(tokens=tokens), self.assertRaises(Problem) as caught:
+                model.complete(self.payload())
+            self.assertEqual(caught.exception.code, "reasoning_control_unverified")
+            self.assertEqual(model.last_reasoning_control, "disabled_unverified")
+        model, _ = self.client("kimi-k26-nonthinking", envelope())
+        with self.assertRaises(Problem) as caught:
+            model.complete(self.payload())
+        self.assertEqual(caught.exception.code, "reasoning_control_unverified")
+
+    def test_zero_reasoning_usage_still_requires_local_json_and_sha_validation(self):
+        gh = FakeGitHub()
+        pinned = r.event_snapshot(event(), "true")
+        collected = r.collect(gh, pinned)
+        for name in experimental.PROFILES:
+            for content, expected in [("PRIVATE_INVALID_JSON", "parse_error"),
+                                      ("{}", "schema_error"), ("", "empty_response"),
+                                      (review(), "valid_with_findings")]:
+                model, _ = self.client(name, self.response(content=content))
+                raw = model.complete(self.payload(name))
+                result = core.process_response(raw, collected.scope, expected_sha=HEAD, response_sha=HEAD)
+                self.assertEqual(result.status.value, expected)
+                self.assertEqual(result.publishable, content == review())
+                if result.publishable:
+                    self.assertFalse(r.quality_gate.assess(result.review["findings"], collected.code_lines).requires_manual_review)
+                wrong_sha = core.process_response(raw, collected.scope, expected_sha=HEAD, response_sha=NEW_HEAD)
+                self.assertFalse(wrong_sha.publishable)
+        self.assertFalse(gh.posts)
+
+    def test_low_effort_does_not_claim_reasoning_is_disabled_or_verified(self):
+        model, _ = self.client("glm53-flash-low", self.response(reasoning=90))
+        self.assertEqual(model.complete(self.payload("glm53-flash-low")), review())
+        self.assertEqual(model.last_reasoning_control, "effort_unverifiable")
+        self.assertEqual(model.last_usage["reasoning_tokens"], 90)
+
+    def test_length_precedes_control_failure_and_is_never_retried(self):
+        for name in experimental.PROFILES:
+            model, http = self.client(name, self.response(completion=8192, reasoning=8192, finish_reason="length"))
+            with self.assertRaises(Problem) as caught:
+                model.complete(self.payload(name))
+            self.assertEqual(caught.exception.code, "model_output_limit")
+            self.assertEqual(caught.exception.usage["visible_tokens"], 0)
+            self.assertEqual(len(http.calls), 1)
+
+    def test_experimental_findings_without_anchor_still_require_manual_review(self):
+        gh = FakeGitHub()
+        collected = r.collect(gh, r.event_snapshot(event(), "true"))
+        content = review([finding(evidence="PRIVATE_UNVERIFIABLE_EVIDENCE")])
+        for name in experimental.PROFILES:
+            model, _ = self.client(name, self.response(content=content))
+            result = core.process_response(model.complete(self.payload(name)), collected.scope,
+                expected_sha=HEAD, response_sha=HEAD)
+            self.assertTrue(result.publishable)  # Schema/scope alone never replace the gate.
+            self.assertTrue(r.quality_gate.assess(result.review["findings"], collected.code_lines).requires_manual_review)
+        self.assertFalse(gh.posts)
+
+
 class Transport(Offline):
+    def test_numeric_input_total_and_cost_are_bounded_and_detached(self):
+        reply = json.loads(envelope().body)
+        reply["usage"] = {"prompt_tokens": 250, "completion_tokens": 100,
+            "total_tokens": 350, "cost": 0.0001234,
+            "completion_tokens_details": {"reasoning_tokens": 30},
+            "PRIVATE_FIELD": "PRIVATE_RAW_SENTINEL"}
+        model = OpenRouter("synthetic-key", http=FakeHTTP([HttpReply(200, json.dumps(reply).encode())]))
+        self.assertEqual(model.complete({"reasoning": {"effort": "low"}}), review())
+        self.assertEqual(model.last_usage, {"prompt_tokens": 250, "completion_tokens": 100,
+            "total_tokens": 350, "reasoning_tokens": 30, "visible_tokens": 70,
+            "cost_micro_usd": 124})
+        self.assertTrue(all(type(v) is int for v in model.last_usage.values()))
+        self.assertNotIn("PRIVATE", repr(model.last_usage))
+
+    def test_unsafe_cost_and_input_counters_are_omitted_without_coercion(self):
+        for value in (True, -1, "PRIVATE_SENTINEL", {}, [], float("inf"), float("nan"), 10**400):
+            reply = json.loads(envelope().body)
+            reply["usage"] = {"prompt_tokens": value, "completion_tokens": 10,
+                              "total_tokens": value, "cost": value}
+            model = OpenRouter("synthetic-key", http=FakeHTTP([HttpReply(200, json.dumps(reply).encode())]))
+            self.assertEqual(model.complete({}), review())
+            self.assertEqual(model.last_usage, {"completion_tokens": 10})
+        for usage in ({"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 999},
+                      {"completion_tokens": 20, "total_tokens": 1}):
+            reply["usage"] = usage
+            model = OpenRouter("synthetic-key", http=FakeHTTP([HttpReply(200, json.dumps(reply).encode())]))
+            model.complete({})
+            self.assertNotIn("total_tokens", model.last_usage)
+
+    def test_budget_counts_are_observations_and_exclude_is_not_disable(self):
+        for reasoning, expected in [
+            ({"max_tokens": 10}, "budget_reported_within"),
+            ({"max_tokens": 1}, "budget_reported_exceeded"),
+            ({"exclude": True}, "effort_unverifiable"),
+            ({"effort": "low"}, "effort_unverifiable"),
+        ]:
+            reply = json.loads(envelope().body)
+            reply["usage"] = {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": 5}}
+            model = OpenRouter("synthetic-key", http=FakeHTTP([HttpReply(200, json.dumps(reply).encode())]))
+            self.assertEqual(model.complete({"reasoning": reasoning}), review())
+            self.assertEqual(model.last_reasoning_control, expected)
+
+    def test_telemetry_does_not_leak_between_requests_after_http_failure(self):
+        reply = json.loads(envelope().body)
+        reply["usage"] = {"completion_tokens": 10, "completion_tokens_details": {"reasoning_tokens": 0}}
+        model = OpenRouter("synthetic-key", http=FakeHTTP([
+            HttpReply(200, json.dumps(reply).encode()), HttpReply(400, b'PRIVATE_HTTP_SENTINEL')]))
+        self.assertEqual(model.complete({"reasoning": {"enabled": False}}), review())
+        self.assertEqual(model.last_reasoning_control, "disabled_reported_zero")
+        with self.assertRaises(Problem):
+            model.complete({"reasoning": {"enabled": False}})
+        self.assertIsNone(model.last_usage)
+        self.assertIsNone(model.last_reasoning_control)
+
+    def test_reasoning_usage_requirement_is_strict_bool(self):
+        for value in (None, 1, 0, "true"):
+            with self.assertRaises(Problem) as caught:
+                OpenRouter("synthetic-key", require_reasoning_usage=value)
+            self.assertEqual(caught.exception.code, "invalid_reasoning_usage_requirement")
+
+    def test_cli_logs_safe_observation_codes_and_numbers_on_output_limit(self):
+        reply = json.loads(envelope("PRIVATE_CONTENT_SENTINEL", finish_reason="length").body)
+        reply["choices"][0]["message"]["reasoning"] = "PRIVATE_REASONING_SENTINEL"
+        reply["usage"] = {"prompt_tokens": 100, "completion_tokens": 65536,
+            "total_tokens": 65636, "cost": 0.01,
+            "completion_tokens_details": {"reasoning_tokens": 65536},
+            "PRIVATE_FIELD": "PRIVATE_USAGE_SENTINEL"}
+        model = OpenRouter("synthetic-key", http=FakeHTTP([HttpReply(200, json.dumps(reply).encode())]), max_attempts=1)
+        environment = {"AI_REVIEW_ENABLED": "true", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_EVENT_NAME": "pull_request_target", "GITHUB_REPOSITORY": r.REPOSITORY,
+            "AI_REVIEW_TRUSTED_SHA": BASE, "GITHUB_SHA": BASE, "GITHUB_EVENT_PATH": "unused-synthetic.json"}
+        output = io.StringIO()
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(r.subprocess, "check_output", return_value=BASE), \
+                patch.object(Path, "read_text", return_value=json.dumps(event())), \
+                patch.object(r, "reviewer_version", return_value="synthetic-version"), \
+                patch.object(r, "GitHub", return_value=FakeGitHub()), \
+                patch("transport.OpenRouter", return_value=model), patch("sys.stdout", output):
+            self.assertEqual(r.main(), 1)
+        diagnostic = json.loads(output.getvalue())
+        self.assertEqual(diagnostic["code"], "model_output_limit")
+        self.assertEqual(diagnostic["reasoning_control"], "budget_reported_exceeded")
+        self.assertEqual(diagnostic["usage"]["cost_micro_usd"], 10000)
+        self.assertFalse(diagnostic["published"])
+        self.assertNotIn("PRIVATE", output.getvalue())
+
     def test_model_transport_has_longer_bounded_deadline_than_github(self):
         model = OpenRouter("synthetic-key")
         github = HTTPS()

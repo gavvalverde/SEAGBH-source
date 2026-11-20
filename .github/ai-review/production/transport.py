@@ -2,6 +2,7 @@
 from dataclasses import dataclass, field
 import http.client
 import json
+import math
 import socket
 import time
 
@@ -100,6 +101,17 @@ def _safe_output_usage(envelope):
     if type(completion) is not int or not 0 <= completion <= 1000000:
         return None
     result = {"completion_tokens": completion}
+    prompt = usage.get("prompt_tokens")
+    if type(prompt) is int and 0 <= prompt <= 1000000:
+        result["prompt_tokens"] = prompt
+    total = usage.get("total_tokens")
+    if (type(total) is int and completion <= total <= 2000000
+            and ("prompt_tokens" not in result or total == prompt + completion)):
+        result["total_tokens"] = total
+    cost = usage.get("cost")
+    if type(cost) in (int, float) and 0 <= cost <= 10 and math.isfinite(cost):
+        # Bounded integer micro-USD, rounded up; not an authoritative invoice.
+        result["cost_micro_usd"] = math.ceil(cost * 1000000)
     details = usage.get("completion_tokens_details")
     if isinstance(details, dict):
         reasoning = details.get("reasoning_tokens")
@@ -109,20 +121,53 @@ def _safe_output_usage(envelope):
     return result
 
 
+REASONING_CONTROL_CODES = frozenset({
+    "not_requested", "disabled_reported_zero", "disabled_unverified",
+    "disabled_ignored", "effort_unverifiable", "budget_unverified",
+    "budget_reported_within", "budget_reported_exceeded",
+})
+
+
+def _reasoning_control(payload, counts, message):
+    """Only observable signals, never retain or expose reasoning content."""
+    requested = payload.get("reasoning")
+    if not isinstance(requested, dict):
+        return "not_requested"
+    tokens = counts.get("reasoning_tokens") if counts is not None else None
+    if requested.get("enabled") is False or requested.get("effort") == "none":
+        fields = ("reasoning", "reasoning_content", "reasoning_details")
+        has_reasoning = isinstance(message, dict) and any(message.get(k) for k in fields)
+        if (tokens is not None and tokens > 0) or has_reasoning:
+            return "disabled_ignored"
+        return "disabled_reported_zero" if tokens == 0 else "disabled_unverified"
+    budget = requested.get("max_tokens")
+    if type(budget) is int and budget >= 0:
+        if tokens is None:
+            return "budget_unverified"
+        return "budget_reported_exceeded" if tokens > budget else "budget_reported_within"
+    # A token count cannot prove the provider applied a qualitative effort.
+    return "effort_unverifiable"
+
+
 class OpenRouter:
     MAX_ATTEMPTS = 2
     MAX_RESPONSE = 1024 * 1024
 
-    def __init__(self, key, *, http=None, sleep=time.sleep, max_attempts=2):
+    def __init__(self, key, *, http=None, sleep=time.sleep, max_attempts=2,
+                 require_reasoning_usage=False):
         if not isinstance(key, str) or not key or "\n" in key or "\r" in key:
             raise Problem("authentication_error")
         if type(max_attempts) is not int or max_attempts not in (1, 2):
             raise Problem("invalid_request_attempt_limit")
+        if type(require_reasoning_usage) is not bool:
+            raise Problem("invalid_reasoning_usage_requirement")
         self._key = key
         self.max_attempts = max_attempts
+        self.require_reasoning_usage = require_reasoning_usage
         # Bounded numeric telemetry only; no raw model/provider response is retained.
         self.last_usage = None
         self.last_http_elapsed_ms = None
+        self.last_reasoning_control = None
         # Larger bounded model completion requires a longer read deadline.
         # GitHub API requests retain their original 5/30/60s limits.
         self.http = http if http is not None else HTTPS(
@@ -133,6 +178,7 @@ class OpenRouter:
     def complete(self, payload):
         self.last_usage = None
         self.last_http_elapsed_ms = None
+        self.last_reasoning_control = None
         body = json.dumps(payload, ensure_ascii=True, allow_nan=False).encode("utf-8")
         if len(body) > 262144:
             raise Problem("request_too_large")
@@ -164,6 +210,8 @@ class OpenRouter:
                 raise Problem("unexpected_response")
             choice = choices[0]
             self.last_usage = _safe_output_usage(envelope)
+            message = choice.get("message")
+            self.last_reasoning_control = _reasoning_control(payload, self.last_usage, message)
             # Only emit fixed application-owned codes: provider data is untrusted
             # and must never be copied into Actions logs.
             finish_reason = choice.get("finish_reason")
@@ -177,11 +225,10 @@ class OpenRouter:
                 raise Problem(diagnostic or "incomplete_response", usage=counts)
             # Provider may ignore optional non-thinking settings. Fail closed
             # if reported usage proves the requested opt-out was not honored.
-            if payload.get("reasoning") == {"effort": "none"}:
-                counts = self.last_usage
-                if counts is not None and counts.get("reasoning_tokens", 0) > 0:
-                    raise Problem("reasoning_control_ignored", usage=counts)
-            message = choice.get("message")
+            if self.last_reasoning_control == "disabled_ignored":
+                raise Problem("reasoning_control_ignored", usage=self.last_usage)
+            if self.require_reasoning_usage and self.last_reasoning_control == "disabled_unverified":
+                raise Problem("reasoning_control_unverified", usage=self.last_usage)
             if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
                 raise Problem("unexpected_response")
             content = message.get("content")
