@@ -141,6 +141,14 @@ precisam ser reportados como DRIVE_FIXED antes das consultas lstat. Resolve-se o
 caminho canônico após validar os componentes, revalidando-o sem aceitar links.
 O banco pode ainda não existir, mas seu diretório precisa existir.
 
+Na revisão do PR #54, nomes reservados são comparados com os.path.normcase,
+tanto na entrada validada quanto após resolver/revalidar o caminho canônico.
+A comparação ignora caixa no Windows e mantém a distinção de caixa no Linux;
+não reescreve o caminho usado para abrir o recurso. Variantes do sufixo reservado
+no Windows são recusadas pelas três APIs sem criar outra coordenação ou alterar
+o arquivo existente. Há teste real de aliases no Windows e teste específico de
+nomes distintos no Linux.
+
 Para banco.db, o nome reservado é banco.db.seagbh-access-v1.lock no mesmo
 diretório. Todos os clientes devem usar a mesma derivação e versão do protocolo.
 O arquivo de coordenação é separado do .db, WAL, SHM, journal e marcador legado.
@@ -173,7 +181,10 @@ descritores nem fazer fork com concessões ativas como estratégia operacional.
 | Concessao.consultar_estado() | Retorna somente ATIVA, LIBERADA, HERDADA ou ERRO_LIBERACAO conhecidos localmente, sem sondar outros processos ou afirmar exclusividade global. |
 | Concessao.fechar / with | Libera lock e fecha recurso deterministamente. O chamador precisa fechar todas as suas conexões antes. Fechamento normal é idempotente; reentrada de concessão liberada é recusada. |
 
-prazo deve ser número finito não negativo, excluindo bool. Zero faz uma tentativa
+prazo deve ser int/float finito não negativo, excluindo bool. A conversão para
+float trata overflow antes de consultar caminhos, abrir arquivos ou chamar APIs
+nativas; entradas inválidas produzem argumentos/prazo_invalido nas duas APIs.
+Inteiros que excedem a representação finita não são aceitos. Zero faz uma tentativa
 e retorna ocupado diante de contenção. Prazo positivo usa monotonic, tentativas
 nativas não bloqueantes e espera de no máximo 25 ms entre tentativas; ao expirar,
 retorna prazo_excedido. O prazo não interrompe syscalls de filesystem bloqueadas.
@@ -201,6 +212,40 @@ No Linux, fork/dup podem manter referências ao mesmo flock e atrasar a liberaç
 após morte do dono original. Um objeto herdado retorna HERDADA; fechar no filho
 apenas fecha sua referência, sem executar LOCK_UN sobre o lock do pai. Não se
 promete saneamento automático de descritores herdados ou filhos não cooperativos.
+
+### Investigação adicional do PR #54: fork durante aquisição
+
+O teste de concessão já emitida não cobre o fd local de _adquirir entre abrir e
+transferir sua propriedade para Concessao. O_CLOEXEC e set_inheritable(False)
+impedem herança por exec, mas não fecham a cópia criada por fork. Pela semântica
+Linux de flock, o filho pode manter uma referência à mesma open file description,
+inclusive se o pai adquirir o lock depois do fork e morrer sem LOCK_UN.
+
+Foi preparado test_fork_durante_aquisicao_nao_prolonga_lock_apos_crash_do_pai:
+um processo pai sintético abre o fd numa thread, que é pausada por eventos na
+conferência anterior ou posterior ao lock nativo. A outra thread executa fork;
+pipes confirmam a identidade herdada e a continuação da aquisição pelo pai.
+O teste encerra o pai por SIGKILL, observa a tentativa de manutenção independente,
+manda o filho fechar somente seu fd (nunca LOCK_UN), verifica a liberação real
+e confirma o encerramento do filho por EOF. Há watchdogs, sem sleeps arbitrários.
+O teste exige ausência de herança residual e de lock órfão; não aprova o bug como
+comportamento esperado.
+
+No ambiente local Windows, esse novo cenário Linux ainda não foi executado.
+WSL não está instalado e Docker não está disponível. A investigação permanece
+inconclusiva em execução nativa: os resultados antigos da CI não incluem esse
+teste. A publicação definitiva das correções fica condicionada à obtenção dessa
+evidência. O supervisor autorizou um commit diagnóstico no PR #54 para executar
+este cenário na CI existente, aceitando falha esperada e sem alterar workflows.
+Não há saneamento de fork implementado nem alegação de correção dessa condição.
+
+Se confirmada, a alternativa mínima a avaliar é registrar os fds temporários
+sob uma proteção curta que coordene abertura, registro e transferência com
+os.register_at_fork; fechar somente as cópias registradas no filho, sem LOCK_UN.
+Uma proteção durante toda a espera por lock pode bloquear fork indefinidamente;
+um registro feito só depois de abrir deixa uma janela de herança sem rastreio.
+Qualquer solução exige testes dessas fronteiras e do comportamento de callbacks,
+erros de close e concessões já emitidas antes de alegar garantia estabelecida.
 
 ### Evidências locais e limitações
 
@@ -394,3 +439,5 @@ Publicar a pré-validação não autoriza essas mudanças e não habilita a UI.
 - [Windows: UnlockFileEx e intervalo de liberação](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-unlockfileex).
 - [Python 3.12: fcntl.flock](https://docs.python.org/3.12/library/fcntl.html).
 - [Linux: flock(2), open file descriptions e limitações](https://manpages.debian.org/bookworm/manpages-dev/flock.2.en.html).
+- [Linux: fork(2) e descritores herdados](https://manpages.debian.org/bookworm/manpages-dev/fork.2.en.html).
+- [Python 3.12: os.register_at_fork](https://docs.python.org/3.12/library/os.html#os.register_at_fork).

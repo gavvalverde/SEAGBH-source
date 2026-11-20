@@ -338,11 +338,68 @@ class BarreiraSQLite(unittest.TestCase):
         plataforma.assert_not_called()
 
     def test_prazos_invalidos_recusados_antes_de_abrir(self):
-        with patch.object(servico, "_plataforma") as plataforma:
-            for prazo in (-1, True, float("nan"), float("inf"), "1", None):
-                with self.subTest(prazo=prazo):
-                    self.erro("prazo_invalido", lambda: self.obter(prazo=prazo))
-        plataforma.assert_not_called()
+        invalidos = (-1, -0.5, True, False, float("nan"), float("inf"),
+                     -float("inf"), 10**400, -(10**400), "1", None, 1j)
+        for funcao in (servico.adquirir_uso_operacional, servico.adquirir_manutencao):
+            for prazo in invalidos:
+                with self.subTest(api=funcao.__name__, prazo=prazo), \
+                        patch.object(servico, "_plataforma") as plataforma, \
+                        patch.object(Path, "lstat") as lstat, \
+                        patch.object(os, "open") as abrir:
+                    erro = self.erro("prazo_invalido", lambda: funcao(
+                        backend="sqlite", banco=self.banco, prazo=prazo))
+                    self.assertEqual(erro.fase, "argumentos")
+                    plataforma.assert_not_called()
+                    lstat.assert_not_called()
+                    abrir.assert_not_called()
+
+    def test_prazos_validos_e_zero_preservados_nas_duas_apis(self):
+        for funcao in (servico.adquirir_uso_operacional, servico.adquirir_manutencao):
+            for prazo in (0, 0.0, -0.0, 1, 0.25, sys.float_info.max, int(sys.float_info.max)):
+                with self.subTest(api=funcao.__name__, prazo=prazo):
+                    with funcao(backend="sqlite", banco=self.banco, prazo=prazo) as concessao:
+                        self.assertEqual(concessao.consultar_estado(), servico.EstadoConcessao.ATIVA)
+        with self.obter("manutencao"):
+            for funcao in (servico.adquirir_uso_operacional, servico.adquirir_manutencao):
+                with self.subTest(api=funcao.__name__):
+                    self.erro("ocupado", lambda: funcao(backend="sqlite", banco=self.banco, prazo=0))
+
+    @unittest.skipUnless(os.name == "nt", "Aliases de nomes no filesystem Windows.")
+    def test_windows_alias_do_nome_reservado_recusado_sem_segunda_coordenacao(self):
+        with self.obter():
+            pass
+        def retrato():
+            return {p.name: (hashlib.sha256(p.read_bytes()).hexdigest(),
+                             p.stat().st_mtime_ns, p.stat().st_ino)
+                    for p in self.raiz.iterdir()}
+        antes = retrato()
+        nomes = (self.coordenacao.name, self.coordenacao.name.upper(),
+                 self.coordenacao.name.replace("access", "AcCeSs"))
+        for funcao in (servico.caminho_coordenacao, servico.adquirir_uso_operacional,
+                       servico.adquirir_manutencao):
+            for nome in nomes:
+                alias = self.coordenacao.with_name(nome)
+                self.assertTrue(alias.samefile(self.coordenacao))
+                def tentar():
+                    resultado = funcao(backend="sqlite", banco=alias)
+                    if isinstance(resultado, servico.Concessao):
+                        resultado.fechar()
+                    return resultado
+                with self.subTest(api=funcao.__name__, nome=nome):
+                    self.erro("banco_e_coordenacao_confundidos", tentar)
+                    self.assertEqual(retrato(), antes)
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Nomes distintos em filesystem Linux.")
+    def test_linux_preserva_distincao_de_caixa_do_sufixo_reservado(self):
+        banco = self.raiz / "banco.SEAGBH-ACCESS-V1.LOCK"
+        banco.write_bytes(b"arquivo sintetico independente")
+        esperado = banco.with_name(banco.name + ".seagbh-access-v1.lock")
+        self.assertEqual(servico.caminho_coordenacao(backend="sqlite", banco=banco), esperado)
+        for funcao in (servico.adquirir_uso_operacional, servico.adquirir_manutencao):
+            with funcao(backend="sqlite", banco=banco) as concessao:
+                self.assertEqual(concessao.banco, banco)
+                self.assertEqual(concessao.arquivo_coordenacao, esperado)
+        self.assertEqual(banco.read_bytes(), b"arquivo sintetico independente")
 
     def test_caminhos_relativos_traversal_unc_nul_sao_recusados(self):
         for banco in ("relativo.db", self.raiz / ".." / "banco.db", "\\\\servidor\\banco.db",
@@ -546,6 +603,166 @@ class BarreiraSQLite(unittest.TestCase):
         self.assertTrue(any(issubclass(a.category, ResourceWarning) for a in avisos))
         with self.obter("manutencao", prazo=2):
             pass
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Semântica de fork/flock Linux.")
+    def test_fork_durante_aquisicao_nao_prolonga_lock_apos_crash_do_pai(self):
+        for depois_do_lock in (False, True):
+            with self.subTest(depois_do_lock=depois_do_lock):
+                self._verificar_fork_durante_aquisicao(depois_do_lock)
+
+    def _verificar_fork_durante_aquisicao(self, depois_do_lock):
+        import select
+        import signal
+
+        descritores = set()
+        def tubo():
+            par = os.pipe()
+            descritores.update(par)
+            return par
+        def fechar(fd):
+            os.close(fd)
+            descritores.discard(fd)
+        def receber(fd):
+            fim, dados = time.monotonic() + 10, bytearray()
+            while True:
+                restante = fim - time.monotonic()
+                if restante <= 0 or not select.select([fd], [], [], restante)[0]:
+                    raise AssertionError("Processo fork não respondeu em 10s.")
+                byte = os.read(fd, 1)
+                if not byte:
+                    raise AssertionError("Processo fork encerrou antes da resposta.")
+                if byte == b"\n":
+                    return json.loads(dados)
+                dados.extend(byte)
+
+        pai, filho_encerrado = None, False
+        try:
+            comando_r, comando_w = tubo()
+            resposta_r, resposta_w = tubo()
+            filho_r, filho_w = tubo()
+            pai = os.fork()
+            if pai == 0:
+                try:
+                    os.setpgid(0, 0)  # Grupo próprio permite limpar até um callback filho travado.
+                    for fd in (comando_w, resposta_r, filho_w):
+                        fechar(fd)
+                    def emitir(**dados):
+                        os.write(resposta_w, (json.dumps(dados) + "\n").encode("utf-8"))
+                    aberto, continuar, manter = (threading.Event() for _ in range(3))
+                    contexto = {"conferencias": 0}
+                    conferir = servico._conferir
+                    def pausar(fd, caminho):
+                        contexto["conferencias"] += 1
+                        if contexto["conferencias"] == (2 if depois_do_lock else 1):
+                            contexto["fd"] = fd
+                            info = os.fstat(fd)
+                            contexto["identidade"] = (info.st_dev, info.st_ino)
+                            aberto.set()
+                            if not continuar.wait(timeout=10):
+                                raise AssertionError("Aquisição não recebeu continuação.")
+                        conferir(fd, caminho)
+                    servico._conferir = pausar
+                    def adquirir():
+                        try:
+                            with servico.adquirir_manutencao(backend="sqlite", banco=self.banco):
+                                emitir(evento="pai_adquiriu")
+                                if not manter.wait(timeout=10):
+                                    raise AssertionError("Pai não recebeu encerramento.")
+                        except BaseException as exc:
+                            emitir(evento="erro_worker", tipo=type(exc).__name__)
+                    worker = threading.Thread(target=adquirir, daemon=True)
+                    worker.start()
+                    if not aberto.wait(timeout=10):
+                        raise AssertionError("Descritor temporário não foi aberto.")
+                    emitir(evento="aberto", herdavel_exec=os.get_inheritable(contexto["fd"]))
+                    # Python 3.12 avisa sobre fork com threads; esta é a intercalação investigada.
+                    with warnings.catch_warnings(record=True):
+                        warnings.simplefilter("always", DeprecationWarning)
+                        filho = os.fork()
+                    if filho == 0:
+                        try:
+                            fechar(comando_r)
+                            temporario = contexto["fd"]
+                            try:
+                                info = os.fstat(temporario)
+                            except OSError as exc:
+                                if exc.errno != errno.EBADF:
+                                    raise
+                                herdado = False
+                            else:
+                                herdado = (info.st_dev, info.st_ino) == contexto["identidade"]
+                            emitir(evento="filho_pronto", herdado=herdado)
+                            while True:
+                                comando = receber(filho_r)
+                                if comando == "liberar":
+                                    if herdado:
+                                        os.close(temporario)  # Nunca LOCK_UN na descrição do pai.
+                                        herdado = False
+                                    emitir(evento="filho_liberou")
+                                elif comando == "sair":
+                                    emitir(evento="filho_encerrando")
+                                    break
+                        finally:
+                            os._exit(0)
+                    emitir(evento="pai_pronto")
+                    if receber(comando_r) != "adquirir":
+                        raise AssertionError("Comando de aquisição inesperado.")
+                    continuar.set()
+                    if receber(comando_r) != "sair":
+                        raise AssertionError("Comando de encerramento inesperado.")
+                    manter.set()
+                    worker.join(timeout=10)
+                    if worker.is_alive():
+                        raise AssertionError("Worker não encerrou.")
+                except BaseException as exc:
+                    emitir(evento="erro_pai", tipo=type(exc).__name__)
+                finally:
+                    os._exit(0)
+
+            for fd in (comando_r, resposta_w, filho_r):
+                fechar(fd)
+            mensagens = [receber(resposta_r) for _ in range(3)]
+            self.assertEqual({m["evento"] for m in mensagens}, {"aberto", "filho_pronto", "pai_pronto"})
+            self.assertFalse(next(m for m in mensagens if m["evento"] == "aberto")["herdavel_exec"])
+            herdado = next(m for m in mensagens if m["evento"] == "filho_pronto")["herdado"]
+            os.write(comando_w, b'"adquirir"\n')
+            self.assertEqual(receber(resposta_r), {"evento": "pai_adquiriu"})
+            self.erro("ocupado", lambda: self.obter("manutencao"))
+            os.kill(pai, signal.SIGKILL)
+            # Manter o PID reservado até o cleanup evita sinalizar um grupo reutilizado.
+            os.waitid(os.P_PID, pai, os.WEXITED | os.WNOWAIT)
+            try:
+                with self.obter("manutencao"):
+                    apos_crash = "adquirida"
+            except servico.ErroBarreira as exc:
+                apos_crash = exc.codigo
+            os.write(filho_w, b'"liberar"\n')
+            self.assertEqual(receber(resposta_r), {"evento": "filho_liberou"})
+            with self.obter("manutencao", prazo=1):
+                pass
+            os.write(filho_w, b'"sair"\n')
+            self.assertEqual(receber(resposta_r), {"evento": "filho_encerrando"})
+            self.assertTrue(select.select([resposta_r], [], [], 10)[0], "Filho não encerrou.")
+            self.assertEqual(os.read(resposta_r, 1), b"", "Pipe do filho permaneceu aberto.")
+            filho_encerrado = True
+            self.assertFalse(herdado,
+                             f"fd_temporario_herdado={herdado}; apos_SIGKILL={apos_crash}; "
+                             "apos_fecho_filho=adquirida")
+            self.assertEqual(apos_crash, "adquirida", "Filho prolongou lock após SIGKILL do pai.")
+        finally:
+            if pai not in (None, 0):
+                if not filho_encerrado:
+                    try:
+                        os.killpg(pai, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                try:
+                    os.kill(pai, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                os.waitpid(pai, 0)
+            for fd in tuple(descritores):
+                fechar(fd)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "Semântica de fork/flock Linux.")
     def test_fork_filho_nao_desbloqueia_concessao_do_pai(self):

@@ -97,9 +97,10 @@ def _caminho(valor: str | Path, *, ausente: bool) -> Path:
 def _banco(valor: str | Path) -> Path:
     try:
         caminho = _caminho(valor, ausente=True)
-        if caminho.name.endswith(_SUFIXO):
+        resolvido = _caminho(caminho.resolve(strict=False), ausente=True)
+        if any(os.path.normcase(p.name).endswith(_SUFIXO) for p in (caminho, resolvido)):
             raise ErroBarreira("caminhos", "banco_e_coordenacao_confundidos")
-        return _caminho(caminho.resolve(strict=False), ausente=True)
+        return resolvido
     except (OSError, TypeError, ValueError) as exc:
         raise ErroBarreira("caminhos", "caminho_nao_verificado", exc) from None
 
@@ -324,8 +325,13 @@ class Concessao:
 
 def _adquirir(backend: str, banco: str | Path, prazo: float, tipo: TipoConcessao) -> Concessao:
     _sqlite(backend)
-    if (isinstance(prazo, bool) or not isinstance(prazo, (int, float))
-            or not math.isfinite(prazo) or prazo < 0):
+    if isinstance(prazo, bool) or not isinstance(prazo, (int, float)):
+        raise ErroBarreira("argumentos", "prazo_invalido")
+    try:
+        prazo = float(prazo)
+    except (OverflowError, TypeError, ValueError):
+        raise ErroBarreira("argumentos", "prazo_invalido") from None
+    if not math.isfinite(prazo) or prazo < 0:
         raise ErroBarreira("argumentos", "prazo_invalido")
     fim = time.monotonic() + prazo
     fd = None
