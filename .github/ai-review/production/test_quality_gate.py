@@ -35,6 +35,21 @@ class QualityGateTests(unittest.TestCase):
                 self.assertEqual(result.unanchored_count, 1)
                 self.assertTrue(result.requires_manual_review)
 
+    def test_unanchored_reasons_do_not_expose_source(self):
+        src = {"x.py": {2: "quantity = normalize_quantity(value)", 3: "pass"}}
+        findings = [
+            {"path": "x.py", "line": 2, "evidence": "PRIVATE_SENTINEL"},
+            {"path": "x.py", "line": 80, "evidence": "other"},
+            {"path": "x.py", "line": 3, "evidence": "pass"},
+            {"path": "x.py", "line": None, "evidence": "PRIVATE"},
+        ]
+        result = assess(findings, src)
+        self.assertTrue(result.requires_manual_review)
+        self.assertEqual(result.unanchored_count, 4)
+        self.assertEqual((result.quote_mismatch_count, result.source_unavailable_count,
+                          result.short_line_count, result.invalid_reference_count), (1, 1, 1, 1))
+        self.assertNotIn("PRIVATE", repr(result))
+
     def test_same_line_collision_requires_manual_review_even_if_both_anchored(self):
         source = {"x.py": {20: "validated_operation = new_operation(value)"}}
         a = {"path": "x.py", "line": 20,

@@ -37,26 +37,23 @@ def new_file_lines(patch: str) -> dict[int, str]:
     return lines
 
 
-def has_literal_code_anchor(finding: dict, code_lines: dict) -> bool:
-    """Confere somente se o texto da linha indicada aparece em evidence.
-
-    False significa 'não confirmado automaticamente', NÃO 'falso positivo'.
-    Normaliza espaços para não depender de identação sem relaxar o texto.
-    """
+def literal_anchor_status(finding: dict, code_lines: dict) -> str:
+    """Only fixed codes, without exposing source text or PR-controlled data."""
     if not isinstance(finding, dict) or not isinstance(code_lines, dict):
-        return False
-    path = finding.get("path")
-    line_number = finding.get("line")
-    quote = finding.get("evidence")
-    if not isinstance(path, str) or type(line_number) is not int or not isinstance(quote, str):
-        return False
+        return "invalid_reference"
+    path, number, quote = (finding.get("path"), finding.get("line"),
+                           finding.get("evidence"))
+    if not isinstance(path, str) or type(number) is not int or not isinstance(quote, str):
+        return "invalid_reference"
     source = code_lines.get(path)
-    if not isinstance(source, dict):
-        return False
-    line = source.get(line_number)
-    if not isinstance(line, str):
-        return False
-    normalized_line = " ".join(line.split())
-    if len(normalized_line) < _MIN_QUOTE_CHARS:
-        return False
-    return normalized_line in " ".join(quote.split())
+    if not isinstance(source, dict) or not isinstance(source.get(number), str):
+        return "source_unavailable"
+    normalized = " ".join(source[number].split())
+    if len(normalized) < _MIN_QUOTE_CHARS:
+        return "short_line"
+    return "anchored" if normalized in " ".join(quote.split()) else "quote_mismatch"
+
+
+def has_literal_code_anchor(finding: dict, code_lines: dict) -> bool:
+    """A literal source quote never proves that the finding is semantically correct."""
+    return literal_anchor_status(finding, code_lines) == "anchored"

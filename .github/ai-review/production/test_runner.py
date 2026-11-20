@@ -287,6 +287,17 @@ class Integration(Offline):
         self.assertIn("evidence", r._production_remote_schema()["properties"]["findings"]["items"]["properties"])
         self.assertFalse(core.validate_review('{"summary":"x","findings":[{"path":"a.py"}]}').ok)
 
+    def test_unanchored_findings_keep_safe_diagnostic_counters(self):
+        gh = FakeGitHub()
+        out, gh, ai = self.run_case(github=gh,
+            model=FakeModel(review([finding(evidence="PRIVATE_UNVERIFIABLE_EVIDENCE")])))
+        self.assertEqual(out.code, "quality_manual_review_required")
+        self.assertEqual((out.quality_hold_count, out.quality_quote_mismatch_count), (1, 1))
+        self.assertEqual((out.quality_source_unavailable_count, out.quality_short_line_count,
+                          out.quality_invalid_reference_count), (0, 0, 0))
+        self.assertFalse(gh.posts)
+        self.assertNotIn("PRIVATE", repr(out))
+
     def test_source_snippet_uses_pinned_sha_and_does_not_expand_review_scope(self):
         gh = FakeGitHub()
         gh.sources[FILE] = "\n".join(f"line_{i} = {i}" for i in range(1, 130)) + "\n"
