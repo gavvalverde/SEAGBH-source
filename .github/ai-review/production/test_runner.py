@@ -957,7 +957,7 @@ class Workflow(Offline):
         self.assertEqual(self.job["permissions"], {"contents": "read", "pull-requests": "write"})
         self.assertIn("pull_request.number", self.data["concurrency"]["group"])
         self.assertEqual(self.data["concurrency"]["cancel-in-progress"], "false")
-        self.assertEqual(self.job["timeout-minutes"], "10")
+        self.assertEqual(self.job["timeout-minutes"], "15")
 
     def test_no_pr_code_secret_interpolation_or_silent_failure(self):
         steps = self.job["steps"]
