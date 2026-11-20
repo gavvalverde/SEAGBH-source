@@ -41,6 +41,8 @@ def main():
             sys.exit(0)
         # Re-verificar após ativação
         valida, mensagem, payload = licenca_ativa()
+        if not valida:
+            sys.exit(0)
 
         # Extrair info de alerta de vencimento (se houver)
     alerta = payload.get("_alerta") if payload else None
