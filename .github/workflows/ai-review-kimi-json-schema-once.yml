@@ -22,6 +22,7 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
+          python3.12 -B - <<'PY'
           import http.client
           import json
           import os
@@ -111,3 +112,4 @@ jobs:
           if type(cost) in (int, float) and 0 <= cost < 1:
               result["cost_micro_usd"] = round(cost * 1000000)
           print(json.dumps(result, sort_keys=True))
+          PY
