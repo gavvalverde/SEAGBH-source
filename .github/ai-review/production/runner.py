@@ -30,11 +30,14 @@ MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
 MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
-# Experimental 64K shared completion ceiling. The requested 16K reasoning budget
-# is advisory for this provider and does not reserve visible JSON tokens.
-PRODUCTION_MODEL = "deepseek/deepseek-v4.1-flash-1017"
-PRODUCTION_REASONING_MAX_TOKENS = 16384
-PRODUCTION_MAX_TOKENS = 65536
+# Trusted production candidate, independent of the historical benchmark default.
+# Low effort is qualitative: it neither disables nor hard-caps reasoning tokens.
+PRODUCTION_MODEL = "z-ai/glm-5.3-flash"
+PRODUCTION_PROVIDER = "deepinfra"
+PRODUCTION_REASONING_EFFORT = "low"
+PRODUCTION_MAX_TOKENS = 8192
+PRODUCTION_INPUT_USD_M_CEILING = 0.2
+PRODUCTION_OUTPUT_USD_M_CEILING = 0.6
 PRODUCTION_MAX_REQUEST_BYTES = 131072
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
@@ -381,6 +384,7 @@ def already_reviewed(rows, pinned, bot_id, version):
 
 
 _MODEL_LABELS = {
+    "z-ai/glm-5.3-flash": "GLM-5.3 Flash",
     "deepseek/deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash 1017",
     "minimax/minimax-m2.7": "MiniMax M2.7",
 }
@@ -482,19 +486,26 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
 
 
 def build_production_payload(title, body, diff, *, context="", trunc_note="", omit_info=""):
-    """Pinned DeepSeek thinking profile, not the shared non-thinking default.
+    """Pinned GLM/DeepInfra candidate; reuse the unchanged shared prompt.
 
-    The pilot's token budgets are requested targets, not an independent
-    guarantee on visible/reasoning token allocation or a dollar cost cap.
+    Require every requested parameter; never fall back or silently remove one.
+    Price ceilings are per-token routing controls, not a total dollar cost cap.
     """
     payload = core.build_payload(
         title, body, diff, context=context, trunc_note=trunc_note,
-        omit_info=omit_info,
+        omit_info=omit_info, model=PRODUCTION_MODEL,
     )
     if payload.get("model") != PRODUCTION_MODEL:
         raise Problem("production_model_mismatch")
-    payload["reasoning"] = {"max_tokens": PRODUCTION_REASONING_MAX_TOKENS}
+    payload["reasoning"] = {"effort": PRODUCTION_REASONING_EFFORT}
     payload["max_tokens"] = PRODUCTION_MAX_TOKENS
+    payload["response_format"] = {"type": "json_object"}
+    payload["provider"] = {
+        "only": [PRODUCTION_PROVIDER], "allow_fallbacks": False,
+        "require_parameters": True,
+        "max_price": {"prompt": PRODUCTION_INPUT_USD_M_CEILING,
+                      "completion": PRODUCTION_OUTPUT_USD_M_CEILING},
+    }
     if len(json.dumps(payload, ensure_ascii=True, allow_nan=False).encode("utf-8")) > PRODUCTION_MAX_REQUEST_BYTES:
         raise Problem("production_request_size_limit")
     return payload
