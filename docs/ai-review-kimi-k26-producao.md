@@ -8,12 +8,13 @@ Preços publicados na consulta: Baidu Qianfan 0,3895 USD por milhão de tokens d
 
 ## Contrato fixado
 
-- `model="moonshotai/kimi-k2.6"`, `temperature=0.3`, `max_tokens=4096`, `reasoning={"enabled": false}`.
+- `model="moonshotai/kimi-k2.6"`, `temperature=0.3`, `max_tokens=8192`, `reasoning={"enabled": false}`.
 - `response_format={"type":"json_object"}`, `provider.only=["baidu"]`, `allow_fallbacks=false`, `require_parameters=true`.
 - `provider.max_price={"prompt":0.42,"completion":1.75}` (USD por milhão de tokens), bloqueando rotas mais caras do que esse limite.
+- Com a tarifa de saída Baidu observada em 20/11/2026 (US$ 1,64/M), 8.192 tokens de conclusão correspondem a até cerca de US$ 0,0134 de saída, sem incluir entrada, taxas e variações de preço. O dobro do limite anterior não significa o dobro de gasto em toda revisão.
 - `max_attempts=1` e `require_reasoning_usage=True` no transporte. Resposta com `reasoning_tokens` ausente, inválido ou positivo, ou contendo raciocínio exposto, **não é publicada**.
 - Não adicionar `reasoning.max_tokens` como se fosse um teto comprovado: o OpenRouter documenta esse parâmetro apenas para modelos compatíveis. A desativação foi escolhida como a alternativa econômica e verificável por telemetria.
-- A soma de tokens de resposta, inclusive raciocínio quando contado pelo provedor, fica limitada por `max_tokens=4096` solicitado. `finish_reason=length` impede publicação; saída JSON truncada é erro e não parecer limpo. O provedor ainda precisa respeitar a configuração.
+- A soma de tokens de resposta, inclusive raciocínio quando contado pelo provedor, fica limitada por `max_tokens=8192` solicitado. `finish_reason=length` impede publicação; saída JSON truncada é erro e não parecer limpo. O provedor ainda precisa respeitar a configuração.
 - O limite de bytes da requisição, schema Draft 7, evidências, quality gate, escopo por SHA, deduplicação, sanitização, logs sem payloads e política de publicação são preservados.
 
 ## Riscos e restrições
@@ -24,7 +25,7 @@ O endpoint Baidu/Qianfan via OpenRouter **ainda não foi homologado** para a com
 
 `provider.max_price` **não é um teto de gasto total por chamada ou por mês**, pois não reserva saldo nem limita automaticamente a quantidade total de chamadas. Usar política de orçamento da conta/chave OpenRouter se for necessário impor teto monetário cumulativo.
 
-O orçamento 4096 é deliberadamente conservador. PRs complexos podem exceder esse limite: a revisão falha, não é publicada e não deve fazer retry automático ou remover os controles para contornar o erro. Benchmark de qualidade contra GLM/DeepSeek permanece pendente.
+O orçamento 8192 mantém um limite conservador com mais espaço para JSON estruturado e achados detalhados. PRs complexos podem exceder esse limite: a revisão falha, não é publicada e não deve fazer retry automático ou remover os controles para contornar o erro. Benchmark de qualidade contra GLM/DeepSeek permanece pendente.
 
 ## Validação e ativação
 
