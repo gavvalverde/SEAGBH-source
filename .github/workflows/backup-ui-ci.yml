@@ -1,0 +1,96 @@
+name: SQLite Backup Qt Integration Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/ui/__init__.py"
+      - "src/ui/dialogs_utils.py"
+      - "src/ui/main_window.py"
+      - "src/core/__init__.py"
+      - "src/core/database.py"
+      - "src/core/backup_sqlite.py"
+      - "tests/__init__.py"
+      - "tests/unit/__init__.py"
+      - "tests/unit/test_backup_ui.py"
+      - "tests/unit/test_backup_sqlite.py"
+      - "tests/requirements-backup-ui.txt"
+      - ".github/workflows/backup-ui-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  backup-ui:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      QT_QPA_PLATFORM: offscreen
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+      - name: Install native Qt runtime libraries
+        run: |
+          set -euo pipefail
+          # Shared OpenGL/EGL libraries used by the binary Qt GUI modules.
+          # No X server or visible desktop is started.
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1 libopengl0
+      - name: Install isolated Qt test dependencies with hashes
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          python -B -m venv "$RUNNER_TEMP/backup-ui-ci-venv"
+          PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
+          "$PY" -B -m pip --isolated --disable-pip-version-check --no-input install --only-binary=:all: --require-hashes --index-url https://pypi.org/simple -r tests/requirements-backup-ui.txt
+          "$PY" -B -m pip --isolated --disable-pip-version-check check
+      - name: Verify Python 3.12 and initialize real offscreen Qt
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/backup-ui-runtime"
+          mkdir -m 700 -p "$XDG_RUNTIME_DIR"
+          PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
+          timeout --kill-after=10s 30s "$PY" -B -W error::ResourceWarning - <<'PYTHON'
+          import os
+          import sqlite3
+          import sys
+          from importlib.metadata import version
+          from PyQt6.QtCore import QLibraryInfo
+          from PyQt6.QtTest import QSignalSpy, QTest
+          from PyQt6.QtWidgets import QApplication
+
+          assert sys.version_info[:2] == (3, 12), sys.version
+          assert sys.prefix != sys.base_prefix, "Isolated virtual environment required"
+          assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+          print("Python:", sys.version)
+          print("SQLite:", sqlite3.sqlite_version)
+          for package in ("PyQt6", "PyQt6-Qt6", "PyQt6-sip"):
+              print(package + ":", version(package))
+          print("Qt runtime:", QLibraryInfo.version().toString())
+          app = QApplication([])
+          assert app.platformName() == "offscreen", app.platformName()
+          print("Qt platform:", app.platformName())
+          PYTHON
+      - name: Run real Qt integration and SQLite service regressions
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/backup-ui-runtime"
+          PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
+          timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_ui
+          timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_sqlite

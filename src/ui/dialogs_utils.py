@@ -6,16 +6,17 @@ Auditoria, backup/restauração, verificação de permissões.
 import os
 import glob
 import shutil
-from datetime import datetime
+from threading import Event
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView,
-    QListWidget, QMessageBox,
+    QListWidget, QMessageBox, QProgressBar, QApplication,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, QEvent, QTimer, pyqtSignal, pyqtSlot
 
 from core.database import Database, APP_DIR, get_db_path
+from core.backup_sqlite import criar_backup, ResultadoBackup, ErroBackup
 
 
 _PASTA_BACKUPS = os.path.join(APP_DIR, "Backups")
@@ -170,53 +171,272 @@ class PermissoesDialog(QDialog):
         layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
 
 
+class _BackupThread(QThread):
+    """Uma operação bloqueante, com conexões pertencentes ao serviço/worker.
+
+    O objeto QThread pertence à UI; somente run() executa na thread secundária.
+    Resultado/erro são lidos pela UI após finished. Não há event loop no worker.
+    """
+
+    progresso = pyqtSignal(object, object)  # restantes, total (sem limite de int Qt)
+
+    def __init__(self, backend: str, origem: str, pasta: str, parent=None):
+        super().__init__(parent)
+        self._backend = backend
+        self._origem = origem
+        self._pasta = pasta
+        self._cancelamento = Event()
+        self.resultado: ResultadoBackup | None = None
+        self.erro: ErroBackup | None = None
+
+    def cancelar(self):
+        self._cancelamento.set()
+
+    def run(self):
+        try:
+            if self._backend != "sqlite":
+                raise ErroBackup("argumentos", "backend_nao_suportado")
+            if self._cancelamento.is_set():
+                raise ErroBackup("preparacao", "cancelado")
+            try:
+                os.makedirs(self._pasta, exist_ok=True)
+            except OSError as exc:
+                raise ErroBackup("preparacao", "diretorio_inacessivel", exc) from None
+            self.resultado = criar_backup(
+                backend=self._backend, origem=self._origem, pasta=self._pasta,
+                cancelar=self._cancelamento.is_set, progresso=self.progresso.emit,
+            )
+        except ErroBackup as exc:
+            self.erro = exc
+        except Exception as exc:
+            self.erro = ErroBackup("preparacao", "falha_inesperada", exc)
+
+
 class FazerBackupDialog(QDialog):
-    """Cria um backup do banco de dados atual."""
+    """Backup seguro em background, sem usar a conexão da janela principal."""
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
-        self.db = db
+        self._backend = db.backend
+        self._worker: _BackupThread | None = None
+        self._cancelamento_solicitado = False
+        self._fechar_pendente = False
+        self._sair_pendente = False
         self.setWindowTitle("💾 Fazer Backup")
-        self.resize(400, 200)
+        self.resize(540, 290)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        layout.addWidget(QLabel("Clique no botão abaixo para criar um backup do banco de dados."))
-        layout.addStretch()
+        descricao = QLabel(
+            "Crie uma cópia validada dos dados já salvos. "
+            "Alterações ainda não confirmadas não fazem parte do backup."
+        )
+        descricao.setWordWrap(True)
+        layout.addWidget(descricao)
+        self.status = QLabel("Pronto para criar backup.")
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(self.status)
+        self.progresso = QProgressBar()
+        self.progresso.setRange(0, 100)
+        self.progresso.setValue(0)
+        self.progresso.setFormat("Aguardando")
+        layout.addWidget(self.progresso)
 
-        btn = QPushButton("💾 Criar Backup Agora")
-        btn.setProperty("class", "primary")
-        btn.setMinimumHeight(40)
-        btn.clicked.connect(self._fazer_backup)
-        layout.addWidget(btn)
+        self.btn_criar = QPushButton("💾 Criar Backup Agora")
+        self.btn_criar.setProperty("class", "primary")
+        self.btn_criar.setMinimumHeight(40)
+        self.btn_criar.clicked.connect(self._fazer_backup)
+        layout.addWidget(self.btn_criar)
+        botoes = QHBoxLayout()
+        self.btn_cancelar = QPushButton("Solicitar cancelamento")
+        self.btn_cancelar.setEnabled(False)
+        self.btn_cancelar.clicked.connect(self._cancelar_backup)
+        botoes.addWidget(self.btn_cancelar)
+        self.btn_fechar = QPushButton("Fechar")
+        self.btn_fechar.clicked.connect(self.close)
+        botoes.addWidget(self.btn_fechar)
+        layout.addLayout(botoes)
+        if self._backend != "sqlite":
+            self.btn_criar.setEnabled(False)
+            self.status.setText("Esta funcionalidade de backup atende somente instalações SQLite.")
 
-        layout.addStretch()
+    @property
+    def em_andamento(self):
+        # Conserva a referência até o slot de finished processar o resultado.
+        return self._worker is not None
 
     def _fazer_backup(self):
+        if self.em_andamento:
+            return
+        if self._backend != "sqlite":
+            QMessageBox.warning(self, "Backup indisponível",
+                                "Esta funcionalidade atende somente instalações SQLite. "
+                                "O backup PostgreSQL exige um procedimento próprio.")
+            return
         try:
-            os.makedirs(_PASTA_BACKUPS, exist_ok=True)
+            worker = _BackupThread(self._backend, get_db_path(), _PASTA_BACKUPS, parent=self)
+        except Exception:
+            self._mostrar_erro(ErroBackup("preparacao", "falha_inesperada"))
+            return
+        self._worker = worker
+        self._cancelamento_solicitado = False
+        self._fechar_pendente = False
+        self._sair_pendente = False
+        self.btn_criar.setEnabled(False)
+        self.btn_cancelar.setEnabled(True)
+        self.status.setText("Backup em andamento: criando e validando a cópia…")
+        self.progresso.setRange(0, 0)
+        worker.progresso.connect(self._atualizar_progresso, Qt.ConnectionType.QueuedConnection)
+        worker.finished.connect(self._backup_finalizado, Qt.ConnectionType.QueuedConnection)
+        # quit() pode ser solicitado por timers da aplicação durante o diálogo modal.
+        QApplication.instance().installEventFilter(self)
+        try:
+            worker.start()
+        except RuntimeError as exc:
+            worker.erro = ErroBackup("preparacao", "falha_inesperada", exc)
+            self._backup_finalizado()
 
-            # Flush WAL
-            self.db.conn.execute("PRAGMA wal_checkpoint(FULL)")
+    @pyqtSlot(object, object)
+    def _atualizar_progresso(self, restantes, total):
+        if not self.em_andamento or self._cancelamento_solicitado:
+            return
+        # São páginas do snapshot, não a porcentagem de toda a operação.
+        if (type(total) is int and type(restantes) is int
+                and total > 0 and 0 < restantes <= total):
+            self.progresso.setRange(0, 100)
+            self.progresso.setValue(min(99, (total - restantes) * 100 // total))
+            self.progresso.setFormat("Snapshot: %p%")
+        else:
+            self.progresso.setRange(0, 0)
+        self.status.setText("Backup em andamento: copiando páginas; a validação ainda será concluída.")
 
-            ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-            destino = os.path.join(_PASTA_BACKUPS, f"seaghb_backup_{ts}.db")
-            shutil.copy2(get_db_path(), destino)
+    def _cancelar_backup(self):
+        if not self.em_andamento:
+            return
+        self._cancelamento_solicitado = True
+        self._worker.cancelar()
+        self.btn_cancelar.setEnabled(False)
+        self.progresso.setRange(0, 0)
+        self.status.setText(
+            "Cancelamento solicitado. Aguarde a conclusão da operação. "
+            "Operações de disco bloqueadas podem demorar para retornar; "
+            "o backup pode já ter sido publicado."
+        )
 
-            # Rotação: manter no máximo 10 backups
-            backups = sorted(
-                glob.glob(os.path.join(_PASTA_BACKUPS, "seaghb_backup_*.db")),
-                key=os.path.getmtime,
-            )
-            while len(backups) > 10:
-                os.remove(backups.pop(0))
+    def solicitar_fechamento(self):
+        self._fechar_pendente = True
+        self._cancelar_backup()
 
-            QMessageBox.information(
-                self, "Sucesso",
-                f"Backup criado com sucesso:\n{os.path.basename(destino)}",
-            )
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Falha ao criar backup:\n{e}")
+    def eventFilter(self, objeto, evento):
+        if evento.type() == QEvent.Type.Quit and self.em_andamento:
+            self._sair_pendente = True
+            self.solicitar_fechamento()
+            return True
+        return super().eventFilter(objeto, evento)
+
+    def closeEvent(self, evento):
+        if self.em_andamento:
+            self.solicitar_fechamento()
+            evento.ignore()
+        else:
+            super().closeEvent(evento)
+
+    def done(self, resultado):
+        if self.em_andamento:
+            self.solicitar_fechamento()
+            return
+        super().done(resultado)
+
+    def accept(self):
+        self.done(QDialog.DialogCode.Accepted)
+
+    def reject(self):
+        self.done(QDialog.DialogCode.Rejected)
+
+    @pyqtSlot()
+    def _backup_finalizado(self):
+        worker = self._worker
+        if worker is None:
+            return
+        resultado, erro = worker.resultado, worker.erro
+        self._worker = None
+        worker.deleteLater()
+        QApplication.instance().removeEventFilter(self)
+        self.btn_criar.setEnabled(True)
+        self.btn_cancelar.setEnabled(False)
+        self.progresso.setRange(0, 100)
+        self.progresso.setValue(0)
+        self.progresso.setFormat("Finalizado")
+        if resultado is not None:
+            avisos = list(resultado.avisos)
+            if resultado.retencao is not None:
+                avisos.extend(resultado.retencao.avisos)
+            mensagens = self._mensagens_avisos(avisos)
+            if self._cancelamento_solicitado:
+                mensagens.append("O backup foi publicado apesar do pedido de cancelamento.")
+            texto = f"Backup criado e validado:\n{resultado.caminho.name}"
+            self.progresso.setValue(100)
+            if mensagens:
+                self.status.setText("Backup concluído com avisos.")
+                QMessageBox.warning(self, "Backup criado com avisos", texto + "\n\n" + "\n".join(mensagens))
+            else:
+                self.status.setText("Backup concluído.")
+                QMessageBox.information(self, "Backup concluído", texto)
+        else:
+            self._mostrar_erro(erro or ErroBackup("preparacao", "falha_inesperada"))
+        if self._fechar_pendente:
+            self.reject()
+        if self._sair_pendente:
+            QTimer.singleShot(0, QApplication.quit)
+
+    @staticmethod
+    def _mensagens_avisos(avisos):
+        mensagens = {
+            "retencao_incompleta": "A limpeza dos backups antigos não foi concluída.",
+            "retencao_nao_executada": "A limpeza dos backups antigos não foi executada.",
+            "sincronizacao_diretorio_nao_confirmada": "A sincronização da pasta de backups não pôde ser confirmada.",
+            "limpeza_staging_falhou": "A limpeza dos arquivos temporários não foi concluída.",
+            "limpeza_lock_falhou": "A liberação do controle de operação não foi concluída; procure suporte antes de tentar novamente.",
+            "lock_alterado_nao_removido": "O controle de operação mudou e foi preservado; procure suporte.",
+            "candidato_nao_validado_preservado": "Arquivos que não puderam ser validados foram preservados.",
+            "pos_publicacao_incompleta": "Uma etapa complementar após a publicação não foi concluída.",
+        }
+        return list(dict.fromkeys(mensagens.get(aviso.split(":", 1)[0],
+                    "Uma etapa complementar não pôde ser concluída.") for aviso in avisos))
+
+    def _mostrar_erro(self, erro):
+        if erro.codigo == "cancelado":
+            avisos = self._mensagens_avisos(erro.avisos)
+            self.status.setText("Backup cancelado antes da publicação.")
+            texto = "A criação foi cancelada antes da publicação de um backup."
+            if avisos:
+                self.status.setText("Backup cancelado antes da publicação, com avisos de limpeza.")
+                QMessageBox.warning(self, "Backup cancelado com avisos", texto + "\n\n" + "\n".join(avisos))
+            else:
+                QMessageBox.information(self, "Backup cancelado", texto)
+            return
+        etapas = {"argumentos": "verificação dos caminhos", "preparacao": "preparação",
+                  "exclusao": "controle de operação", "snapshot": "criação da cópia",
+                  "validacao": "validação", "publicacao": "publicação", "retencao": "limpeza"}
+        motivos = {
+            "diretorio_inacessivel": "Não foi possível preparar a pasta de backups. Verifique o caminho e as permissões.",
+            "pasta_ocupada": "Há uma operação ou controle residual na pasta. Não remova arquivos de controle sem orientação.",
+            "prazo_excedido": "O tempo de espera foi excedido antes da publicação.",
+            "integridade_fisica": "A cópia não passou na verificação de integridade física.",
+            "integridade_referencial": "A cópia apresenta relacionamentos de dados inválidos.",
+            "esquema_nao_reconhecido": "O banco não possui a estrutura mínima reconhecida do SEAGBH.",
+            "origem_na_pasta_de_backups": "O banco de origem não pode estar na árvore da pasta de backups.",
+            "backend_nao_suportado": "Esta funcionalidade atende somente instalações SQLite.",
+        }
+        motivo = motivos.get(erro.codigo,
+            "Não foi possível concluir esta etapa. Verifique os caminhos, espaço disponível, "
+            "permissões e suporte do destino a backups seguros; procure suporte se necessário.")
+        texto = "A criação do backup não foi concluída.\nEtapa: " + etapas.get(erro.fase, "preparação") + ".\n" + motivo
+        avisos = self._mensagens_avisos(erro.avisos)
+        if avisos:
+            texto += "\n\n" + "\n".join(avisos)
+        self.status.setText("Falha: backup não concluído.")
+        QMessageBox.critical(self, "Falha no backup", texto)
