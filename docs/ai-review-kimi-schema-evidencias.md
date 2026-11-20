@@ -1,55 +1,43 @@
-# Estabilização Kimi K2.6: JSON Schema e evidências (candidato)
+# Estabilização do AI Reviewer Kimi K2.6
 
-## Falhas observadas
+**Estado:** PR #59 em Draft. Produção `main` ainda usa Kimi K2.6 via Baidu sem raciocínio, JSON mode anterior. Nenhuma execução documentada neste relatório publicou comentário nos PRs avaliados.
 
-- PR #16, run 44788845517: `quality_manual_review_required`, cinco achados sem citação ancorada, 1265 tokens de saída, nenhum parecer publicado.
-- PR #28, run 44789008852: `incomplete_response`/`incomplete_json`, 4626 de 8192 tokens, nenhum parecer publicado.
-- Nos dois, `reasoning_tokens=0`. Nem elevar o teto de tokens nem remover o quality gate corrige a causa observada.
+## Causas verificadas
 
-## Implementação
+- PR #16: revisão inicialmente retida pelo quality gate (`quality_manual_review_required`) por cinco citações sem âncora literal. Um trecho citado não é, por si só, prova de defeito real.
+- PR #28: resposta `incomplete_json` com 4.626 tokens de conclusão, inferior ao teto de 8.192; não se trata de um motivo suficiente para aumentar o limite total.
 
-1. Preserva modelo `moonshotai/kimi-k2.6`, provedor Baidu, raciocínio desativado, 8192 tokens, uma tentativa, sem fallback e tetos de tarifa 0,42/1,75 USD/M.
-2. Projeta o Draft 7 confiável em `response_format.type=json_schema`, `strict=false`, omitindo somente `allOf` condicional do **pedido remoto**. O validador local continua aplicando todo o Draft 7 sem redução de rigor; JSON não é reparado automaticamente.
-3. Acrescenta ao prompt de produção Kimi regras para copiar a linha completa do código no campo `evidence`; não altera o prompt compartilhado dos benchmarks.
-4. Classifica âncoras ausentes em quatro códigos seguros (`quote_mismatch`, `source_unavailable`, `short_line`, `invalid_reference`) e publica somente contadores numéricos. Não vaza caminhos, linhas, conteúdo bruto ou segredos.
-5. Preserva `quality_manual_review_required`, SHA, escopo, deduplicação e política de publicação.
+## Alterações propostas no PR #59
 
-## Limites e validação
+1. `response_format: json_schema` (`strict: false`), com projeção remota da especificação Draft 7. A regra condicional `allOf` continua no **validador local**, que segue autoritativo para formato, escopo e SHA. Nenhum JSON malformado é corrigido ou publicado.
+2. `temperature=0.0` só no perfil de produção Kimi. O contrato DeepSeek usado nos benchmarks históricos não muda.
+3. Catálogo de citações derivado **somente das linhas de diff já verificadas pelo parser**, incluindo caminhos, linhas e texto literal. São no máximo 100 linhas / 18.000 bytes; se o catálogo completo não couber, ele é omitido. Não aumenta o escopo de revisão nem trata a citação como prova causal.
+4. Diagnósticos por código fixo e contadores, sem registrar código-fonte ou texto livre: `quote_mismatch`, `source_unavailable`, `short_line`, `invalid_reference`. Achados não ancorados retêm a revisão inteira.
+5. Preservados: Kimi `moonshotai/kimi-k2.6`, Baidu fixado, `reasoning.enabled=false`, máximo de 8.192 tokens, tetos de tarifa 0,42/1,75 USD por milhão de tokens, uma tentativa, sem fallback, sem postagem de conteúdo não validado.
 
-- Suporte a `json_schema` no endpoint específico Baidu ainda não homologado; `strict=false` é modo de compatibilidade e **não** garante conformidade. `require_parameters=true` deve impedir roteamento silencioso.
-- CI offline Python 3.12, 317 checks sintéticos e 23 Leak Guard precisam passar neste PR.
-- Proposta de uma chamada sintética, isolada e paga para homologar `json_schema`, sem publicar comentário em PRs, sem repetição automática.
-- Depois, comparar o resultado real nos PRs #16 e #28 com custo controlado, verificando precisão de achados e falsos positivos. Não reexecutar simplesmente um run antigo.
-- Sem alterações de SQLite, licença, secrets ou workflows de benchmark. Merge exige decisão separada.
+## Experimentos reais (20/11/2026)
 
-Contrato OpenRouter: https://openrouter.ai/docs/guides/features/structured-outputs
+| Execução | Resultado |
+| --- | --- |
+| [#44790743639](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44790743639) | Smoke de `json_schema` aprovado no Baidu com JSON válido, 30 tokens de conclusão, zero de raciocínio reportado, US$ 0,000209 |
+| [#44790916457](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44790916457) | Avaliação read-only: PR #16 com 2 âncoras inválidas; PR #28 atingiu a publicação simulada |
+| [#44791935487](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44791935487) | Com prompt anterior, três tentativas do PR #16 retidas; PR #28 apresentou violação de schema |
+| [#44792425130](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44792425130) | Temperatura 0 sem catálogo reteve 5 achados do PR #16. Com catálogo de 31 linhas, duas tentativas passaram com 4 e 6 achados; PR #28 passou com 2 achados |
+| [#44793218405](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44793218405) | End-to-end completo com catálogo: 2/2 execuções do PR #16 e 1/1 do PR #28 passaram até o bloqueio intencional de postagem; zero âncoras inválidas. Custo combinado reportado US$ 0,009227 |
+| [#44793464975](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44793464975) | Kimi com pensamento e saída total 8.192: 3/3 respostas esgotaram o orçamento, inclusive solicitando `reasoning.max_tokens=2048` |
+| [#44794260951](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44794260951) | Pensamento com saída total 16.384: PR #16 gastou **9.442 tokens pensando**, apesar de pedir 2.048, antes de entregar JSON válido (6 achados ancorados). PR #28 consumiu **todos os 16.384 tokens pensando**, sem resposta visível. Custos: US$ 0,019414 e US$ 0,028466 |
 
-## Homologação e execução de avaliação
+**Conclusão sobre raciocínio no Baidu:** a limitação solicitada a 2.048 tokens **não foi obedecida nos testes reais**. A saída total continua limitada, mas pode ser esgotada sem parecer; isso gera custo e erro operacional. O piloto com pensamento foi retirado do perfil candidato após o diagnóstico. Não existe evidência suficiente para habilitá-lo em produção.
 
-- Uma execução inicial de teste do workflow temporário (#44790667492) falhou antes da chamada de inferência devido ao invólucro Bash, sem cobrança reportada. Esse problema foi corrigido na tentativa seguinte.
-- [Smoke #44790743639](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44790743639): **sucesso**. Baidu/Kimi K2.6 aceitou `response_format=json_schema` com `strict=false`, `reasoning.enabled=false`, 8192 tokens máximos, JSON válido, 30 tokens de saída e 0 de raciocínio reportado. Custo reportado US$ 0,000209.
-- [Avaliação sem publicação #44790916457](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44790916457): exatamente uma chamada para PR #16 no SHA `6721e83a...` e outra para PR #28 no SHA `219bfba2...`; cada uma sem retry/fallback, com GitHub token read-only e método `post()` impedido.
-- PR #16: `quality_manual_review_required`, dois achados não ancorados (1 `quote_mismatch` e 1 `short_line`), nenhum comentário. 978 tokens de saída, 0 de raciocínio, US$ 0,002359.
-- PR #28: a resposta estruturada passou JSON, schema, escopo e quality gate e atingiu a fronteira de publicação simulada, marcada `would_publish=true`. O resultado `publication_uncertain` é causado **intencionalmente** pelo bloqueio de postagem do dry-run, não por falha de JSON. 716 tokens de saída, 0 de raciocínio, US$ 0,002721. Nenhum comentário foi realmente publicado.
-- Total reportado nas três chamadas reais: US$ 0,005289. São observações pontuais, não orçamento cumulativo garantido. A melhora do PR #16 de 5 para 2 achados retidos não demonstra estabilidade estatística.
-- Ambos os workflows temporários de inferência são removidos do PR no commit final. A produção na `main` permanece no contrato anterior até aprovação de merge.
+O teste de outro provedor econômico, Chutes, está documentado separadamente no PR, para verificar se a restrição é de roteamento. Sem resultado positivo e reproduzível, manter raciocínio desativado.
 
-## Ajuste final de precisão
+## Aceitação, segurança e pendências
 
-O prompt e a descrição de `evidence` na **projeção remota** agora exigem copiar a linha inteira, com pelo menos 12 caracteres não brancos, ou omitir o achado. Não altera o schema local nem transforma texto parcial em prova. Essa última orientação não foi novamente medida em execução paga; requer validação de qualidade em revisões futuras.
+- CI offline Python 3.12 inclui testes de runner, core, transporte, evidências, schema, 317 verificações sintéticas e 23 casos Leak Guard.
+- Todos os testes reais usaram SHAs imutáveis dos PRs, acesso de leitura ao GitHub, nenhuma execução do código de PRs, nenhuma retentativa de inferência e nenhuma publicação.
+- O quality gate de evidência **não valida verdade causal nem mede falsos positivos**. Ainda é necessário confrontar os achados com gabarito independente e testes de execução de bugs.
+- Workflows de chamadas pagas são temporários, de disparo único, e deverão ser removidos do diff antes do merge.
+- Não se alteram secrets, bancos de dados, licenciamento, políticas SQLite nem automações pagas permanentes.
+- A integração exige CI do último commit, revisão da política de privacidade do Baidu e decisão explícita de promover o PR.
 
-## Testes de consistência e mecanismo escolhido (20/11/2026)
-
-- [Execução #44791935487](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44791935487): três tentativas do PR #16 com prompt anterior, todas retidas (3 âncoras inválidas cada); o PR #28 falhou com violação de schema. Portanto, smoke bem-sucedido não significa confiabilidade de revisão.
-- [Execução #44792425130](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44792425130): no PR #16, temperatura 0 sem catálogo reteve todos os 5 achados; com catálogo de 31 linhas elegíveis, duas tentativas independentes passaram pelo gate, com 4 e 6 achados. No PR #28, temperatura 0 sem catálogo passou por JSON, Draft 7 e quality gate com 2 achados. Todas as chamadas foram read-only e não publicaram comentários.
-- Decisão técnica: fixar `temperature=0.0` **somente no perfil Kimi**, sem mudar o benchmark DeepSeek. Acrescentar um catálogo de linhas exatas do diff já validado, ordenado e limitado a 100 linhas e 18.000 bytes. Linhas curtas (critério existente de 12 caracteres normalizados) ficam fora. Se o catálogo inteiro não couber, omiti-lo por completo, preservando o diff integral e mantendo o quality gate.
-- O catálogo é uma ajuda textual e não prova defeito ou substitui a verificação do escopo. Não reescrevemos a resposta do modelo nem aceitamos citações fabricadas. O catálogo usa somente linhas presentes nos hunks fornecidos e não executa código de PR.
-- A validação semântica dos 2 achados do PR #28 permanece pendente; linhas literalmente citadas podem sustentar alegações falsas. Novas observações controladas em PRs reais seguem necessárias.
-
-## Experimento de raciocínio no Baidu (20/11/2026)
-
-- Por solicitação do desenvolvimento, executamos um A/B isolado, com `reasoning={"max_tokens":2048}` e também `reasoning={"enabled":true}` no Kimi K2.6, `max_tokens=8192`, mesmas evidências e sem permissão de escrita no GitHub.
-- [Execução #44793464975](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44793464975): as três chamadas reais (PR #16 com orçamento solicitado, PR #28 com orçamento solicitado, PR #16 com reasoning padrão) terminaram em `model_output_limit`. **Nenhum parecer foi publicado e nenhum caso passou pela validação.** Isso demonstra que o limite de 2048 solicitado não resolveu o problema, não que o endpoint garanta esse limite.
-- A documentação do OpenRouter não lista o Kimi como modelo com teto independente comprovado; provedores podem ignorar o ajuste. Raciocínio e resposta dividem o teto global de tokens, e tokens de raciocínio são cobrados.
-- O teste isolado com teto total de 16384 no Baidu foi disparado para diagnosticar o consumo adicional. Sua telemetria será registrada separadamente antes de qualquer decisão de produção.
-- A configuração com raciocínio foi **retirada do perfil candidato de produção** por falta de evidência de resposta completa. O perfil estável (sem raciocínio, catálogo de citações e temperatura 0.0) permanece como base.
+Referências: https://openrouter.ai/docs/guides/best-practices/reasoning-tokens e https://openrouter.ai/docs/guides/features/structured-outputs
