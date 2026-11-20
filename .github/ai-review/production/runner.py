@@ -30,14 +30,14 @@ MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
 MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
-# Explicit non-thinking production profile. Strictly verify output usage.
-# This is not a measured claim about code-review quality.
-PRODUCTION_MODEL = "z-ai/glm-4.7-flash"
-PRODUCTION_PROVIDER = "cloudflare"
+# Kimi K2.6 non-thinking; fail closed if the endpoint cannot prove zero reasoning.
+# Pinned cheapest provider at planning time; caps are per-million-token routing filters.
+PRODUCTION_MODEL = "moonshotai/kimi-k2.6"
+PRODUCTION_PROVIDER = "baidu"
 PRODUCTION_REASONING_ENABLED = False
 PRODUCTION_MAX_TOKENS = 8192
-PRODUCTION_INPUT_USD_M_CEILING = 0.2
-PRODUCTION_OUTPUT_USD_M_CEILING = 0.6
+PRODUCTION_INPUT_USD_M_CEILING = 0.42
+PRODUCTION_OUTPUT_USD_M_CEILING = 1.75
 PRODUCTION_MAX_REQUEST_BYTES = 131072
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
@@ -384,6 +384,7 @@ def already_reviewed(rows, pinned, bot_id, version):
 
 
 _MODEL_LABELS = {
+    "moonshotai/kimi-k2.6": "Kimi K2.6",
     "z-ai/glm-4.7-flash": "GLM-4.7 Flash",
     "z-ai/glm-5.3-flash": "GLM-5.3 Flash",
     "deepseek/deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash 1017",
@@ -487,7 +488,7 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
 
 
 def build_production_payload(title, body, diff, *, context="", trunc_note="", omit_info=""):
-    """Pinned GLM-4.7 Flash/Cloudflare non-thinking profile; shared prompt unchanged.
+    """Pinned Kimi K2.6/Baidu non-thinking profile; shared prompt unchanged.
 
     Require every requested parameter; never fall back or silently remove one.
     Price ceilings are per-token routing controls, not a total dollar cost cap.

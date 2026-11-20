@@ -240,12 +240,12 @@ class Integration(Offline):
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
-                         ("z-ai/glm-4.7-flash", 0.3, 8192))
+                         ("moonshotai/kimi-k2.6", 0.3, 8192))
         self.assertEqual(expected["reasoning"], {"enabled": False})
         self.assertEqual(expected["response_format"], {"type": "json_object"})
-        self.assertEqual(expected["provider"], {"only": ["cloudflare"],
+        self.assertEqual(expected["provider"], {"only": ["baidu"],
             "allow_fallbacks": False, "require_parameters": True,
-            "max_price": {"prompt": 0.2, "completion": 0.6}})
+            "max_price": {"prompt": 0.42, "completion": 1.75}})
 
     def test_production_profile_is_explicit_and_bounded(self):
         original = core.build_payload("T", "B", "D")
@@ -254,18 +254,18 @@ class Integration(Offline):
         self.assertEqual(original["max_tokens"], 8192)
         with patch.object(core, "build_payload", wraps=core.build_payload) as builder:
             prod = r.build_production_payload("T", "B", "D")
-        self.assertEqual(builder.call_args.kwargs["model"], "z-ai/glm-4.7-flash")
-        self.assertEqual(prod["model"], "z-ai/glm-4.7-flash")
+        self.assertEqual(builder.call_args.kwargs["model"], "moonshotai/kimi-k2.6")
+        self.assertEqual(prod["model"], "moonshotai/kimi-k2.6")
         self.assertEqual(prod["messages"], original["messages"])
         self.assertNotIn("deepseek", json.dumps({k: v for k, v in prod.items() if k != "messages"}))
         self.assertEqual(prod["max_tokens"], 8192)
         self.assertEqual(prod["reasoning"], {"enabled": False})
         self.assertEqual(prod["response_format"], {"type": "json_object"})
-        self.assertEqual(prod["provider"], {"only": ["cloudflare"],
+        self.assertEqual(prod["provider"], {"only": ["baidu"],
             "allow_fallbacks": False, "require_parameters": True,
-            "max_price": {"prompt": 0.2, "completion": 0.6}})
+            "max_price": {"prompt": 0.42, "completion": 1.75}})
         self.assertEqual(prod["provider"]["max_price"],
-                         {"prompt": 0.2, "completion": 0.6})
+                         {"prompt": 0.42, "completion": 1.75})
         with self.assertRaises(Problem) as size:
             r.build_production_payload("T", "B", "x" * 150000)
         self.assertEqual(size.exception.code, "production_request_size_limit")
@@ -428,7 +428,7 @@ class Integration(Offline):
         out, gh, ai = self.run_case(model=FakeModel(review([finding()])))
         self.assertTrue(out.published)
         body = gh.posts[0][1]
-        self.assertIn("## Revisão de código por IA | GLM-4.7 Flash", body)
+        self.assertIn("## Revisão de código por IA | Kimi K2.6", body)
         self.assertNotIn("DeepSeek", body)
         self.assertNotIn("AI Review (MiniMax M2.7)", body)
         self.assertIn("### Resumo", body)
@@ -439,7 +439,7 @@ class Integration(Offline):
         self.assertIn("**Evidência no código**", body)
         self.assertIn("**Categoria:** Regressão | **Confiança:** Alta", body)
         self.assertTrue(body.endswith(r.marker(r.event_snapshot(event(), "true"), BOT, "test-v1")))
-        self.assertEqual(ai.payloads[0]["model"], "z-ai/glm-4.7-flash")
+        self.assertEqual(ai.payloads[0]["model"], "moonshotai/kimi-k2.6")
 
     def test_model_label_uses_trusted_selected_model_not_pr_text(self):
         pinned = r.event_snapshot(event(), "true")
@@ -882,7 +882,7 @@ class ExperimentalProfiles(Offline):
 
 
 class Transport(Offline):
-    def test_production_cli_constructs_single_attempt_flash_client(self):
+    def test_production_cli_constructs_single_attempt_kimi_client(self):
         reply = json.loads(envelope().body)
         reply["usage"] = {"completion_tokens": 100,
             "completion_tokens_details": {"reasoning_tokens": 0}}
@@ -907,15 +907,16 @@ class Transport(Offline):
         factory.assert_called_once_with("synthetic-key", max_attempts=1,
                                         require_reasoning_usage=True)
         sent = json.loads(http.calls[0][4])
-        self.assertEqual(sent["model"], "z-ai/glm-4.7-flash")
+        self.assertEqual(sent["model"], "moonshotai/kimi-k2.6")
+        self.assertEqual(sent["max_tokens"], 8192)
         self.assertEqual(sent["reasoning"], {"enabled": False})
-        self.assertEqual(sent["provider"]["only"], ["cloudflare"])
+        self.assertEqual(sent["provider"]["only"], ["baidu"])
         self.assertEqual(len(http.calls), 1)
         self.assertEqual(len(github.posts), 1)
         self.assertEqual(json.loads(output.getvalue())["reasoning_control"], "disabled_reported_zero")
         self.assertNotIn("synthetic-key", output.getvalue())
 
-    def test_flash_failures_never_remove_parameters_retry_fallback_or_publish(self):
+    def test_kimi_failures_never_remove_parameters_retry_fallback_or_publish(self):
         cases = [("unsupported_" + parameter, HttpReply(status,
                     json.dumps({"error": "PRIVATE_" + parameter}).encode()), "http_error")
                  for parameter, status in [("json_object", 400), ("reasoning.enabled", 404),
@@ -946,7 +947,7 @@ class Transport(Offline):
                 outcome = r.run_review(event(), "true", github,
                     OpenRouter("synthetic-key", http=http, max_attempts=1, sleep=sleep,
                                require_reasoning_usage=True),
-                    version="flash-failure-test")
+                    version="kimi-failure-test")
                 self.assertEqual(outcome.code, code)
                 self.assertEqual(outcome.exit_code, 1)
                 self.assertFalse(outcome.published or github.posts)
@@ -955,13 +956,31 @@ class Transport(Offline):
                 sleep.assert_not_called()
                 sent = json.loads(http.calls[0][4])
                 self.assertEqual((sent["model"], sent["temperature"], sent["max_tokens"]),
-                                 ("z-ai/glm-4.7-flash", 0.3, 8192))
+                                 ("moonshotai/kimi-k2.6", 0.3, 8192))
                 self.assertEqual(sent["reasoning"], {"enabled": False})
                 self.assertEqual(sent["response_format"], {"type": "json_object"})
-                self.assertEqual(sent["provider"], {"only": ["cloudflare"],
+                self.assertEqual(sent["provider"], {"only": ["baidu"],
                     "allow_fallbacks": False, "require_parameters": True,
-                    "max_price": {"prompt": 0.2, "completion": 0.6}})
+                    "max_price": {"prompt": 0.42, "completion": 1.75}})
                 self.assertNotIn("models", sent)
+
+    def test_kimi_8192_output_cap_rejects_truncated_json_without_publishing(self):
+        reply = json.loads(envelope(finish_reason="length").body)
+        reply["usage"] = {"completion_tokens": 8192,
+            "completion_tokens_details": {"reasoning_tokens": 0}}
+        http = FakeHTTP([HttpReply(200, json.dumps(reply).encode())])
+        github = FakeGitHub()
+        outcome = r.run_review(event(), "true", github,
+            OpenRouter("synthetic-key", http=http, max_attempts=1,
+                       require_reasoning_usage=True),
+            version="kimi-8192-limit-test")
+        self.assertEqual(outcome.code, "model_output_limit")
+        self.assertFalse(outcome.published)
+        self.assertEqual(len(http.calls), 1)
+        sent = json.loads(http.calls[0][4])
+        self.assertEqual(sent["max_tokens"], 8192)
+        self.assertEqual(sent["reasoning"], {"enabled": False})
+        self.assertFalse(github.posts)
 
     def test_production_disabled_reasoning_rejects_missing_positive_or_hidden_usage(self):
         variants = [
@@ -982,7 +1001,7 @@ class Transport(Offline):
                 model = OpenRouter("synthetic-key", http=http, max_attempts=1,
                                    require_reasoning_usage=True)
                 github = FakeGitHub()
-                outcome = r.run_review(event(), "true", github, model, version="flash-usage-test")
+                outcome = r.run_review(event(), "true", github, model, version="kimi-usage-test")
                 self.assertEqual((outcome.code, outcome.stage), (code, "model"))
                 self.assertFalse(outcome.published or github.posts)
                 self.assertEqual(model.last_reasoning_control,
