@@ -1178,7 +1178,7 @@ class Transport(Offline):
             self.assertEqual(r.main(), 1)
         diagnostic = json.loads(output.getvalue())
         self.assertEqual(diagnostic["code"], "model_output_limit")
-        self.assertEqual(diagnostic["reasoning_control"], "disabled_ignored")
+        self.assertEqual(diagnostic["reasoning_control"], "budget_reported_exceeded")
         self.assertEqual(diagnostic["usage"]["cost_micro_usd"], 10000)
         self.assertFalse(diagnostic["published"])
         self.assertNotIn("PRIVATE", output.getvalue())
