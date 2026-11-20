@@ -240,10 +240,10 @@ class Integration(Offline):
             context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
-                         ("z-ai/glm-5.3-flash", 0.3, 8192))
-        self.assertEqual(expected["reasoning"], {"effort": "low"})
+                         ("z-ai/glm-4.7-flash", 0.3, 8192))
+        self.assertEqual(expected["reasoning"], {"enabled": False})
         self.assertEqual(expected["response_format"], {"type": "json_object"})
-        self.assertEqual(expected["provider"], {"only": ["deepinfra"],
+        self.assertEqual(expected["provider"], {"only": ["cloudflare"],
             "allow_fallbacks": False, "require_parameters": True,
             "max_price": {"prompt": 0.2, "completion": 0.6}})
 
@@ -254,20 +254,18 @@ class Integration(Offline):
         self.assertEqual(original["max_tokens"], 8192)
         with patch.object(core, "build_payload", wraps=core.build_payload) as builder:
             prod = r.build_production_payload("T", "B", "D")
-        self.assertEqual(builder.call_args.kwargs["model"], "z-ai/glm-5.3-flash")
-        self.assertEqual(prod["model"], "z-ai/glm-5.3-flash")
+        self.assertEqual(builder.call_args.kwargs["model"], "z-ai/glm-4.7-flash")
+        self.assertEqual(prod["model"], "z-ai/glm-4.7-flash")
         self.assertEqual(prod["messages"], original["messages"])
         self.assertNotIn("deepseek", json.dumps({k: v for k, v in prod.items() if k != "messages"}))
         self.assertEqual(prod["max_tokens"], 8192)
-        self.assertEqual(prod["reasoning"], {"effort": "low"})
+        self.assertEqual(prod["reasoning"], {"enabled": False})
         self.assertEqual(prod["response_format"], {"type": "json_object"})
-        self.assertEqual(prod["provider"], {"only": ["deepinfra"],
+        self.assertEqual(prod["provider"], {"only": ["cloudflare"],
             "allow_fallbacks": False, "require_parameters": True,
             "max_price": {"prompt": 0.2, "completion": 0.6}})
-        glm = experimental.PROFILES["glm53-flash-low"]
-        self.assertEqual((prod["provider"]["max_price"]["prompt"],
-                          prod["provider"]["max_price"]["completion"]),
-                         (glm.input_usd_m_ceiling, glm.output_usd_m_ceiling))
+        self.assertEqual(prod["provider"]["max_price"],
+                         {"prompt": 0.2, "completion": 0.6})
         with self.assertRaises(Problem) as size:
             r.build_production_payload("T", "B", "x" * 150000)
         self.assertEqual(size.exception.code, "production_request_size_limit")
@@ -430,7 +428,7 @@ class Integration(Offline):
         out, gh, ai = self.run_case(model=FakeModel(review([finding()])))
         self.assertTrue(out.published)
         body = gh.posts[0][1]
-        self.assertIn("## Revisão de código por IA | GLM-5.3 Flash", body)
+        self.assertIn("## Revisão de código por IA | GLM-4.7 Flash", body)
         self.assertNotIn("DeepSeek", body)
         self.assertNotIn("AI Review (MiniMax M2.7)", body)
         self.assertIn("### Resumo", body)
@@ -441,7 +439,7 @@ class Integration(Offline):
         self.assertIn("**Evidência no código**", body)
         self.assertIn("**Categoria:** Regressão | **Confiança:** Alta", body)
         self.assertTrue(body.endswith(r.marker(r.event_snapshot(event(), "true"), BOT, "test-v1")))
-        self.assertEqual(ai.payloads[0]["model"], "z-ai/glm-5.3-flash")
+        self.assertEqual(ai.payloads[0]["model"], "z-ai/glm-4.7-flash")
 
     def test_model_label_uses_trusted_selected_model_not_pr_text(self):
         pinned = r.event_snapshot(event(), "true")
@@ -884,9 +882,13 @@ class ExperimentalProfiles(Offline):
 
 
 class Transport(Offline):
-    def test_production_cli_constructs_single_attempt_glm_client(self):
-        http = FakeHTTP([envelope()])
-        model = OpenRouter("synthetic-key", http=http, max_attempts=1)
+    def test_production_cli_constructs_single_attempt_flash_client(self):
+        reply = json.loads(envelope().body)
+        reply["usage"] = {"completion_tokens": 100,
+            "completion_tokens_details": {"reasoning_tokens": 0}}
+        http = FakeHTTP([HttpReply(200, json.dumps(reply).encode())])
+        model = OpenRouter("synthetic-key", http=http, max_attempts=1,
+                           require_reasoning_usage=True)
         github = FakeGitHub()
         environment = {"AI_REVIEW_ENABLED": "true", "GITHUB_RUN_ATTEMPT": "1",
             "GITHUB_EVENT_NAME": "pull_request_target", "GITHUB_REPOSITORY": r.REPOSITORY,
@@ -902,20 +904,21 @@ class Transport(Offline):
                 patch("transport.OpenRouter", return_value=model) as factory, \
                 patch("sys.stdout", output):
             self.assertEqual(r.main(), 0)
-        factory.assert_called_once_with("synthetic-key", max_attempts=1)
+        factory.assert_called_once_with("synthetic-key", max_attempts=1,
+                                        require_reasoning_usage=True)
         sent = json.loads(http.calls[0][4])
-        self.assertEqual(sent["model"], "z-ai/glm-5.3-flash")
-        self.assertEqual(sent["reasoning"], {"effort": "low"})
-        self.assertEqual(sent["provider"]["only"], ["deepinfra"])
+        self.assertEqual(sent["model"], "z-ai/glm-4.7-flash")
+        self.assertEqual(sent["reasoning"], {"enabled": False})
+        self.assertEqual(sent["provider"]["only"], ["cloudflare"])
         self.assertEqual(len(http.calls), 1)
         self.assertEqual(len(github.posts), 1)
-        self.assertEqual(json.loads(output.getvalue())["reasoning_control"], "effort_unverifiable")
+        self.assertEqual(json.loads(output.getvalue())["reasoning_control"], "disabled_reported_zero")
         self.assertNotIn("synthetic-key", output.getvalue())
 
-    def test_glm_failures_never_remove_parameters_retry_fallback_or_publish(self):
+    def test_flash_failures_never_remove_parameters_retry_fallback_or_publish(self):
         cases = [("unsupported_" + parameter, HttpReply(status,
                     json.dumps({"error": "PRIVATE_" + parameter}).encode()), "http_error")
-                 for parameter, status in [("json_object", 400), ("reasoning.low", 404),
+                 for parameter, status in [("json_object", 400), ("reasoning.enabled", 404),
                                             ("temperature", 422)]]
         cases += [("http_" + str(status), HttpReply(status, b'{}'), "http_error")
                   for status in (429, 500, 503)]
@@ -932,11 +935,18 @@ class Transport(Offline):
         ]
         for name, reply, code in cases:
             with self.subTest(case=name):
+                if isinstance(reply, HttpReply) and reply.status == 200:
+                    data = json.loads(reply.body)
+                    if isinstance(data, dict) and "choices" in data:
+                        data["usage"] = {"completion_tokens": 100,
+                            "completion_tokens_details": {"reasoning_tokens": 0}}
+                        reply = HttpReply(200, json.dumps(data).encode())
                 http = FakeHTTP([reply, envelope()])
                 github, sleep = FakeGitHub(), Mock()
                 outcome = r.run_review(event(), "true", github,
-                    OpenRouter("synthetic-key", http=http, max_attempts=1, sleep=sleep),
-                    version="glm-failure-test")
+                    OpenRouter("synthetic-key", http=http, max_attempts=1, sleep=sleep,
+                               require_reasoning_usage=True),
+                    version="flash-failure-test")
                 self.assertEqual(outcome.code, code)
                 self.assertEqual(outcome.exit_code, 1)
                 self.assertFalse(outcome.published or github.posts)
@@ -945,36 +955,39 @@ class Transport(Offline):
                 sleep.assert_not_called()
                 sent = json.loads(http.calls[0][4])
                 self.assertEqual((sent["model"], sent["temperature"], sent["max_tokens"]),
-                                 ("z-ai/glm-5.3-flash", 0.3, 8192))
-                self.assertEqual(sent["reasoning"], {"effort": "low"})
+                                 ("z-ai/glm-4.7-flash", 0.3, 8192))
+                self.assertEqual(sent["reasoning"], {"enabled": False})
                 self.assertEqual(sent["response_format"], {"type": "json_object"})
-                self.assertEqual(sent["provider"], {"only": ["deepinfra"],
+                self.assertEqual(sent["provider"], {"only": ["cloudflare"],
                     "allow_fallbacks": False, "require_parameters": True,
                     "max_price": {"prompt": 0.2, "completion": 0.6}})
                 self.assertNotIn("models", sent)
 
-    def test_glm_low_effort_does_not_invent_reasoning_usage_or_a_hard_budget(self):
-        for reasoning in (None, 0, 8191, "PRIVATE_INVALID_COUNTER"):
-            with self.subTest(reasoning=reasoning):
+    def test_production_disabled_reasoning_rejects_missing_positive_or_hidden_usage(self):
+        variants = [
+            ("missing", None, False, "reasoning_control_unverified"),
+            ("invalid", "PRIVATE_INVALID", False, "reasoning_control_unverified"),
+            ("positive", 99, False, "reasoning_control_ignored"),
+            ("hidden_reasoning", 0, True, "reasoning_control_ignored"),
+        ]
+        for name, reasoning, hidden, code in variants:
+            with self.subTest(name=name):
                 reply = json.loads(envelope().body)
-                reply["usage"] = {"completion_tokens": 8192}
+                reply["usage"] = {"completion_tokens": 100}
                 if reasoning is not None:
                     reply["usage"]["completion_tokens_details"] = {"reasoning_tokens": reasoning}
-                reply["choices"][0]["message"]["reasoning"] = "PRIVATE_REASONING"
+                if hidden:
+                    reply["choices"][0]["message"]["reasoning"] = "PRIVATE_REASONING"
                 http = FakeHTTP([HttpReply(200, json.dumps(reply).encode())])
-                model = OpenRouter("synthetic-key", http=http, max_attempts=1)
+                model = OpenRouter("synthetic-key", http=http, max_attempts=1,
+                                   require_reasoning_usage=True)
                 github = FakeGitHub()
-                outcome = r.run_review(event(), "true", github, model, version="glm-usage-test")
-                self.assertTrue(outcome.published)
-                self.assertEqual(model.last_reasoning_control, "effort_unverifiable")
-                if type(reasoning) is int:
-                    self.assertEqual(model.last_usage["reasoning_tokens"], reasoning)
-                    self.assertEqual(model.last_usage["visible_tokens"], 8192 - reasoning)
-                else:
-                    self.assertNotIn("reasoning_tokens", model.last_usage)
-                    self.assertNotIn("visible_tokens", model.last_usage)
+                outcome = r.run_review(event(), "true", github, model, version="flash-usage-test")
+                self.assertEqual((outcome.code, outcome.stage), (code, "model"))
+                self.assertFalse(outcome.published or github.posts)
+                self.assertEqual(model.last_reasoning_control,
+                    "disabled_unverified" if name in ("missing", "invalid") else "disabled_ignored")
                 self.assertNotIn("PRIVATE", repr(model.last_usage))
-                self.assertNotIn("PRIVATE_REASONING", github.posts[0][1])
                 self.assertEqual(len(http.calls), 1)
 
     def test_numeric_input_total_and_cost_are_bounded_and_detached(self):
@@ -1058,7 +1071,7 @@ class Transport(Offline):
             self.assertEqual(r.main(), 1)
         diagnostic = json.loads(output.getvalue())
         self.assertEqual(diagnostic["code"], "model_output_limit")
-        self.assertEqual(diagnostic["reasoning_control"], "effort_unverifiable")
+        self.assertEqual(diagnostic["reasoning_control"], "disabled_ignored")
         self.assertEqual(diagnostic["usage"]["cost_micro_usd"], 10000)
         self.assertFalse(diagnostic["published"])
         self.assertNotIn("PRIVATE", output.getvalue())
@@ -1243,14 +1256,14 @@ class Transport(Offline):
         self.assertEqual(len(http.calls), 1)
 
         github = FakeGitHub()
-        # Production opts in to thinking; positive reasoning usage is expected.
+        # Production must reject positive reasoning under non-thinking.
         result = r.run_review(event(), "true", github,
             OpenRouter("synthetic-key", http=FakeHTTP([wire]),
-                       max_attempts=1),
-            version="test-thinking")
-        self.assertEqual(result.code, "published")
-        self.assertTrue(result.published)
-        self.assertEqual(len(github.posts), 1)
+                       max_attempts=1, require_reasoning_usage=True),
+            version="test-nonthinking-production")
+        self.assertEqual(result.code, "reasoning_control_ignored")
+        self.assertFalse(result.published)
+        self.assertFalse(github.posts)
 
     def test_nonthinking_valid_completion_passes_through(self):
         http = FakeHTTP([envelope(review())])

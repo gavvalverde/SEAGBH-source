@@ -94,7 +94,7 @@ git diff --check
 
 ## AI Reviewer e workflows
 
-- A produção usa DeepSeek V4.1 Flash 1017, modelo `deepseek/deepseek-v4.1-flash-1017`, com perfil de raciocínio aplicado em `build_production_payload()` de `.github/ai-review/production/runner.py`. Consulte as constantes `PRODUCTION_*`; não deduza o perfil final apenas dos defaults de `prompt_builder.py` ou de documentação antiga de pilotos.
+- A produção seleciona explicitamente GLM-4.7 Flash (`z-ai/glm-4.7-flash`) via Cloudflare, com `reasoning.enabled=false`, teto de 8.192 tokens e verificação conservadora de usage em `build_production_payload()` e `main()` de `.github/ai-review/production/runner.py`. Consulte as constantes `PRODUCTION_*`; o default DeepSeek de `prompt_builder.py` permanece apenas para contratos históricos do benchmark. Compatibilidade do endpoint e qualidade de revisão devem ser demonstradas por execução real, nunca presumidas.
 - `.github/workflows/ai-review.yml` usa `pull_request_target` para PRs internos, abertos, não Draft, destinados à `main`, nos eventos declarados e somente na primeira tentativa. Depende de `AI_REVIEW_ENABLED` com valor literal `true`, checagem Bash estrita antes das etapas com credenciais e defesa adicional no runner.
 - O checkout deve permanecer no repositório literal e em `github.workflow_sha`, com credenciais não persistidas e submódulos/LFS desativados. Código, requisitos, prompt e schema executados devem vir da revisão confiável, nunca do head/merge do PR.
 - Preserve a validação Draft 7 de `core.py`, os limites de escopo, a checagem de SHA, o transporte limitado, a deduplicação e os controles de `evidence.py`/`quality_gate.py`. Citação literal e heurísticas de mecanismo não comprovam a existência de um defeito.
