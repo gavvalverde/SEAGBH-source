@@ -1,8 +1,37 @@
-# AI Reviewer: DeepSeek V4.1 Flash 1017 (guarded pilot)
+# AI Reviewer: DeepSeek V4.1 Flash 1017 (opt-in PR reviews)
 
-The production workflow is present on `main` but disabled by default. It requires
-both `AI_REVIEW_ENABLED=true` and `AI_REVIEW_TARGET_PR` equal to the exact PR
-number. Source changes and offline CI never activate paid model calls by themselves.
+The workflow is installed on `main` and is opt-in via the repository variable
+`AI_REVIEW_ENABLED=true`. Once enabled, it reviews every eligible internal,
+non-draft PR targeting `main`, including new commits to those PRs.
+`AI_REVIEW_TARGET_PR` is obsolete and ignored. Source changes and offline CI
+do not activate paid calls by themselves. Each eligible new PR HEAD can cost
+one OpenRouter request; set a strict OpenRouter API key spending limit first.
+
+## How to activate for all development PRs
+
+1. In OpenRouter, create or select a dedicated key for the SEAGBH reviewer
+   and configure its spending limit and access. Reuse of the pilot key is
+   possible but reduces budget isolation.
+2. In GitHub repository Settings > Secrets and variables > Actions:
+   verify `OPENROUTER_API_KEY` is available as a secret. Under **Variables**,
+   set `AI_REVIEW_ENABLED` to the exact lowercase string `true`.
+3. Create a regular **non-draft** PR from a branch inside this repository
+   to `main`. The `AI PR Review (DeepSeek Thinking)` workflow should run
+   on `opened`, `synchronize`, `reopened` and `ready_for_review`.
+   Drafts, forks and PRs to other branches are intentionally ignored.
+4. Inspect the Actions result and the bot's COMMENT review. Findings are
+   suggestions only: a valid code-line quote is *not* proof of correctness.
+   For a held review, check the fixed sanitized log reason. Do not re-run
+   a paid job; push a new commit after correcting the issue if appropriate.
+5. To pause future paid reviews immediately, set `AI_REVIEW_ENABLED=false`.
+   Already queued/in-flight jobs are not cancelled by changing the variable;
+   review queued work separately in Actions if a hard stop is necessary.
+
+The workflow never approves, merges, modifies source, or executes PR code.
+It is not a required merge status by itself; CI and human judgement remain
+independent. No global per-day or per-month quota is implemented in the
+repository. The external OpenRouter key/account limit is the financial
+kill-switch.
 
 ## Conservative same-line collision hold (2026-11-19)
 
@@ -13,7 +42,8 @@ never chooses a "best" finding, and makes no additional paid API call.
 Identical locations do NOT prove identical root causes; independent valid bugs
 may require manual triage. The shared prompt now asks for a counterfactual
 independent-fix test and calibrates severity to demonstrated impact.
-Keep production disabled until evaluated on real-world cases.
+This hold remains active during the opt-in production rollout; investigate held
+results manually rather than weakening the gate for a higher publication rate.
 
 ## Deterministic finding-quality gate and refutation
 
@@ -33,16 +63,18 @@ regardless of reported confidence or severity and does not infer truth from
 the quote. The GitHub Action prints only a fixed code and the number of
 unanchored findings, never provider text or source paths. This is a
 conservative release gate and may hold valid bugs for manual examination.
-**Do not enable the production workflow until manually evaluating the
-false-negative trade-off.** In particular, file-level findings and findings
-whose exact affected line is shorter than the minimum quote length will
-require manual handling.
+**The production workflow is intentionally advisory.** Monitor false-positive
+and false-negative trade-offs on real PRs. File-level findings and findings
+whose exact affected line is shorter than the minimum quote length can
+require manual handling; the system will not silently treat them as clean.
 
-The offline 23-case suite checks paired fixtures, no ground-truth leakage,
-the matcher on empty and synthetic-noisy responses, and coverage of both
-positive and negative labels. It is **not** evidence that the model has
-passed 23 live cases. Live OpenRouter calls remain manual and separately
-authorized, with no automatic retries or publishing from the pilot.
+The offline 23-case suite verifies fixture/evaluator structure without API
+calls. Separately, 23 distinct synthetic cases were tested manually using the
+DeepSeek thinking profile in November 2026: latest compatible aggregate
+TP=17/FP=2/FN=1, F1~91.9% by the automated heuristic, with outstanding
+manual semantic triage on `sec-001` and `tst-001`. These metrics do not
+establish real-PR accuracy. The standalone benchmark workflow remains manual,
+while production PR reviews are enabled only by the owner-controlled variable.
 
 ## Trust and activation
 
@@ -55,15 +87,18 @@ are constructed. It never executes or checks out PR code. Python modules,
 requirements and schema are loaded exclusively from the same trusted checkout.
 
 Only open, non-draft PRs from gavvalverde/SEAGBH-source to its main branch are
-eligible. The repository default branch must be main. The job gate requires
-AI_REVIEW_ENABLED == 'true' AND the exact `AI_REVIEW_TARGET_PR` match. The Python gate additionally requires the exact,
-case-sensitive string `true`; absent, false or any other value means no API
-request. A first Bash step, without credential environment variables, checks the
-literal value with case-sensitive [[ ... == "true" ]]. It writes only the fixed
-outputs enabled=true or enabled=false. Checkout, dependency installation and the
-credential-bearing reviewer step all require that controlled output to be true.
-The coarse job expression is case-insensitive and is not the authorization gate.
-Do not enable it as part of publishing this integration PR.
+eligible. The repository default branch must be main. The Actions job gate
+requires `AI_REVIEW_ENABLED == 'true'` and first attempt
+`github.run_attempt == 1`; the Python runner independently rejects all
+subsequent run attempts *before credential or API access*. The Python gate
+additionally requires the case-sensitive string `true`; absent, false or any
+other value means no API request. A first Bash step, without credential
+environment variables, checks the literal value and emits only the fixed
+outputs enabled=true / enabled=false. Checkout, dependency installation and
+the credential-bearing reviewer step all require that output to be true.
+Changing this setting activates reviews of subsequent eligible PR events; it
+does not retroactively dispatch reviews for existing PRs. GitHub may require
+an explicit repository event policy permitting `pull_request_target`.
 
 Before activation, a maintainer must separately review the diff, confirm the
 variable is absent/false, inspect applicable GitHub Actions event policies and
@@ -104,15 +139,16 @@ to 1024/4096 UTF-8 bytes and any shortening also marks the review partial. The
 published heading reflects actual partial scope independently of model claims.
 Binary/missing patches and metadata-only renames without patches fail safely.
 
-`core.build_payload` delegates unchanged to the published `build_request`:
+`core.build_payload` delegates to the shared, vetted prompt builder. The
+production runner applies the **same static profile as the 23-case pilot**:
 DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
-temperature 0.3, max_tokens 8192, with no tools or duplicate prompt.
-The pinned DeepSeek production request now sends `reasoning.effort=none`
-to request non-thinking mode. This is a *pilot*, not proof that every OpenRouter
-provider route will honor the field. If a completed response reports positive
-`reasoning_tokens` in usage, the reviewer fails closed with the fixed
-`reasoning_control_ignored` code. Missing token counters cannot verify this
-setting. The quality of a non-thinking code review must also be evaluated.
+temperature 0.3, `max_tokens=24576` and
+`reasoning={"max_tokens":16384}`, with JSON mode and strict provider
+parameter support. The 24,576 completion-token ceiling is shared between
+reasoning and visible JSON; the 16K/8K split is a *requested target*, not a
+guaranteed independent visible-output cap. The model's response is still
+validated before publication. Production fails before the paid call if
+the encoded request exceeds 128 KiB.
 Previously PR #22 failed with `network_timeout` (44524958394) and later
 `model_output_limit` (44526208632).
 Low effort alone did not resolve the output limit. On 2026-11-19, PR #22 run
@@ -125,14 +161,15 @@ Run 44529754321 provided conclusive token counters:
 16,384 completion tokens = 15,097 reasoning + 1,287 visible JSON tokens.
 This confirms hidden reasoning consumed 92.1% of the completion budget even
 with `effort=low`. Do NOT increase the budget again to conceal the cause.
-The current pilot returns to max_tokens=8192, keeps concise-output guidance,
-and requests non-thinking mode. The 5s/180s/240s model transport and
-5s/30s/60s GitHub transport are unchanged. Success, provider compliance and
-code-review quality need evaluation before any production automation.
-A real spending cap must be configured in the OpenRouter account.
+Historical PR #22 troubleshooting used an earlier non-thinking 8K profile.
+The current opt-in PR reviewer uses the benchmarked thinking profile above.
+The 5s/180s/240s model transport and 5s/30s/60s GitHub transport are
+unchanged. A real spending cap must be configured on the OpenRouter key.
+No claim is made about a hard dollar limit per call or real-PR accuracy.
 
-On finish_reason=length or verified reasoning opt-out failure, if OpenRouter
-supplies usage metadata, logs may include ONLY bounded integer
+On finish_reason=length (or a rejected explicit opt-out payload in direct
+transport tests), if OpenRouter supplies usage metadata, logs may include
+ONLY bounded integer
 completion_tokens, reasoning_tokens, and visible_tokens counters. Missing/invalid metadata remains absent. The log
 never contains message, prompt, reasoning, secret, raw API error or model
 content. No automatic retry occurs on a generation failure. Subsequent
@@ -156,9 +193,12 @@ min(read_timeout, remaining) before each read1. It closes resources in
 finally, including Connection: close and error paths. Actual network
 conditions and provider latency may still trigger a timeout.
 
-At most two OpenRouter attempts: one retry with a 1-second backoff for 429/5xx.
-400/401 and network errors are not automatically retried. A network failure may
-have consumed model credits; avoiding blind retries limits that ambiguity.
+Production uses `OpenRouter(max_attempts=1)`: it performs a single model POST
+per eligible workflow execution and does not retry 429/5xx. The transport
+still supports two attempts when explicitly requested by older offline clients,
+but not in this production entrypoint. A network failure may have consumed
+credits, so even a single attempt does not guarantee a charge-free error.
+Both Actions and the Python runner refuse re-run attempts.
 Only one assistant message with finish_reason=stop is accepted. Incomplete,
 empty, malformed, unexpected or schema-invalid responses never become clean.
 
@@ -195,13 +235,16 @@ and publication failures remain errors. No headers, diff content, model bodies
 or exception text are logged. Failures after an API-accepted POST can remain
 uncertain and require human inspection before repeated execution.
 
-Cost controls are per execution and per successfully reviewed SHA/version, not
-a global spending cap. Repeated failed runs can incur further costs. Repository
-budgets/approval procedures must be set separately before activation. Source
-code is intentionally sent to OpenRouter; schema validation is not DLP and does
-not prove the truth of model findings. Review the source-sharing policy and do
-not put credentials in source. The previous model completed an operational smoke review on PR #15, but no
-paid quality benchmark has validated this DeepSeek configuration yet.
+Cost controls are per execution and per successfully reviewed SHA/version,
+not a global spending cap. Every new PR head SHA may trigger another paid call
+on `synchronize`; repeated `reopened` / `ready_for_review` events without a
+published review can also incur a new call on the same SHA. A failed or held
+review has no durable success marker. A manual Actions re-run is blocked to
+avoid accidental charges, but the workflow does not provide exactly-once
+billing across events. Set a separate OpenRouter key spending limit and monitor
+its dashboard. PR content and code excerpts are intentionally transmitted to
+OpenRouter; schema validation is not DLP and does not establish finding truth.
+Never commit credentials, tokens or production secrets to code.
 
 ## Offline tests
 
@@ -235,23 +278,21 @@ calls were used. Local validation uses the existing isolated Python 3.14.3 venv;
 Python 3.12/Ubuntu wheels and installation have not been exercised here. Full
 artifact hash-locking and operational GitHub validation remain separate work.
 
-## DeepSeek switch and controlled testing
+## DeepSeek development PR review rollout
 
-- Model ID is pinned in the shared `benchmarks/harness/prompt_builder.py` module.
-  Production uses that same module; the benchmark retains `--model` to compare
-  MiniMax and DeepSeek explicitly without changing production.
+- Model ID remains pinned in `benchmarks/harness/prompt_builder.py`.
+  `runner.build_production_payload` explicitly selects the same reasoning
+  profile as the paid 23-case benchmark. The general `core.build_payload`
+  default is intentionally still non-thinking for standalone legacy tests.
 - The `ai-review-ci.yml` workflow tests the production core/runner, benchmark
-  harness and leak guard on pull requests without API secrets or paid calls.
-- Do not mark the synthetic fixture PR #16 ready for review or enable the
-  reviewer until a spending limit on the OpenRouter key is independently
-  confirmed and an explicit paid-test authorization is provided.
-- For one live quality test, first ensure the new model configuration is merged
-  to main, set `AI_REVIEW_TARGET_PR=16`, and only then set
-  `AI_REVIEW_ENABLED=true`. PR #16 is intentionally Draft and must never merge.
-  After the one approved review, switch `AI_REVIEW_ENABLED=false` again.
+  harness and leak guard on pull requests, without API secrets or paid calls.
+- Do not convert the synthetic fixture PR #16 into a real development PR.
+- Switch `AI_REVIEW_ENABLED=true` only after reviewing the merged workflow
+  and setting the independent OpenRouter key spending limit.
 - A finished model response must still be one assistant JSON message with
-  `finish_reason=stop` and pass the existing schema/coordinate validations.
-  Any missing, malformed or truncated response is an error, never a clean review.
+  `finish_reason=stop` and pass trusted schema/coordinate and evidence
+  checks. A missing, malformed or truncated response is an error, never a
+  clean review. Human review remains mandatory for technical correctness.
 
 
 ## Live pilot failure and follow-up (2026-11-17)
