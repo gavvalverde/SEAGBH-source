@@ -45,3 +45,11 @@ O prompt e a descrição de `evidence` na **projeção remota** agora exigem cop
 - Decisão técnica: fixar `temperature=0.0` **somente no perfil Kimi**, sem mudar o benchmark DeepSeek. Acrescentar um catálogo de linhas exatas do diff já validado, ordenado e limitado a 100 linhas e 18.000 bytes. Linhas curtas (critério existente de 12 caracteres normalizados) ficam fora. Se o catálogo inteiro não couber, omiti-lo por completo, preservando o diff integral e mantendo o quality gate.
 - O catálogo é uma ajuda textual e não prova defeito ou substitui a verificação do escopo. Não reescrevemos a resposta do modelo nem aceitamos citações fabricadas. O catálogo usa somente linhas presentes nos hunks fornecidos e não executa código de PR.
 - A validação semântica dos 2 achados do PR #28 permanece pendente; linhas literalmente citadas podem sustentar alegações falsas. Novas observações controladas em PRs reais seguem necessárias.
+
+## Experimento de raciocínio no Baidu (20/11/2026)
+
+- Por solicitação do desenvolvimento, executamos um A/B isolado, com `reasoning={"max_tokens":2048}` e também `reasoning={"enabled":true}` no Kimi K2.6, `max_tokens=8192`, mesmas evidências e sem permissão de escrita no GitHub.
+- [Execução #44793464975](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44793464975): as três chamadas reais (PR #16 com orçamento solicitado, PR #28 com orçamento solicitado, PR #16 com reasoning padrão) terminaram em `model_output_limit`. **Nenhum parecer foi publicado e nenhum caso passou pela validação.** Isso demonstra que o limite de 2048 solicitado não resolveu o problema, não que o endpoint garanta esse limite.
+- A documentação do OpenRouter não lista o Kimi como modelo com teto independente comprovado; provedores podem ignorar o ajuste. Raciocínio e resposta dividem o teto global de tokens, e tokens de raciocínio são cobrados.
+- O teste isolado com teto total de 16384 no Baidu foi disparado para diagnosticar o consumo adicional. Sua telemetria será registrada separadamente antes de qualquer decisão de produção.
+- A configuração com raciocínio foi **retirada do perfil candidato de produção** por falta de evidência de resposta completa. O perfil estável (sem raciocínio, catálogo de citações e temperatura 0.0) permanece como base.
