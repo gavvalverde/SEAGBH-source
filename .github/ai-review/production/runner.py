@@ -47,7 +47,7 @@ _KIMI_OUTPUT_RULES = (
     "at the cited path and NEW-file line from the diff. Remove only the diff "
     "prefix + (or context space) and surrounding indentation. No fragments, "
     "paraphrases, invented code, line numbers instead of code, or approximate "
-    "quotes. If the exact full line cannot be copied, OMIT that finding.\n"
+    "quotes. Select an evidentiary code line of at least 12 non-whitespace "\n    "characters; if the relevant short line has no longer causal anchor, "\n    "OMIT that finding. Before answering, compare each entire cited code "\n    "line against evidence; if it does not match, OMIT that finding.\n"
     "Only publish independent bugs with concrete and reproducible impact.\n"
 )
 
@@ -509,7 +509,13 @@ def _production_remote_schema():
     schema.pop("$schema", None)
     schema.pop("$id", None)
     # Preserve full conditional validation exclusively in the local validator.
-    schema["properties"]["findings"]["items"].pop("allOf", None)
+    item = schema["properties"]["findings"]["items"]
+    item.pop("allOf", None)
+    item["properties"]["evidence"]["description"] = (
+        "Contains the FULL exact source code line from the NEW diff at the cited "
+        "path and line, with at least 12 non-whitespace characters. Copy the "
+        "whole line, not a snippet or paraphrase; omit unanchorable findings."
+    )
     return schema
 
 

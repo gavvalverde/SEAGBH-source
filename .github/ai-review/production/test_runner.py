@@ -282,7 +282,11 @@ class Integration(Offline):
     def test_kimi_remote_schema_does_not_modify_local_draft7(self):
         remote = r._production_remote_schema()
         self.assertNotIn("allOf", remote["properties"]["findings"]["items"])
+        self.assertIn("FULL exact source code line",
+            remote["properties"]["findings"]["items"]["properties"]["evidence"]["description"])
         self.assertIn("allOf", core._schema["properties"]["findings"]["items"])
+        self.assertNotIn("FULL exact source code line",
+            core._schema["properties"]["findings"]["items"]["properties"]["evidence"]["description"])
         remote["properties"]["findings"]["items"]["properties"].clear()
         self.assertIn("evidence", r._production_remote_schema()["properties"]["findings"]["items"]["properties"])
         self.assertFalse(core.validate_review('{"summary":"x","findings":[{"path":"a.py"}]}').ok)
