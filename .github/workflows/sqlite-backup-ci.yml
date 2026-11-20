@@ -1,0 +1,43 @@
+name: SQLite Backup Offline Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/core/backup_sqlite.py"
+      - "tests/unit/test_backup_sqlite.py"
+      - ".github/workflows/sqlite-backup-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+      - name: Run isolated offline SQLite tests
+        run: |
+          set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
+          python -B -m venv --without-pip "$RUNNER_TEMP/sqlite-backup-venv"
+          PY="$RUNNER_TEMP/sqlite-backup-venv/bin/python"
+          "$PY" -B -c 'import sys, sqlite3; assert sys.version_info[:2] == (3, 12); print(sys.version); print("SQLite", sqlite3.sqlite_version)'
+          "$PY" -B -m unittest -v tests.unit.test_backup_sqlite
