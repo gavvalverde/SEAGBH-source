@@ -37,3 +37,11 @@ Contrato OpenRouter: https://openrouter.ai/docs/guides/features/structured-outpu
 ## Ajuste final de precisão
 
 O prompt e a descrição de `evidence` na **projeção remota** agora exigem copiar a linha inteira, com pelo menos 12 caracteres não brancos, ou omitir o achado. Não altera o schema local nem transforma texto parcial em prova. Essa última orientação não foi novamente medida em execução paga; requer validação de qualidade em revisões futuras.
+
+## Testes de consistência e mecanismo escolhido (20/11/2026)
+
+- [Execução #44791935487](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44791935487): três tentativas do PR #16 com prompt anterior, todas retidas (3 âncoras inválidas cada); o PR #28 falhou com violação de schema. Portanto, smoke bem-sucedido não significa confiabilidade de revisão.
+- [Execução #44792425130](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44792425130): no PR #16, temperatura 0 sem catálogo reteve todos os 5 achados; com catálogo de 31 linhas elegíveis, duas tentativas independentes passaram pelo gate, com 4 e 6 achados. No PR #28, temperatura 0 sem catálogo passou por JSON, Draft 7 e quality gate com 2 achados. Todas as chamadas foram read-only e não publicaram comentários.
+- Decisão técnica: fixar `temperature=0.0` **somente no perfil Kimi**, sem mudar o benchmark DeepSeek. Acrescentar um catálogo de linhas exatas do diff já validado, ordenado e limitado a 100 linhas e 18.000 bytes. Linhas curtas (critério existente de 12 caracteres normalizados) ficam fora. Se o catálogo inteiro não couber, omiti-lo por completo, preservando o diff integral e mantendo o quality gate.
+- O catálogo é uma ajuda textual e não prova defeito ou substitui a verificação do escopo. Não reescrevemos a resposta do modelo nem aceitamos citações fabricadas. O catálogo usa somente linhas presentes nos hunks fornecidos e não executa código de PR.
+- A validação semântica dos 2 achados do PR #28 permanece pendente; linhas literalmente citadas podem sustentar alegações falsas. Novas observações controladas em PRs reais seguem necessárias.

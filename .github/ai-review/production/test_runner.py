@@ -237,14 +237,18 @@ class Integration(Offline):
         gh = FakeGitHub();pinned = r.event_snapshot(event(), "true");collected = r.collect(gh, pinned)
         out, _, ai = self.run_case(github=gh)
         expected = r.build_production_payload(pinned.title, pinned.body, collected.diff,
-            context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="")
+            context=json.dumps(collected.manifest, ensure_ascii=True, sort_keys=True), trunc_note="", omit_info="",
+            code_lines=collected.code_lines)
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
-                         ("moonshotai/kimi-k2.6", 0.3, 8192))
+                         ("moonshotai/kimi-k2.6", 0.0, 8192))
         self.assertEqual(expected["reasoning"], {"enabled": False})
         self.assertEqual(expected["response_format"]["type"], "json_schema")
         self.assertEqual(expected["response_format"]["json_schema"]["schema"], r._production_remote_schema())
         self.assertIs(expected["response_format"]["json_schema"]["strict"], False)
+        self.assertIn("VERIFIED DIFF-LINE CATALOG", expected["messages"][1]["content"])
+        self.assertIn('"evidence":"new_value = new(value)"', expected["messages"][1]["content"])
+        self.assertIn('"line":2', expected["messages"][1]["content"])
         self.assertEqual(expected["provider"], {"only": ["baidu"],
             "allow_fallbacks": False, "require_parameters": True,
             "max_price": {"prompt": 0.42, "completion": 1.75}})
@@ -263,6 +267,7 @@ class Integration(Offline):
         self.assertIn("COPY THE FULL EXACT SOURCE CODE LINE", prod["messages"][0]["content"])
         self.assertNotIn("deepseek", json.dumps({k: v for k, v in prod.items() if k != "messages"}))
         self.assertEqual(prod["max_tokens"], 8192)
+        self.assertEqual(prod["temperature"], 0.0)
         self.assertEqual(prod["reasoning"], {"enabled": False})
         self.assertEqual(prod["response_format"]["type"], "json_schema")
         self.assertEqual(prod["response_format"]["json_schema"]["schema"], r._production_remote_schema())
@@ -278,6 +283,38 @@ class Integration(Offline):
             with self.assertRaises(Problem) as wrong_model:
                 r.build_production_payload("T", "B", "D")
         self.assertEqual(wrong_model.exception.code, "production_model_mismatch")
+
+    def test_bounded_evidence_catalog_is_complete_and_never_silently_truncated(self):
+        self.assertIsNone(r._bounded_evidence_catalog(None))
+        self.assertIsNone(r._bounded_evidence_catalog({}))
+        base = {FILE: {2: "new_value = new(value)", 1: "pass"}}
+        encoded = r._bounded_evidence_catalog(base)
+        self.assertEqual(json.loads(encoded), [
+            {"path": FILE, "line": 2, "evidence": "new_value = new(value)"}])
+        self.assertIsNone(r._bounded_evidence_catalog({
+            FILE: {i: "new_value = new(value)" for i in range(1, 102)}}))
+        self.assertIsNone(r._bounded_evidence_catalog({
+            FILE: {1: "secret = '" + "X" * 18001 + "'"}}))
+        for bad in ({"/unsafe": {1: "new_value = new(value)"}},
+                    {FILE: {0: "new_value = new(value)"}},
+                    {FILE: {"1": "new_value = new(value)"}},
+                    {FILE: {1: None}}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(Problem):
+                    r._bounded_evidence_catalog(bad)
+
+    def test_catalog_guidance_cannot_replace_source_scope_or_auto_correct_evidence(self):
+        good = r.build_production_payload("T", "B", "D", code_lines={
+            FILE: {2: "new_value = new(value)"}})
+        self.assertIn("VERIFIED DIFF-LINE CATALOG", good["messages"][1]["content"])
+        self.assertEqual(good["temperature"], 0.0)
+        no_catalog = r.build_production_payload("T", "B", "D", code_lines={
+            FILE: {i: "new_value = new(value)" for i in range(1, 102)}})
+        self.assertNotIn("VERIFIED DIFF-LINE CATALOG", no_catalog["messages"][1]["content"])
+        out, gh, _ = self.run_case(model=FakeModel(
+            review([finding(evidence="UNTRUSTED_UNVERIFIED_QUOTE")])))
+        self.assertEqual(out.code, "quality_manual_review_required")
+        self.assertFalse(gh.posts)
 
     def test_kimi_remote_schema_does_not_modify_local_draft7(self):
         remote = r._production_remote_schema()
@@ -984,7 +1021,7 @@ class Transport(Offline):
                 sleep.assert_not_called()
                 sent = json.loads(http.calls[0][4])
                 self.assertEqual((sent["model"], sent["temperature"], sent["max_tokens"]),
-                                 ("moonshotai/kimi-k2.6", 0.3, 8192))
+                                 ("moonshotai/kimi-k2.6", 0.0, 8192))
                 self.assertEqual(sent["reasoning"], {"enabled": False})
                 self.assertEqual(sent["response_format"]["type"], "json_schema")
                 self.assertEqual(sent["response_format"]["json_schema"]["schema"], r._production_remote_schema())
