@@ -47,7 +47,10 @@ _KIMI_OUTPUT_RULES = (
     "at the cited path and NEW-file line from the diff. Remove only the diff "
     "prefix + (or context space) and surrounding indentation. No fragments, "
     "paraphrases, invented code, line numbers instead of code, or approximate "
-    "quotes. Select an evidentiary code line of at least 12 non-whitespace "\n    "characters; if the relevant short line has no longer causal anchor, "\n    "OMIT that finding. Before answering, compare each entire cited code "\n    "line against evidence; if it does not match, OMIT that finding.\n"
+    "quotes. Select an evidentiary code line of at least 12 non-whitespace "
+    "characters; if the relevant short line has no longer causal anchor, "
+    "OMIT that finding. Before answering, compare each entire cited code "
+    "line against evidence; if it does not match, OMIT that finding.\n"
     "Only publish independent bugs with concrete and reproducible impact.\n"
 )
 
