@@ -1,4 +1,4 @@
-name: AI PR Review (DeepSeek Thinking)
+name: AI PR Review (GLM-4.7 Flash Non-Thinking)
 
 on:
   pull_request_target:

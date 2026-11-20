@@ -30,11 +30,11 @@ MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
 MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
-# Trusted production candidate, independent of the historical benchmark default.
-# Low effort is qualitative: it neither disables nor hard-caps reasoning tokens.
-PRODUCTION_MODEL = "z-ai/glm-5.3-flash"
-PRODUCTION_PROVIDER = "deepinfra"
-PRODUCTION_REASONING_EFFORT = "low"
+# Explicit non-thinking production profile. Strictly verify output usage.
+# This is not a measured claim about code-review quality.
+PRODUCTION_MODEL = "z-ai/glm-4.7-flash"
+PRODUCTION_PROVIDER = "cloudflare"
+PRODUCTION_REASONING_ENABLED = False
 PRODUCTION_MAX_TOKENS = 8192
 PRODUCTION_INPUT_USD_M_CEILING = 0.2
 PRODUCTION_OUTPUT_USD_M_CEILING = 0.6
@@ -384,6 +384,7 @@ def already_reviewed(rows, pinned, bot_id, version):
 
 
 _MODEL_LABELS = {
+    "z-ai/glm-4.7-flash": "GLM-4.7 Flash",
     "z-ai/glm-5.3-flash": "GLM-5.3 Flash",
     "deepseek/deepseek-v4.1-flash-1017": "DeepSeek V4.1 Flash 1017",
     "minimax/minimax-m2.7": "MiniMax M2.7",
@@ -486,7 +487,7 @@ def render(result, collected, pinned, bot_id, version, *, model_id):
 
 
 def build_production_payload(title, body, diff, *, context="", trunc_note="", omit_info=""):
-    """Pinned GLM/DeepInfra candidate; reuse the unchanged shared prompt.
+    """Pinned GLM-4.7 Flash/Cloudflare non-thinking profile; shared prompt unchanged.
 
     Require every requested parameter; never fall back or silently remove one.
     Price ceilings are per-token routing controls, not a total dollar cost cap.
@@ -497,7 +498,7 @@ def build_production_payload(title, body, diff, *, context="", trunc_note="", om
     )
     if payload.get("model") != PRODUCTION_MODEL:
         raise Problem("production_model_mismatch")
-    payload["reasoning"] = {"effort": PRODUCTION_REASONING_EFFORT}
+    payload["reasoning"] = {"enabled": PRODUCTION_REASONING_ENABLED}
     payload["max_tokens"] = PRODUCTION_MAX_TOKENS
     payload["response_format"] = {"type": "json_object"}
     payload["provider"] = {
@@ -617,7 +618,8 @@ def main():
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         event_snapshot(event, "true")
         from transport import OpenRouter
-        model = OpenRouter(os.environ.get("OPENROUTER_API_KEY"), max_attempts=1)
+        model = OpenRouter(os.environ.get("OPENROUTER_API_KEY"), max_attempts=1,
+                           require_reasoning_usage=True)
         outcome = run_review(event, "true", GitHub(os.environ.get("GITHUB_TOKEN")),
                              model, version=reviewer_version())
     except Problem as error:
