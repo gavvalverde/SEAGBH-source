@@ -246,7 +246,7 @@ class Integration(Offline):
         self.assertEqual(expected["response_format"]["type"], "json_schema")
         self.assertEqual(expected["response_format"]["json_schema"]["schema"], r._production_remote_schema())
         self.assertIs(expected["response_format"]["json_schema"]["strict"], False)
-        self.assertIn("VERIFIED DIFF-LINE CATALOG", expected["messages"][1]["content"])
+        self.assertIn("\n\n### VERIFIED DIFF-LINE CATALOG", expected["messages"][1]["content"])
         self.assertIn('"evidence":"new_value = new(value)"', expected["messages"][1]["content"])
         self.assertIn('"line":2', expected["messages"][1]["content"])
         self.assertEqual(expected["provider"], {"only": ["baidu"],
