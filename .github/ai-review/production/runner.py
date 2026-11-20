@@ -16,7 +16,7 @@ from urllib.parse import quote
 import core
 import evidence
 import quality_gate
-from transport import HTTPS, Problem, decode
+from transport import HTTPS, Problem, REASONING_CONTROL_CODES, decode
 
 REPOSITORY = "gavvalverde/SEAGBH-source"
 BOT_LOGIN = "github-actions[bot]"
@@ -622,6 +622,8 @@ def main():
         diagnostic["usage"] = model.last_usage
     if model is not None and model.last_http_elapsed_ms is not None:
         diagnostic["model_http_elapsed_ms"] = model.last_http_elapsed_ms
+    if model is not None and model.last_reasoning_control in REASONING_CONTROL_CODES:
+        diagnostic["reasoning_control"] = model.last_reasoning_control
     # Fixed application-owned labels only. Never log any model text, raw
     # provider diagnostics, JSON snippets or user-controlled paths.
     allowed_validation_reasons = frozenset({
