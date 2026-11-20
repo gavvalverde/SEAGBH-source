@@ -1,4 +1,4 @@
-name: AI PR Review (GLM-4.7 Flash Non-Thinking)
+name: AI PR Review (Kimi K2.6 Non-Thinking / Baidu)
 
 on:
   pull_request_target:
