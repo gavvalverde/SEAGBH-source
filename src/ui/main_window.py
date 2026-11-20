@@ -315,7 +315,15 @@ class MainWindow(QMainWindow):
         AuditoriaDialog(self.db, parent=self).exec()
 
     def _fazer_backup(self):
-        FazerBackupDialog(self.db, parent=self).exec()
+        if getattr(self, "_backup_dialog", None) is not None:
+            return
+        self._backup_dialog = FazerBackupDialog(self.db, parent=self)
+        try:
+            self._backup_dialog.exec()
+        finally:
+            if not self._backup_dialog.em_andamento:
+                self._backup_dialog.deleteLater()
+                self._backup_dialog = None
 
     def _restaurar_backup(self):
         RestaurarBackupDialog(parent=self).exec()
@@ -644,5 +652,10 @@ class MainWindow(QMainWindow):
     # ── Fechamento limpo ──────────────────────────────────────────────────
 
     def closeEvent(self, event):
+        backup = getattr(self, "_backup_dialog", None)
+        if backup is not None and backup.em_andamento:
+            backup.solicitar_fechamento()
+            event.ignore()
+            return
         self.db.fechar()
         event.accept()
