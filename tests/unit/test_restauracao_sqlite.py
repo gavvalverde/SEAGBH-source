@@ -126,6 +126,25 @@ class RestauracaoSQLite(unittest.TestCase):
         self.assertEqual(resultado.compatibilidade, servico.Compatibilidade.INCOMPATIVEL)
         self.assertEqual(self.estado(), antes)
 
+    def test_auditoria_sem_usuario_mantem_integridade_e_compatibilidade_nao_comprovada(self):
+        with closing(sqlite3.connect(self.candidato)) as conn:
+            conn.execute("ALTER TABLE auditoria DROP COLUMN usuario")
+            conn.commit()
+        antes = self.estado()
+        resultado = self.validar()
+        self.assertTrue(resultado.validacao.integridade_fisica)
+        self.assertTrue(resultado.validacao.integridade_referencial)
+        self.assertTrue(resultado.validacao.esquema_reconhecido)
+        self.assertEqual(resultado.colunas_ausentes, ())
+        self.assertEqual(resultado.compatibilidade, servico.Compatibilidade.NAO_COMPROVADA)
+        plano = self.planejar()
+        self.assertEqual(plano.estado_candidato, servico.EstadoCandidato.VALIDADO)
+        self.assertIn("compatibilidade_nao_comprovada", plano.impedimentos)
+        self.assertNotIn("colunas_da_aplicacao_ausentes", plano.impedimentos)
+        self.assertEqual(self.estado(), antes)
+        with closing(sqlite3.connect(self.candidato)) as conn:
+            self.assertNotIn("usuario", {r[1] for r in conn.execute("PRAGMA table_info(auditoria)")})
+
     def test_tabelas_adicionais_e_conteudo_sao_preservados(self):
         antes = self.estado()
         resultado = self.validar()
@@ -310,6 +329,73 @@ class RestauracaoSQLite(unittest.TestCase):
                 self.assertIn(codigo, self.inspecionar(**kwargs).impedimentos)
         self.assertFalse(self.resgate.exists())
 
+    def test_destino_descendente_de_backups_e_resgate_existente_ou_ausente(self):
+        self.resgate.mkdir()  # Preparação da fixture; o serviço não cria pastas.
+        for pasta, codigo in ((self.pasta, "destino_na_arvore_de_backups"),
+                              (self.resgate, "banco_na_arvore_de_resgate")):
+            for existente in (False, True):
+                destino = pasta / ("existente.db" if existente else "ausente.db")
+                if existente:
+                    self.banco(destino)
+                antes = self.estado()
+                with self.subTest(pasta=pasta.name, existente=existente):
+                    self.assertIn(codigo, self.inspecionar(destino=destino).impedimentos)
+                    self.assertEqual(destino.exists(), existente)
+                    self.assertEqual(self.estado(), antes)
+
+    def test_destino_ancestral_de_backups_existente_ou_ausente(self):
+        for existente in (False, True):
+            destino = self.raiz / ("ancestral-existente" if existente else "ancestral-ausente")
+            backups = destino / "backups"
+            if existente:
+                backups.mkdir(parents=True)  # Destino existente como diretório.
+            antes = self.estado()
+            with self.subTest(existente=existente), \
+                    patch.object(Path, "mkdir", side_effect=AssertionError("criação proibida")):
+                inspecao = self.inspecionar(destino=destino, pasta_backups=backups)
+            self.assertIn("backups_na_arvore_do_destino", inspecao.impedimentos)
+            self.assertIn("destino_nao_regular" if existente else "destino_ausente", inspecao.impedimentos)
+            self.assertEqual(destino.exists(), existente)
+            self.assertEqual(backups.exists(), existente)
+            self.assertEqual(self.estado(), antes)
+
+    def test_destino_ancestral_de_resgate_existente_ou_ausente(self):
+        for existente in (False, True):
+            destino = self.raiz / ("resgate-ancestral-existente" if existente else "resgate-ancestral-ausente")
+            if existente:
+                destino.mkdir()
+            resgate = destino / "resgate"
+            antes = self.estado()
+            with self.subTest(existente=existente), \
+                    patch.object(Path, "mkdir", side_effect=AssertionError("criação proibida")):
+                inspecao = self.inspecionar(destino=destino, pasta_resgate=resgate)
+            self.assertIn("resgate_na_arvore_do_destino", inspecao.impedimentos)
+            self.assertIn("destino_nao_regular" if existente else "destino_ausente", inspecao.impedimentos)
+            self.assertEqual(destino.exists(), existente)
+            self.assertFalse(resgate.exists())
+            self.assertEqual(self.estado(), antes)
+
+    def test_sobreposicao_backups_resgate_nos_dois_sentidos(self):
+        for existente in (False, True):
+            destino = self.destino if existente else self.raiz / "destino-ausente.db"
+            for resgate in (self.pasta / "resgate", self.raiz, self.pasta):
+                antes = self.estado()
+                with self.subTest(existente=existente, resgate=str(resgate)), \
+                        patch.object(Path, "mkdir", side_effect=AssertionError("criação proibida")):
+                    inspecao = self.inspecionar(destino=destino, pasta_resgate=resgate)
+                self.assertIn("resgate_e_backups_sobrepostos", inspecao.impedimentos)
+                self.assertEqual(destino.exists(), existente)
+                self.assertEqual(self.estado(), antes)
+
+    def test_destino_arquivo_recusa_pastas_descendentes_sem_criar_nada(self):
+        antes = self.estado()
+        for argumento in ("pasta_backups", "pasta_resgate"):
+            with self.subTest(argumento=argumento), \
+                    patch.object(Path, "mkdir", side_effect=AssertionError("criação proibida")):
+                self.erro("componente_nao_diretorio", lambda: self.inspecionar(
+                    **{argumento: self.destino / "pasta"}))
+        self.assertEqual(self.estado(), antes)
+
     def test_permissoes_negadas_ou_nao_verificadas_nao_sao_sucesso(self):
         for efeito in (False, PermissionError("detalhe privado sintetico")):
             kwargs = {"return_value": efeito} if efeito is False else {"side_effect": efeito}
@@ -451,6 +537,70 @@ class RestauracaoSQLite(unittest.TestCase):
                 self.erro("prazo_invalido", lambda: self.validar(prazo=prazo))
         with patch.object(servico.time, "monotonic", side_effect=[0, 100]):
             self.erro("prazo_excedido", lambda: self.validar(prazo=1))
+
+    def test_progress_handler_real_preserva_codigo_de_prazo_e_fecha_conexao(self):
+        conectar, estrutura = sqlite3.connect, servico._estrutura
+        conexoes, sinais = [], []
+        class ConexaoComPrazo(sqlite3.Connection):
+            def set_progress_handler(self, callback, intervalo):
+                def expirar():
+                    with patch.object(servico.time, "monotonic", return_value=float("inf")):
+                        sinal = callback()
+                    sinais.append((intervalo, sinal))
+                    return sinal
+                # Callback chamado pelo SQLite real, sem espera ou banco grande.
+                super().set_progress_handler(expirar, 1)
+        def abrir(*args, **kwargs):
+            conn = conectar(*args, factory=ConexaoComPrazo, **kwargs)
+            conexoes.append(conn)
+            return conn
+        def inspecionar(*args):
+            with patch.object(sqlite3, "connect", side_effect=abrir):
+                return estrutura(*args)
+        antes = self.estado()
+        with patch.object(servico, "_estrutura", side_effect=inspecionar):
+            self.erro("prazo_excedido", self.validar)
+            plano = self.planejar()
+        self.assertEqual(plano.falha_candidato.codigo, "prazo_excedido")
+        self.assertEqual(plano.estado_candidato, servico.EstadoCandidato.RECUSADO)
+        self.assertEqual(sinais, [(1000, 1), (1000, 1)])
+        self.assertEqual(len(conexoes), 2)
+        for conn in conexoes:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
+        self.assertEqual(self.estado(), antes)
+
+    def test_operational_error_real_sem_prazo_nao_e_classificado_como_timeout(self):
+        conectar, estrutura = sqlite3.connect, servico._estrutura
+        conexoes, falhas = [], []
+        class ConexaoComErro(sqlite3.Connection):
+            def execute(self, sql, *args, **kwargs):
+                if sql.startswith("PRAGMA table_info"):
+                    falhas.append(True)
+                    # Erro produzido pelo SQLite real, sem inventar OperationalError.
+                    return super().execute("SELECT * FROM tabela_sintetica_inexistente")
+                return super().execute(sql, *args, **kwargs)
+        def abrir(*args, **kwargs):
+            conn = conectar(*args, factory=ConexaoComErro, **kwargs)
+            conexoes.append(conn)
+            return conn
+        def inspecionar(*args):
+            with patch.object(sqlite3, "connect", side_effect=abrir):
+                return estrutura(*args)
+        antes = self.estado()
+        with patch.object(servico, "_estrutura", side_effect=inspecionar):
+            erro = self.erro("inspecao_falhou", self.validar)
+            plano = self.planejar()
+        self.assertEqual(erro.causa, "OperationalError")
+        self.assertNotIn("tabela_sintetica_inexistente", str(erro))
+        self.assertEqual(plano.falha_candidato.codigo, "inspecao_falhou")
+        self.assertEqual(plano.estado_candidato, servico.EstadoCandidato.RECUSADO)
+        self.assertEqual(len(falhas), 2)
+        self.assertEqual(len(conexoes), 2)
+        for conn in conexoes:
+            with self.assertRaises(sqlite3.ProgrammingError):
+                conn.execute("SELECT 1")
+        self.assertEqual(self.estado(), antes)
 
     def test_inspecao_destino_nao_abre_arquivos_ou_sqlite(self):
         with patch.object(Path, "open", side_effect=AssertionError("arquivo nao deve ser aberto")) as abrir, \

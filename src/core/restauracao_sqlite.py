@@ -34,12 +34,13 @@ __all__ = [
 
 # Colunas consumidas pelo Database atual; não representam uma versão de esquema.
 # local_evento/notas são adicionadas pela inicialização legada, nunca pelo preflight.
+# auditoria.usuario está no DDL, mas não é exigida pelas operações atuais.
 _COLUNAS_APLICACAO = {
     "equipamentos": {"id", "codigo_barras", "nome", "descricao", "localizacao", "data_cadastro"},
     "eventos": {"id", "nome_evento", "local_evento", "responsavel", "data_inicio", "data_fim", "status", "notas"},
     "movimentacoes": {"id", "evento_id", "equipamento_id", "data_movimentacao", "tipo"},
     "manutencao": {"id", "equipamento_id", "data_saida", "local_manutencao", "status"},
-    "auditoria": {"id", "tabela", "item_id", "acao", "detalhes", "data", "usuario"},
+    "auditoria": {"id", "tabela", "item_id", "acao", "detalhes", "data"},
 }
 _SIDECARS = ("-wal", "-shm", "-journal")
 _PENDENCIAS = (
@@ -260,21 +261,35 @@ def _estrutura(caminho: Path, controle: _Prazo) -> tuple[tuple[str, ...], tuple[
     uri = "file://" + ("/" if os.name == "nt" else "") + quote(caminho.as_posix(), safe="/:")
     with closing(sqlite3.connect(uri + "?mode=ro", uri=True, timeout=0.1,
                                  isolation_level=None)) as conn:
-        conn.set_progress_handler(lambda: int(time.monotonic() >= controle.fim), 1000)
-        conn.execute("PRAGMA query_only=ON")
-        conn.execute("PRAGMA trusted_schema=OFF")
-        ausentes = []
-        for tabela, esperadas in _COLUNAS_APLICACAO.items():
-            controle.restante()
-            with closing(conn.execute(f'PRAGMA table_info("{tabela}")')) as cursor:
-                presentes = {linha[1] for linha in cursor}
-            ausentes.extend(f"{tabela}.{nome}" for nome in sorted(esperadas - presentes))
-        with closing(conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")) as cursor:
-            adicionais = []
-            for (nome,) in cursor:
+        interrompido_por_prazo = False
+
+        def verificar_prazo() -> int:
+            nonlocal interrompido_por_prazo
+            if time.monotonic() >= controle.fim:
+                interrompido_por_prazo = True
+                return 1
+            return 0
+
+        conn.set_progress_handler(verificar_prazo, 1000)
+        try:
+            conn.execute("PRAGMA query_only=ON")
+            conn.execute("PRAGMA trusted_schema=OFF")
+            ausentes = []
+            for tabela, esperadas in _COLUNAS_APLICACAO.items():
                 controle.restante()
-                if nome not in _COLUNAS_APLICACAO and not nome.startswith("sqlite_"):
-                    adicionais.append(nome)
+                with closing(conn.execute(f'PRAGMA table_info("{tabela}")')) as cursor:
+                    presentes = {linha[1] for linha in cursor}
+                ausentes.extend(f"{tabela}.{nome}" for nome in sorted(esperadas - presentes))
+            with closing(conn.execute("SELECT name FROM sqlite_schema WHERE type='table'")) as cursor:
+                adicionais = []
+                for (nome,) in cursor:
+                    controle.restante()
+                    if nome not in _COLUNAS_APLICACAO and not nome.startswith("sqlite_"):
+                        adicionais.append(nome)
+        except sqlite3.Error as exc:
+            if interrompido_por_prazo:
+                raise ErroRestauracao("inspecao", "prazo_excedido", exc) from None
+            raise
     return tuple(ausentes), tuple(sorted(adicionais))
 
 
@@ -368,8 +383,12 @@ def inspecionar_destino_restauracao(*, backend: str, backup: str | Path,
             impedimentos.append("destino_com_hardlinks")
         if alvo.is_relative_to(backups):
             impedimentos.append("destino_na_arvore_de_backups")
+        elif backups.is_relative_to(alvo):
+            impedimentos.append("backups_na_arvore_do_destino")
         if alvo.is_relative_to(resgate) or origem.is_relative_to(resgate):
             impedimentos.append("banco_na_arvore_de_resgate")
+        if resgate != alvo and resgate.is_relative_to(alvo):
+            impedimentos.append("resgate_na_arvore_do_destino")
         if resgate.is_relative_to(backups) or backups.is_relative_to(resgate):
             impedimentos.append("resgate_e_backups_sobrepostos")
         for pasta, codigo in ((backups, "pasta_backups"), (resgate, "pasta_resgate"), (alvo.parent, "pasta_destino")):

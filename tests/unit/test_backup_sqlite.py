@@ -1,7 +1,7 @@
 """Regressão offline: bancos sintéticos, sem Database, GUI ou serviços externos."""
 
 from contextlib import closing
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import errno
 import hashlib
 import os
@@ -15,6 +15,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from uuid import UUID
 
 from src.core import backup_sqlite as servico
 
@@ -431,16 +432,43 @@ class BackupSQLite(unittest.TestCase):
         self.assertEqual(list(self.pasta.iterdir()), [])
 
     def test_retencao_padrao_dez_ordena_por_criacao_nao_mtime(self):
-        criados = [self.criar(manter=None) for _ in range(11)]
-        for indice, resultado in enumerate(criados):
-            os.utime(resultado.caminho, (1000 - indice, 1000 - indice))
-        novo = self.criar()
+        inicio = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        instantes = [inicio + timedelta(seconds=i) for i in range(12)]
+        # wraps preserva strptime, usado para validar nomes durante a retenção.
+        with patch.object(servico, "datetime", wraps=datetime) as relogio:
+            relogio.now.side_effect = instantes
+            criados = [self.criar(manter=None) for _ in range(11)]
+            for indice, resultado in enumerate(criados):
+                os.utime(resultado.caminho, (1000 - indice, 1000 - indice))
+            novo = self.criar()
+        self.assertEqual([r.criado_em for r in [*criados, novo]], instantes)
         self.assertEqual(len(self.arquivos()), 10)
         self.assertFalse(criados[0].caminho.exists())
         self.assertFalse(criados[1].caminho.exists())
         self.assertTrue(novo.caminho.exists())
         self.assertEqual(len(novo.retencao.removidos), 2)
         self.assertEqual(novo.retencao.validos_preservados, 10)
+
+    def test_retencao_com_timestamps_iguais_desempata_por_nome_e_protege_novo(self):
+        instante = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        # Ordem de UUID inversa à criação; o novo seria o primeiro por nome.
+        with patch.object(servico, "datetime", wraps=datetime) as relogio, \
+                patch.object(servico, "uuid4", side_effect=[UUID(int=i) for i in range(11, -1, -1)]):
+            relogio.now.return_value = instante
+            criados = [self.criar(manter=None) for _ in range(11)]
+            novo = self.criar()
+        self.assertEqual({r.criado_em for r in [*criados, novo]}, {instante})
+        self.assertLess(novo.caminho.name, min(r.caminho.name for r in criados))
+        esperados = tuple(sorted((r.caminho for r in criados), key=lambda p: p.name)[:2])
+        self.assertEqual(novo.retencao.removidos, esperados)
+        self.assertEqual(len(novo.retencao.removidos), 2)
+        self.assertTrue(novo.caminho.exists())
+        self.assertNotIn(novo.caminho, novo.retencao.removidos)
+        self.assertEqual(len(self.arquivos()), 10)
+        self.assertEqual(novo.retencao.validos_preservados, 10)
+        self.assertEqual(novo.retencao.avisos, ())
+        for caminho in self.arquivos():
+            self.assertTrue(servico.validar_backup(backend="sqlite", caminho=caminho).integridade_fisica)
 
     def test_retencao_preserva_legado_parcial_resgate_e_gerenciado_invalido(self):
         for nome in ("seaghb_backup_2026-01-01.db", "resgate.db", "snapshot.partial",

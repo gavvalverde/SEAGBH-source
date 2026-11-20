@@ -49,6 +49,12 @@ e regras de negócio ainda exigem contrato completo. Tabelas adicionais são
 informadas e preservadas, sem aprovação semântica. user_version não é convertido
 em uma numeração fictícia de versão da aplicação.
 
+auditoria.usuario é opcional para o preflight: existe no DDL atual, porém as
+operações de auditoria identificadas em Database não a exigem. Sua ausência
+isolada não produz INCOMPATIVEL nem migração. As demais colunas obrigatórias
+permanecem inalteradas; mesmo com integridade validada, a compatibilidade global
+continua NAO_COMPROVADA.
+
 O plano distingue esses estados dos impedimentos do destino e da ausência de
 prova de exclusividade. Mesmo sem riscos locais detectados, compatibilidade e
 exclusividade continuam sendo impedimentos. Todo plano exige nova validação
@@ -57,8 +63,15 @@ antes de qualquer execução futura, que não existe nesta entrega.
 Caminhos relativos, parent traversal, UNC/dispositivos Windows e componentes
 com symlinks/reparse points são recusados. A inspeção detecta identidade por
 dispositivo/inode, hard links e árvores sobrepostas. Destino não pode estar
-na árvore de backups/resgate; as duas pastas devem ser disjuntas. A futura
-pasta de resgate pode não existir; não é criada nem testada por escrita.
+na árvore de backups/resgate nem ser ancestral dessas pastas, inclusive quando
+ainda não existe. As duas pastas devem ser disjuntas nos dois sentidos.
+destino_na_arvore_de_backups e banco_na_arvore_de_resgate continuam indicando
+os casos de banco dentro da respectiva árvore. Os novos impedimentos
+backups_na_arvore_do_destino e resgate_na_arvore_do_destino identificam as
+pastas abaixo do destino. resgate_e_backups_sobrepostos cobre a sobreposição
+entre as duas pastas nos dois sentidos, inclusive igualdade. Ancestrais que já
+sejam arquivos regulares são recusados pelo validador de caminhos existente.
+A futura pasta de resgate pode não existir; não é criada nem testada por escrita.
 
 -wal, -shm, -journal, .lock e lock do catálogo são sinais conservadores de risco,
 inclusive quando residuais. Nenhum auxiliar é apagado ou interpretado como prova
@@ -84,6 +97,11 @@ exclusividade do candidato. os.access fornece apenas indícios sujeitos a ACLs
 e corridas; não garante rename/replace ou permissões futuras. Leituras podem
 atualizar atime. O prazo é cooperativo, sem interromper syscalls de disco
 bloqueadas. Não há garantia uniforme para filesystems de rede.
+
+Se o progress handler da inspeção estrutural interromper SQLite por expiração,
+o resultado conserva o código prazo_excedido. A identificação depende do sinal
+do próprio callback; outro erro SQLite permanece inspecao_falhou, sem divulgar
+SQL ou mensagem bruta. Conexões e cursores são fechados nos dois caminhos.
 
 ## Proposta 04D2B — dependente de aprovação, não implementada
 
