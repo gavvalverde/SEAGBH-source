@@ -293,7 +293,8 @@ class MainWindow(QMainWindow):
         act_backup.triggered.connect(self._fazer_backup)
         util_menu.addAction(act_backup)
 
-        act_restaurar = QAction("🔄 Restaurar Backup", self)
+        act_restaurar = QAction("🔄 Restaurar Backup (indisponível)", self)
+        act_restaurar.setEnabled(False)
         act_restaurar.triggered.connect(self._restaurar_backup)
         util_menu.addAction(act_restaurar)
 

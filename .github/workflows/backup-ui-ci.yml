@@ -13,6 +13,7 @@ on:
       - "tests/__init__.py"
       - "tests/unit/__init__.py"
       - "tests/unit/test_backup_ui.py"
+      - "tests/unit/test_restauracao_bloqueada_ui.py"
       - "tests/unit/test_backup_sqlite.py"
       - "tests/requirements-backup-ui.txt"
       - ".github/workflows/backup-ui-ci.yml"
@@ -92,5 +93,5 @@ jobs:
           export TMPDIR="$RUNNER_TEMP"
           export XDG_RUNTIME_DIR="$RUNNER_TEMP/backup-ui-runtime"
           PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
-          timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_ui
+          timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_ui tests.unit.test_restauracao_bloqueada_ui
           timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_sqlite

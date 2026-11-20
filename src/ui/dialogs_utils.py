@@ -4,8 +4,6 @@ Auditoria, backup/restauração, verificação de permissões.
 """
 
 import os
-import glob
-import shutil
 from threading import Event
 
 from PyQt6.QtWidgets import (
@@ -20,6 +18,10 @@ from core.backup_sqlite import criar_backup, ResultadoBackup, ErroBackup
 
 
 _PASTA_BACKUPS = os.path.join(APP_DIR, "Backups")
+_MENSAGEM_RESTAURACAO_INDISPONIVEL = (
+    "A restauração de backups está temporariamente indisponível. "
+    "Ela será substituída por recuperação em modo de manutenção."
+)
 
 
 class AuditoriaDialog(QDialog):
@@ -60,78 +62,47 @@ class AuditoriaDialog(QDialog):
 
 
 class RestaurarBackupDialog(QDialog):
-    """Permite selecionar e restaurar um backup do banco de dados."""
+    """Informa o bloqueio da restauração legada, sem acessar arquivos ou bancos."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("🔄 Restaurar Backup")
+        self.setWindowTitle("🔄 Restaurar Backup (indisponível)")
         self.resize(550, 420)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        layout.addWidget(QLabel("Selecione um backup para restaurar:"))
+        aviso = QLabel(_MENSAGEM_RESTAURACAO_INDISPONIVEL)
+        aviso.setWordWrap(True)
+        layout.addWidget(aviso)
 
         self.lista = QListWidget()
         self._carregar_backups()
         layout.addWidget(self.lista, stretch=1)
 
         btn_layout = QHBoxLayout()
-        btn_restaurar = QPushButton("Restaurar Selecionado")
-        btn_restaurar.setProperty("class", "primary")
-        btn_restaurar.clicked.connect(self._restaurar)
-        btn_layout.addWidget(btn_restaurar)
+        self.btn_restaurar = QPushButton("Restauração indisponível")
+        self.btn_restaurar.setEnabled(False)
+        self.btn_restaurar.clicked.connect(self._restaurar)
+        btn_layout.addWidget(self.btn_restaurar)
 
-        btn_fechar = QPushButton("Cancelar")
+        btn_fechar = QPushButton("Fechar")
         btn_fechar.clicked.connect(self.close)
         btn_layout.addWidget(btn_fechar)
 
         layout.addLayout(btn_layout)
 
     def _carregar_backups(self):
+        # Mantido para compatibilidade; o diálogo bloqueado não consulta o disco.
         self.lista.clear()
-        os.makedirs(_PASTA_BACKUPS, exist_ok=True)
-        arquivos = sorted(
-            glob.glob(os.path.join(_PASTA_BACKUPS, "*.db")),
-            key=os.path.getmtime,
-            reverse=True,
-        )
-        for arq in arquivos:
-            self.lista.addItem(os.path.basename(arq))
-
-        if self.lista.count() == 0:
-            self.lista.addItem("(nenhum backup encontrado)")
+        self.lista.setEnabled(False)
 
     def _restaurar(self):
-        item = self.lista.currentItem()
-        if not item or item.text().startswith("("):
-            QMessageBox.warning(self, "Aviso", "Selecione um backup válido.")
-            return
-
-        nome = item.text()
-        caminho_bak = os.path.join(_PASTA_BACKUPS, nome)
-
-        resp = QMessageBox.question(
-            self, "Confirmar Restauração",
-            f"Deseja restaurar o backup:\n{nome}\n\n"
-            "O banco atual será substituído. Esta ação não pode ser desfeita.",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        # Bloqueio incondicional, inclusive em chamadas diretas ou botão reabilitado.
+        QMessageBox.warning(
+            self, "Restauração indisponível", _MENSAGEM_RESTAURACAO_INDISPONIVEL,
         )
-        if resp != QMessageBox.StandardButton.Yes:
-            return
-
-        try:
-            destino = get_db_path()
-            shutil.copy2(caminho_bak, destino)
-            QMessageBox.information(
-                self, "Sucesso",
-                "Backup restaurado com sucesso!\n"
-                "Reinicie a aplicação para usar o banco restaurado.",
-            )
-            self.accept()
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Falha ao restaurar:\n{e}")
 
 
 class PermissoesDialog(QDialog):

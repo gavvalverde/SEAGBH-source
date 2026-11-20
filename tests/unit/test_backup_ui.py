@@ -5,6 +5,7 @@ from contextlib import closing
 from datetime import datetime, timezone
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -66,7 +67,7 @@ class BackupUI(unittest.TestCase):
         self.get_path = self._patch(ui, "get_db_path", return_value=str(self.origem))
         self._patch(ui, "_PASTA_BACKUPS", str(self.pasta))
         self._patch(ui, "Database", side_effect=AssertionError("Database operacional proibido"))
-        self._patch(ui.shutil, "copy2", side_effect=AssertionError("Cópia legada proibida"))
+        self._patch(shutil, "copy2", side_effect=AssertionError("Cópia legada proibida"))
         self.info = self._patch(ui.QMessageBox, "information")
         self.aviso = self._patch(ui.QMessageBox, "warning")
         self.erro = self._patch(ui.QMessageBox, "critical")
