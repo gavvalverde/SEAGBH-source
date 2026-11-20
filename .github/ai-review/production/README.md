@@ -140,13 +140,14 @@ published heading reflects actual partial scope independently of model claims.
 Binary/missing patches and metadata-only renames without patches fail safely.
 
 `core.build_payload` delegates to the shared, vetted prompt builder. The
-production runner applies the **same static profile as the 23-case pilot**:
+production runner retains the model and requested reasoning profile from the pilot,
+but applies a **controlled 64K shared completion-ceiling experiment**:
 DeepSeek V4.1 Flash 1017 (`deepseek/deepseek-v4.1-flash-1017`),
-temperature 0.3, `max_tokens=24576` and
+temperature 0.3, `max_tokens=65536` and
 `reasoning={"max_tokens":16384}`, with JSON mode and strict provider
-parameter support. The 24,576 completion-token ceiling is shared between
-reasoning and visible JSON; the 16K/8K split is a *requested target*, not a
-guaranteed independent visible-output cap. The model's response is still
+parameter support. The 65,536 completion-token ceiling is shared between reasoning and visible
+JSON. The 16K reasoning request is advisory for this provider, not a hard cap;
+no visible tokens are reserved, so a 64K reasoning-only failure is still possible. The model's response is still
 validated before publication. Production fails before the paid call if
 the encoded request exceeds 128 KiB.
 Previously PR #22 failed with `network_timeout` (44524958394) and later
@@ -160,19 +161,20 @@ usage from OpenRouter Activity.
 Run 44529754321 provided conclusive token counters:
 16,384 completion tokens = 15,097 reasoning + 1,287 visible JSON tokens.
 This confirms hidden reasoning consumed 92.1% of the completion budget even
-with `effort=low`. Do NOT increase the budget again to conceal the cause.
+with `effort=low`. This establishes the cause; the 64K experiment tests whether more shared
+completion space yields a valid visible JSON, without masking the diagnosis.
 Historical PR #22 troubleshooting used an earlier non-thinking 8K profile.
-The current opt-in PR reviewer uses the benchmarked thinking profile above.
-The 5s/180s/240s model transport and 5s/30s/60s GitHub transport are
+The current opt-in PR reviewer uses the experimental ceiling above; the
+23-case pilot metrics do not validate this new budget on real PRs.
+The 5s/480s/600s model transport and 5s/30s/60s GitHub transport are
 unchanged. A real spending cap must be configured on the OpenRouter key.
 No claim is made about a hard dollar limit per call or real-PR accuracy.
 
-On finish_reason=length (or a rejected explicit opt-out payload in direct
-transport tests), if OpenRouter supplies usage metadata, logs may include
-ONLY bounded integer
-completion_tokens, reasoning_tokens, and visible_tokens counters. Missing/invalid metadata remains absent. The log
-never contains message, prompt, reasoning, secret, raw API error or model
-content. No automatic retry occurs on a generation failure. Subsequent
+On success and operational failure, when OpenRouter supplies valid usage
+metadata, logs may include ONLY bounded integer completion_tokens,
+reasoning_tokens and visible_tokens counters, plus bounded model HTTP elapsed
+milliseconds. Missing/invalid metadata remains absent. The log never contains
+message, prompt, reasoning, secret, raw API error or model content. No automatic retry occurs on a generation failure. Subsequent
 paid tests require a separately approved budget and one explicit activation
 after verifying AI_REVIEW_ENABLED=false.
 
@@ -180,12 +182,12 @@ Transport accepts only fixed HTTPS origins, never follows redirects, and bounds
 responses (GitHub 2 MiB, OpenRouter 1 MiB) and encoded model requests (256 KiB).
 GitHub API transport retains 5s connection, 30s read, and 60s total deadlines.
 The OpenRouter model transport initially used 5s/120s/180s after the first
-timeout, then increased to 5s/180s/240s together with the larger output
-budget. This follows the PR #22 network_timeout on 2026-11-19
+timeout, then increased to 5s/180s/240s, and now to 5s/480s/600s for this
+64K experiment. This follows the PR #22 network_timeout on 2026-11-19
 (run 44524958394).
 A longer bounded deadline accommodates slower non-streaming model responses;
 it does not guarantee success, reduce token costs, or prove the provider
-completed its work. The existing 10-minute job outer timeout remains.
+completed its work. The job outer timeout is now 15 minutes.
 The connection timeout is passed to HTTPSConnection and the read timeout is
 set on the socket before request/headers. The body loop retains that socket
 reference across getresponse(), checks the monotonic deadline and applies

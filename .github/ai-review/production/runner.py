@@ -30,11 +30,11 @@ MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
 MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
-# Exact profile used for the 23-case DeepSeek pilot (16K reasoning / 8K
-# requested visible allowance within a shared completion ceiling).
+# Experimental 64K shared completion ceiling. The requested 16K reasoning budget
+# is advisory for this provider and does not reserve visible JSON tokens.
 PRODUCTION_MODEL = "deepseek/deepseek-v4.1-flash-1017"
 PRODUCTION_REASONING_MAX_TOKENS = 16384
-PRODUCTION_MAX_TOKENS = 24576
+PRODUCTION_MAX_TOKENS = 65536
 PRODUCTION_MAX_REQUEST_BYTES = 131072
 _ACTIONS = {"opened", "synchronize", "reopened", "ready_for_review"}
 _LOCK_GUARD = threading.Lock()
@@ -593,6 +593,7 @@ def main():
     if os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
         print('{"code":"skip_rerun"}')
         return 0
+    model = None
     try:
         trusted = os.environ.get("AI_REVIEW_TRUSTED_SHA")
         if (os.environ.get("GITHUB_EVENT_NAME") != "pull_request_target"
@@ -605,18 +606,22 @@ def main():
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
         event_snapshot(event, "true")
         from transport import OpenRouter
+        model = OpenRouter(os.environ.get("OPENROUTER_API_KEY"), max_attempts=1)
         outcome = run_review(event, "true", GitHub(os.environ.get("GITHUB_TOKEN")),
-                             OpenRouter(os.environ.get("OPENROUTER_API_KEY"),
-                                        max_attempts=1), version=reviewer_version())
+                             model, version=reviewer_version())
     except Problem as error:
         outcome = Outcome(error.code, 0 if error.code.startswith("skip_") else 1)
     except Exception:
         outcome = Outcome("unexpected_execution_error", 1)
     diagnostic = {"code": outcome.code, "stage": outcome.stage, "published": outcome.published}
-    # Only publish allowlisted numeric counters on a generation-limit error.
-    # No upstream content or metadata is printed to the public Actions log.
-    if outcome.code in ("model_output_limit", "reasoning_control_ignored") and outcome.usage is not None:
+    # Transport allows only bounded numeric telemetry, never provider text or
+    # reasoning content. Collect it on success and operational failure alike.
+    if outcome.usage is not None:
         diagnostic["usage"] = outcome.usage
+    elif model is not None and model.last_usage is not None:
+        diagnostic["usage"] = model.last_usage
+    if model is not None and model.last_http_elapsed_ms is not None:
+        diagnostic["model_http_elapsed_ms"] = model.last_http_elapsed_ms
     # Fixed application-owned labels only. Never log any model text, raw
     # provider diagnostics, JSON snippets or user-controlled paths.
     allowed_validation_reasons = frozenset({

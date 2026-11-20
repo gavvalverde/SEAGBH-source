@@ -120,22 +120,32 @@ class OpenRouter:
             raise Problem("invalid_request_attempt_limit")
         self._key = key
         self.max_attempts = max_attempts
+        # Bounded numeric telemetry only; no raw model/provider response is retained.
+        self.last_usage = None
+        self.last_http_elapsed_ms = None
         # Larger bounded model completion requires a longer read deadline.
         # GitHub API requests retain their original 5/30/60s limits.
         self.http = http if http is not None else HTTPS(
-            read_timeout=180, total_timeout=240, max_response=self.MAX_RESPONSE,
+            read_timeout=480, total_timeout=600, max_response=self.MAX_RESPONSE,
         )
         self.sleep = sleep
 
     def complete(self, payload):
+        self.last_usage = None
+        self.last_http_elapsed_ms = None
         body = json.dumps(payload, ensure_ascii=True, allow_nan=False).encode("utf-8")
         if len(body) > 262144:
             raise Problem("request_too_large")
         for attempt in range(self.max_attempts):
-            reply = self.http.send(
-                "openrouter.ai", "POST", "/api/v1/chat/completions",
-                {"Authorization": "Bearer " + self._key, "Content-Type": "application/json"}, body,
-            )
+            started = time.monotonic()
+            try:
+                reply = self.http.send(
+                    "openrouter.ai", "POST", "/api/v1/chat/completions",
+                    {"Authorization": "Bearer " + self._key, "Content-Type": "application/json"}, body,
+                )
+            finally:
+                self.last_http_elapsed_ms = min(1000000, max(0,
+                    int((time.monotonic() - started) * 1000)))
             if len(reply.body) > self.MAX_RESPONSE:
                 raise Problem("response_too_large")
             if reply.status == 429 or 500 <= reply.status <= 599:
@@ -153,6 +163,7 @@ class OpenRouter:
             if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
                 raise Problem("unexpected_response")
             choice = choices[0]
+            self.last_usage = _safe_output_usage(envelope)
             # Only emit fixed application-owned codes: provider data is untrusted
             # and must never be copied into Actions logs.
             finish_reason = choice.get("finish_reason")
@@ -162,12 +173,12 @@ class OpenRouter:
                     "content_filter": "model_content_filter",
                     "error": "model_generation_error",
                 }.get(finish_reason) if isinstance(finish_reason, str) else None
-                counts = _safe_output_usage(envelope) if finish_reason == "length" else None
+                counts = self.last_usage if finish_reason == "length" else None
                 raise Problem(diagnostic or "incomplete_response", usage=counts)
             # Provider may ignore optional non-thinking settings. Fail closed
             # if reported usage proves the requested opt-out was not honored.
             if payload.get("reasoning") == {"effort": "none"}:
-                counts = _safe_output_usage(envelope)
+                counts = self.last_usage
                 if counts is not None and counts.get("reasoning_tokens", 0) > 0:
                     raise Problem("reasoning_control_ignored", usage=counts)
             message = choice.get("message")
