@@ -508,7 +508,12 @@ class BackupSQLite(unittest.TestCase):
         self.assertEqual(len(self.arquivos()), 2)
 
     def test_retencao_publica_remove_somente_excedentes_validos(self):
-        criados = [self.criar(manter=None) for _ in range(3)]
+        inicio = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        instantes = [inicio + timedelta(seconds=i) for i in range(3)]
+        with patch.object(servico, "datetime", wraps=datetime) as relogio:
+            relogio.now.side_effect = instantes
+            criados = [self.criar(manter=None) for _ in range(3)]
+        self.assertEqual([r.criado_em for r in criados], instantes)
         resultado = servico.aplicar_retencao(backend="sqlite", pasta=self.pasta, manter=1)
         self.assertEqual(set(resultado.removidos), {r.caminho for r in criados[:2]})
         self.assertEqual(self.arquivos(), [criados[-1].caminho])
