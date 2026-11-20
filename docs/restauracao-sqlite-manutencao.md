@@ -210,8 +210,9 @@ produzindo recusa até a aquisição real. Não apagar o arquivo para forçar su
 
 No Linux, fork/dup podem manter referências ao mesmo flock e atrasar a liberação
 após morte do dono original. Um objeto herdado retorna HERDADA; fechar no filho
-apenas fecha sua referência, sem executar LOCK_UN sobre o lock do pai. Não se
-promete saneamento automático de descritores herdados ou filhos não cooperativos.
+apenas fecha sua referência, sem executar LOCK_UN sobre o lock do pai. Concessões
+já emitidas não entram no saneamento de temporários descrito a seguir: exigem
+fechamento explícito no filho. Não há proteção contra filhos não cooperativos.
 
 ### Investigação adicional do PR #54: fork durante aquisição
 
@@ -221,8 +222,8 @@ impedem herança por exec, mas não fecham a cópia criada por fork. Pela semân
 Linux de flock, o filho pode manter uma referência à mesma open file description,
 inclusive se o pai adquirir o lock depois do fork e morrer sem LOCK_UN.
 
-Foi preparado test_fork_durante_aquisicao_nao_prolonga_lock_apos_crash_do_pai:
-um processo pai sintético abre o fd numa thread, que é pausada por eventos na
+O teste test_fork_durante_aquisicao_nao_prolonga_lock_apos_crash_do_pai usa
+um processo pai sintético que abre o fd numa thread, pausada por eventos na
 conferência anterior ou posterior ao lock nativo. A outra thread executa fork;
 pipes confirmam a identidade herdada e a continuação da aquisição pelo pai.
 O teste encerra o pai por SIGKILL, observa a tentativa de manutenção independente,
@@ -231,21 +232,51 @@ e confirma o encerramento do filho por EOF. Há watchdogs, sem sleeps arbitrári
 O teste exige ausência de herança residual e de lock órfão; não aprova o bug como
 comportamento esperado.
 
-No ambiente local Windows, esse novo cenário Linux ainda não foi executado.
-WSL não está instalado e Docker não está disponível. A investigação permanece
-inconclusiva em execução nativa: os resultados antigos da CI não incluem esse
-teste. A publicação definitiva das correções fica condicionada à obtenção dessa
-evidência. O supervisor autorizou um commit diagnóstico no PR #54 para executar
-este cenário na CI existente, aceitando falha esperada e sem alterar workflows.
-Não há saneamento de fork implementado nem alegação de correção dessa condição.
+O commit diagnóstico 0645d4d76cf358a67d003dc350b921ec0d378bc9 confirmou o defeito
+nas duas variantes em Ubuntu 24.04/Python 3.12.16, na
+[execução 44767017831](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44767017831):
+fd_temporario_herdado=True; apos_SIGKILL=ocupado; apos_fecho_filho=adquirida.
+O teste original e suas expectativas foram preservados para validar a correção.
 
-Se confirmada, a alternativa mínima a avaliar é registrar os fds temporários
-sob uma proteção curta que coordene abertura, registro e transferência com
-os.register_at_fork; fechar somente as cópias registradas no filho, sem LOCK_UN.
-Uma proteção durante toda a espera por lock pode bloquear fork indefinidamente;
-um registro feito só depois de abrir deixa uma janela de herança sem rastreio.
-Qualquer solução exige testes dessas fronteiras e do comportamento de callbacks,
-erros de close e concessões já emitidas antes de alegar garantia estabelecida.
+A correção registra descritores temporários e usa os.register_at_fork no Linux.
+O callback before adquire o mesmo mutex usado nas transições de propriedade;
+after_in_parent o libera. after_in_child substitui o mutex herdado por um novo,
+esvazia o registro e fecha somente as cópias temporárias com os.close. Nunca
+executa flock/LOCK_UN no filho, nem abre bancos ou altera arquivos/sidecars.
+
+| Transição | Proteção e propriedade |
+| --- | --- |
+| Abertura e registro | api.abrir e inclusão no conjunto ocorrem sob o mesmo mutex; fork aguarda ambos. Se registrar falhar, o fd é fechado ainda sob essa proteção. |
+| Conferências, aquisição nativa e espera | O fd permanece registrado, mas o mutex está livre; fork pode ocorrer antes ou depois do lock e o filho fecha sua cópia. Não se mantém um mutex global durante tentativas ou prazo de contenção. |
+| Emissão | Construção de Concessao e retirada do registro são serializadas com fork. Depois dessa fronteira vale o contrato de concessão já emitida. |
+| Falha antes da emissão | Retirada do registro e close são serializados com fork. O finally só fecha descritores ainda registrados; não fecha um recurso já transferido. |
+| Erro de close | Não repetir close de um número potencialmente reutilizado. O processo registra incerteza e recusa novas aquisições antes de caminhos/APIs nativas. No callback, erros são retidos nesse estado, pois exceções de callbacks não impedem os.fork. Isso não comprova liberação: uma referência não fechada pode persistir até o processo encerrar. |
+
+O teste adicional test_fork_aguarda_abertura_e_registro_atomicos_antes_de_copiar_fds
+pausa a abertura nativa antes de retornar ao registro e observa o callback before
+aguardar a inclusão. Depois exige as mesmas garantias de ausência de referência
+herdada e aquisição independente após SIGKILL do pai, com o filho ainda vivo.
+Há também testes de exceções nas fronteiras, erro de registro/close, reutilização
+real de número de fd, mutex novo no filho e ciclos sem vazamento de descritores.
+O teste anterior de concessão emitida continua exigindo que fechar no filho não
+desbloqueie o pai. Os testes de prazo e alias Windows permanecem preservados.
+
+O alcance é os.fork do CPython que executa os callbacks registrados, com uso
+cooperativo do módulo. Não cobre fork nativo de extensões que ignore os hooks
+PyOS_BeforeFork/PyOS_AfterFork, dup externo, manipulação dos atributos internos,
+recarga do módulo durante aquisições ou uso reentrante da barreira/fork dentro
+de seus callbacks, handlers de sinais ou finalizadores. Outros callbacks não
+podem adquirir a barreira enquanto seu before mantém o mutex. A abertura e o
+close nativos ainda podem bloquear por filesystem: o prazo não os interrompe.
+O protocolo não torna fork multithread genericamente seguro; CPython 3.12 emite
+DeprecationWarning nesse cenário. Preferir spawn/exec para processos da aplicação.
+
+O ambiente local continua Windows/Python 3.14.3, sem WSL/Docker e sem Python 3.12.
+Testes de callbacks isolados no Windows não validam fork nativo. A confirmação
+da correção nas duas variantes e na fronteira de abertura depende dos novos logs
+Linux por SHA, sem reutilizar a execução diagnóstica como aprovação. O PR #54
+foi colocado em Draft antes do novo push para evitar revisão paga automática;
+as CIs offline existentes continuam elegíveis, sem mudanças nos workflows.
 
 ### Evidências locais e limitações
 

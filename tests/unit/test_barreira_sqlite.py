@@ -536,6 +536,134 @@ class BarreiraSQLite(unittest.TestCase):
         with self.obter("manutencao"):
             pass
 
+    def test_registro_transfere_propriedade_sem_reter_ou_vazar_descritores(self):
+        registro, conferir = servico._temporarios, servico._conferir
+        pasta_fds = Path("/proc/self/fd")
+        antes = len(list(pasta_fds.iterdir())) if sys.platform.startswith("linux") else None
+        def observar(fd, caminho):
+            self.assertIn(fd, registro.descritores)
+            self.assertTrue(registro.mutex.acquire(blocking=False), "Mutex cobre o lock nativo.")
+            registro.mutex.release()
+            conferir(fd, caminho)
+        for _ in range(12):
+            for tipo in ("operacional", "manutencao"):
+                with patch.object(servico, "_conferir", side_effect=observar):
+                    with self.obter(tipo) as concessao:
+                        fd = concessao._Concessao__fd
+                        self.assertNotIn(fd, registro.descritores)
+                        os.fstat(fd)
+                with self.assertRaises(OSError) as erro:
+                    os.fstat(fd)
+                self.assertEqual(erro.exception.errno, errno.EBADF)
+        self.assertEqual(registro.descritores, set())
+        if antes is not None:
+            self.assertEqual(len(list(pasta_fds.iterdir())), antes)
+
+    def test_excecoes_antes_da_emissao_fecham_fd_e_removem_registro(self):
+        api = servico._plataforma()
+        abrir = api.abrir
+        for alvo in ("set_inheritable", "_conferir", "Concessao"):
+            fds = []
+            def observar(caminho):
+                fd = abrir(caminho)
+                fds.append(fd)
+                return fd
+            modulo = os if alvo == "set_inheritable" else servico
+            with self.subTest(alvo=alvo), patch.object(servico, "_plataforma", return_value=api), \
+                    patch.object(api, "abrir", side_effect=observar), \
+                    patch.object(modulo, alvo, side_effect=RuntimeError("falha sintetica")):
+                with self.assertRaisesRegex(RuntimeError, "falha sintetica"):
+                    self.obter("manutencao")
+            self.assertEqual(len(fds), 1)
+            self.assertNotIn(fds[0], servico._temporarios.descritores)
+            with self.assertRaises(OSError):
+                os.fstat(fds[0])
+            with self.obter("manutencao"):
+                pass
+
+    def test_falha_no_registro_fecha_abertura_ainda_protegida(self):
+        registro, api = servico._DescritoresTemporarios(), servico._plataforma()
+        abrir, fds = api.abrir, []
+        class RegistroSemMemoria(set):
+            def add(self, fd):
+                self.add_protegido = registro.mutex.locked()
+                raise MemoryError("falha sintetica")
+        registro.descritores = RegistroSemMemoria()
+        def observar(caminho):
+            fd = abrir(caminho)
+            fds.append(fd)
+            return fd
+        with patch.object(api, "abrir", side_effect=observar):
+            with self.assertRaises(MemoryError):
+                registro.abrir(api, self.coordenacao)
+        self.assertTrue(registro.descritores.add_protegido)
+        self.assertEqual(registro.descritores, set())
+        with self.assertRaises(OSError):
+            os.fstat(fds[0])
+        registro.verificar()
+
+    def test_close_temporario_incerto_recusa_novo_io_sem_repetir_fd_reutilizado(self):
+        registro, fechar = servico._DescritoresTemporarios(), os.close
+        api = servico._plataforma()
+        fd = registro.abrir(api, self.coordenacao)
+        def falhar(descritor):
+            fechar(descritor)
+            raise OSError(errno.EIO, "falha apos close sintetico")
+        with patch.object(os, "close", side_effect=falhar) as close:
+            with self.assertRaises(OSError):
+                registro.fechar(fd)
+            registro.fechar(fd)
+            close.assert_called_once_with(fd)
+        self.assertEqual(registro.descritores, set())
+        # Reutilizar de fato o mesmo número; o registro antigo não pode fechá-lo.
+        novo = os.open(self.banco, os.O_RDONLY)
+        try:
+            if novo != fd:
+                os.dup2(novo, fd)
+            try:
+                registro.fechar(fd)
+                os.fstat(fd)
+                with patch.object(servico, "_temporarios", registro), \
+                        patch.object(servico, "_plataforma") as plataforma, \
+                        patch.object(Path, "lstat") as lstat:
+                    self.erro("fechamento_temporario_nao_confirmado", self.obter)
+                plataforma.assert_not_called()
+                lstat.assert_not_called()
+            finally:
+                if novo != fd:
+                    os.close(fd)
+        finally:
+            os.close(novo)
+
+    def test_callback_filho_fecha_so_temporarios_recria_mutex_e_recusa_close_incerto(self):
+        # Exercita o callback isoladamente também no Windows; o fork real é testado no Linux.
+        registro, api = servico._DescritoresTemporarios(), servico._plataforma()
+        fds = [registro.abrir(api, self.coordenacao) for _ in range(2)]
+        self.addCleanup(lambda: [os.close(fd) for fd in tuple(registro.descritores)])
+        self.assertTrue(api.tentar(fds[0], True))
+        mutex, fechar = registro.mutex, os.close
+        registro.antes_do_fork()
+        falhou = []
+        def observar(fd):
+            fechar(fd)
+            if not falhou:
+                falhou.append(fd)
+                raise OSError(errno.EIO, "falha apos close sintetico")
+        with patch.object(os, "close", side_effect=observar) as close, \
+                patch.object(api, "liberar") as unlock:
+            registro.depois_no_filho()
+        self.assertEqual({c.args[0] for c in close.call_args_list}, set(fds))
+        unlock.assert_not_called()
+        self.assertIsNot(registro.mutex, mutex)
+        self.assertFalse(registro.mutex.locked())
+        self.assertEqual(registro.descritores, set())
+        self.erro("fechamento_temporario_nao_confirmado", registro.verificar)
+        for fd in fds:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+        with self.obter("manutencao"):
+            pass
+
     def test_unlock_falha_fecha_handle_e_informa_estado_de_erro(self):
         concessao = self.obter("manutencao")
         api = concessao._Concessao__api
@@ -610,7 +738,11 @@ class BarreiraSQLite(unittest.TestCase):
             with self.subTest(depois_do_lock=depois_do_lock):
                 self._verificar_fork_durante_aquisicao(depois_do_lock)
 
-    def _verificar_fork_durante_aquisicao(self, depois_do_lock):
+    @unittest.skipUnless(sys.platform.startswith("linux"), "Semântica de fork/flock Linux.")
+    def test_fork_aguarda_abertura_e_registro_atomicos_antes_de_copiar_fds(self):
+        self._verificar_fork_durante_aquisicao(False, durante_abertura=True)
+
+    def _verificar_fork_durante_aquisicao(self, depois_do_lock, *, durante_abertura=False):
         import select
         import signal
 
@@ -650,6 +782,38 @@ class BarreiraSQLite(unittest.TestCase):
                         os.write(resposta_w, (json.dumps(dados) + "\n").encode("utf-8"))
                     aberto, continuar, manter = (threading.Event() for _ in range(3))
                     contexto = {"conferencias": 0}
+                    if durante_abertura:
+                        devolver_abertura = threading.Event()
+                        principal = threading.get_ident()
+                        mutex = servico._temporarios.mutex
+                        class PortaoObservado:
+                            def acquire(self, *args, **kwargs):
+                                # before precisa aguardar a publicação no registro, sem sleeps.
+                                if threading.get_ident() == principal:
+                                    devolver_abertura.set()
+                                return mutex.acquire(*args, **kwargs)
+                            def release(self):
+                                mutex.release()
+                            def __enter__(self):
+                                self.acquire()
+                                return self
+                            def __exit__(self, *args):
+                                self.release()
+                        servico._temporarios.mutex = PortaoObservado()
+                        api = servico._plataforma()
+                        abrir = api.abrir
+                        def pausar_abertura(caminho):
+                            fd = abrir(caminho)
+                            contexto["fd"] = fd
+                            info = os.fstat(fd)
+                            contexto["identidade"] = (info.st_dev, info.st_ino)
+                            aberto.set()
+                            if not devolver_abertura.wait(timeout=10):
+                                os.close(fd)
+                                raise AssertionError("before não coordenou abertura em andamento.")
+                            return fd
+                        api.abrir = pausar_abertura
+                        servico._plataforma = lambda: api
                     conferir = servico._conferir
                     def pausar(fd, caminho):
                         contexto["conferencias"] += 1

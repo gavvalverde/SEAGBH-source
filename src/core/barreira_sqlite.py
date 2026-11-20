@@ -50,6 +50,87 @@ class EstadoConcessao(str, Enum):
     ERRO_LIBERACAO = "erro_liberacao"
 
 
+class _DescritoresTemporarios:
+    """Propriedade até a emissão; serializa somente transições curtas com fork.
+
+    O mutex nunca cobre tentar/flock, conferências ou espera por contenção.
+    Os callbacks coordenam os.fork do CPython; não fork nativo que os ignore.
+    """
+
+    def __init__(self):
+        self.mutex = threading.Lock()
+        self.descritores: set[int] = set()
+        self.erro: OSError | None = None
+
+    def _verificar(self) -> None:
+        if self.erro is not None:
+            raise ErroBarreira("aquisicao", "fechamento_temporario_nao_confirmado", self.erro)
+
+    def verificar(self) -> None:
+        with self.mutex:
+            self._verificar()
+
+    def abrir(self, api, caminho: Path) -> int:
+        with self.mutex:
+            self._verificar()
+            fd = api.abrir(caminho)
+            try:
+                self.descritores.add(fd)
+            except BaseException:
+                # Ainda sob o mutex: fork não pode observar abertura sem registro.
+                self.descritores.discard(fd)
+                self._fechar(fd)
+                raise
+            return fd
+
+    def emitir(self, fd: int, **dados) -> Concessao:
+        with self.mutex:
+            self._verificar()
+            if fd not in self.descritores:
+                raise ErroBarreira("aquisicao", "descritor_temporario_nao_registrado")
+            concessao = Concessao(_emissao=_EMISSAO, _fd=fd, **dados)
+            self.descritores.remove(fd)
+            return concessao
+
+    def _fechar(self, fd: int) -> None:
+        try:
+            os.close(fd)  # Nunca LOCK_UN: a descrição pode estar compartilhada com o pai.
+        except OSError as exc:
+            self.erro = exc
+            raise
+
+    def fechar(self, fd: int) -> None:
+        with self.mutex:
+            if fd in self.descritores:
+                self.descritores.remove(fd)  # Não repetir close de número reutilizável.
+                self._fechar(fd)
+
+    def antes_do_fork(self) -> None:
+        self.mutex.acquire()
+
+    def depois_no_pai(self) -> None:
+        self.mutex.release()
+
+    def depois_no_filho(self) -> None:
+        pendentes = self.descritores
+        self.descritores = set()
+        self.mutex = threading.Lock()  # Não reutilizar mutex herdado de outra thread.
+        for fd in pendentes:
+            try:
+                self._fechar(fd)
+            except OSError:
+                # Exceções de callbacks são ignoradas por os.fork. Recusar uso depois.
+                # Não tentar close novamente: o número pode já ter sido reutilizado.
+                continue
+
+
+_temporarios = _DescritoresTemporarios()
+if sys.platform.startswith("linux"):
+    os.register_at_fork(before=_temporarios.antes_do_fork,
+                        after_in_parent=_temporarios.depois_no_pai,
+                        after_in_child=_temporarios.depois_no_filho)
+
+
 def _sqlite(backend: str) -> None:
     if backend != "sqlite":
         raise ErroBarreira("argumentos", "backend_nao_suportado")
@@ -336,10 +417,11 @@ def _adquirir(backend: str, banco: str | Path, prazo: float, tipo: TipoConcessao
     fim = time.monotonic() + prazo
     fd = None
     try:
+        _temporarios.verificar()  # Falha de close anterior impede novas operações de I/O.
         api = _plataforma()
         alvo = _banco(banco)
         coordenacao = _caminho(alvo.with_name(alvo.name + _SUFIXO), ausente=True)
-        fd = api.abrir(coordenacao)
+        fd = _temporarios.abrir(api, coordenacao)
         os.set_inheritable(fd, False)
         while True:
             _conferir(fd, coordenacao)
@@ -347,7 +429,7 @@ def _adquirir(backend: str, banco: str | Path, prazo: float, tipo: TipoConcessao
                 _conferir(fd, coordenacao)
                 if prazo > 0 and time.monotonic() >= fim:
                     raise ErroBarreira("aquisicao", "prazo_excedido")
-                concessao = Concessao(_emissao=_EMISSAO, _fd=fd, _api=api,
+                concessao = _temporarios.emitir(fd, _api=api,
                     _tipo=tipo, _banco=alvo, _caminho=coordenacao)
                 fd = None  # A concessão passa a ser a única proprietária do recurso.
                 return concessao
@@ -363,7 +445,7 @@ def _adquirir(backend: str, banco: str | Path, prazo: float, tipo: TipoConcessao
     finally:
         if fd is not None:
             try:
-                os.close(fd)
+                _temporarios.fechar(fd)
             except OSError as exc:
                 raise ErroBarreira("liberacao", "fechamento_falhou", exc) from None
 
