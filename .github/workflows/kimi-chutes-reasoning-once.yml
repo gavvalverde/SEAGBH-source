@@ -1,0 +1,128 @@
+name: One-shot Kimi Chutes reasoning 2048 compatibility test
+on:
+  push:
+    branches: [fix/ai-review-kimi-structured-evidence]
+    paths: [".github/workflows/kimi-chutes-reasoning-once.yml"]
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  evaluate:
+    if: >-
+      github.repository == 'gavvalverde/SEAGBH-source' &&
+      github.event.head_commit.message == 'test(ai-review): medir Kimi thinking no Chutes uma vez' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Checkout candidate without stored GitHub credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: gavvalverde/SEAGBH-source
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          submodules: false
+          lfs: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /.github/ai-review/production/
+            /.github/ai-review/benchmarks/harness/prompt_builder.py
+            /.github/ai-review/review-schema.json
+      - name: Install pinned dependencies in ephemeral venv
+        shell: bash
+        run: |
+          python3.12 -m venv "$RUNNER_TEMP/kimi-chutes-venv"
+          "$RUNNER_TEMP/kimi-chutes-venv/bin/python" -m pip --isolated --disable-pip-version-check install --only-binary=:all: --index-url https://pypi.org/simple -r .github/ai-review/production/requirements.txt
+      - name: One real read-only call to Chutes, no GitHub post
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          "$RUNNER_TEMP/kimi-chutes-venv/bin/python" -B - <<'PY'
+          import json
+          import os
+          import sys
+          sys.path.insert(0, ".github/ai-review/production")
+          import core
+          import runner as r
+          import quality_gate
+          from transport import OpenRouter, Problem
+          
+          key, token = os.environ.get("OPENROUTER_API_KEY"), os.environ.get("GITHUB_TOKEN")
+          if not key or not token:
+              print('{"status":"missing_credentials"}')
+              sys.exit(1)
+          number = 28
+          sha = "219bfba2dcddabfd4ce7318157777c19a1319c40"
+          record = {"pr": number, "provider": "chutes", "published": False}
+          model = None
+          try:
+              gh = r.GitHub(token)
+              data = gh.pr(number)
+              if (data.get("head", {}).get("sha") != sha
+                      or data.get("state") != "open"
+                      or data.get("draft") is not False
+                      or data.get("base", {}).get("ref") != "main"):
+                  raise RuntimeError("identity_mismatch")
+              event = {"number": number, "action": "opened",
+                       "repository": {"full_name": r.REPOSITORY, "default_branch": "main"},
+                       "pull_request": data}
+              pinned = r.event_snapshot(event, "true")
+              r.ensure_current(gh, pinned)
+              collected = r.collect(gh, pinned)
+              snippets = r.source_context(gh, pinned, collected)
+              title = pinned.title.encode("utf-8")[:1024].decode("utf-8", errors="ignore")
+              body = pinned.body.encode("utf-8")[:4096].decode("utf-8", errors="ignore")
+              collected.manifest["partial"] |= title != pinned.title or body != pinned.body
+              context = dict(collected.manifest)
+              if snippets:
+                  context["source_snippets"] = snippets
+              payload = r.build_production_payload(
+                  title, body, collected.diff,
+                  context=json.dumps(context, ensure_ascii=True, sort_keys=True),
+                  trunc_note="[PARTIAL REVIEW]" if collected.manifest["partial"] else "",
+                  omit_info=json.dumps(collected.manifest["omitted"], ensure_ascii=True)
+                    if collected.manifest["omitted"] else "",
+                  code_lines=collected.code_lines)
+              payload["reasoning"] = {"max_tokens": 2048}
+              payload["max_tokens"] = 8192
+              payload["provider"]["only"] = ["chutes"]
+              payload["provider"]["max_price"] = {"prompt": 0.42, "completion": 1.85}
+              assert payload["provider"]["allow_fallbacks"] is False
+              assert payload["provider"]["require_parameters"] is True
+              assert payload["response_format"]["type"] == "json_schema"
+              assert payload["temperature"] == 0.0
+              model = OpenRouter(key, max_attempts=1, require_reasoning_usage=False)
+              content = model.complete(payload)
+              r.ensure_current(gh, pinned)
+              result = core.process_response(content, collected.scope,
+                       expected_sha=pinned.head_sha, response_sha=pinned.head_sha)
+              record["validation"] = result.status.value
+              if not result.publishable:
+                  record["code"] = "validation_rejected"
+                  record["validation_reason"] = result.reason
+              else:
+                  assessment = quality_gate.assess(result.review["findings"], collected.code_lines)
+                  record["findings_count"] = len(result.review["findings"])
+                  record["hold_count"] = assessment.unanchored_count
+                  record["code"] = ("quality_rejected" if assessment.requires_manual_review
+                                    else "gates_passed_no_publication")
+          except Problem as error:
+              record["code"] = error.code
+          except Exception:
+              record["code"] = "unexpected_execution_error"
+          if model is not None:
+              if model.last_usage is not None:
+                  record["usage"] = model.last_usage
+                  count = model.last_usage.get("reasoning_tokens")
+                  if type(count) is int:
+                      record["thinking_observed"] = count > 0
+                      record["reasoning_over_requested_budget"] = count > 2048
+              if model.last_reasoning_control in r.REASONING_CONTROL_CODES:
+                  record["reasoning_control"] = model.last_reasoning_control
+          print(json.dumps(record, sort_keys=True), flush=True)
+          if record.get("code") == "unexpected_execution_error":
+              sys.exit(1)
+          PY
