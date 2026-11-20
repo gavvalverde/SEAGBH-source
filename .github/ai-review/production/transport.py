@@ -113,10 +113,13 @@ class OpenRouter:
     MAX_ATTEMPTS = 2
     MAX_RESPONSE = 1024 * 1024
 
-    def __init__(self, key, *, http=None, sleep=time.sleep):
+    def __init__(self, key, *, http=None, sleep=time.sleep, max_attempts=2):
         if not isinstance(key, str) or not key or "\n" in key or "\r" in key:
             raise Problem("authentication_error")
+        if type(max_attempts) is not int or max_attempts not in (1, 2):
+            raise Problem("invalid_request_attempt_limit")
         self._key = key
+        self.max_attempts = max_attempts
         # Larger bounded model completion requires a longer read deadline.
         # GitHub API requests retain their original 5/30/60s limits.
         self.http = http if http is not None else HTTPS(
@@ -128,7 +131,7 @@ class OpenRouter:
         body = json.dumps(payload, ensure_ascii=True, allow_nan=False).encode("utf-8")
         if len(body) > 262144:
             raise Problem("request_too_large")
-        for attempt in range(self.MAX_ATTEMPTS):
+        for attempt in range(self.max_attempts):
             reply = self.http.send(
                 "openrouter.ai", "POST", "/api/v1/chat/completions",
                 {"Authorization": "Bearer " + self._key, "Content-Type": "application/json"}, body,
@@ -136,7 +139,7 @@ class OpenRouter:
             if len(reply.body) > self.MAX_RESPONSE:
                 raise Problem("response_too_large")
             if reply.status == 429 or 500 <= reply.status <= 599:
-                if attempt + 1 < self.MAX_ATTEMPTS:
+                if attempt + 1 < self.max_attempts:
                     self.sleep(2 ** attempt)
                     continue
             if reply.status in (401, 403):
