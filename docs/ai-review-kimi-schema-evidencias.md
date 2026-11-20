@@ -29,7 +29,7 @@
 
 **Conclusão sobre raciocínio no Baidu:** a limitação solicitada a 2.048 tokens **não foi obedecida nos testes reais**. A saída total continua limitada, mas pode ser esgotada sem parecer; isso gera custo e erro operacional. O piloto com pensamento foi retirado do perfil candidato após o diagnóstico. Não existe evidência suficiente para habilitá-lo em produção.
 
-O teste de outro provedor econômico, Chutes, está documentado separadamente no PR, para verificar se a restrição é de roteamento. Sem resultado positivo e reproduzível, manter raciocínio desativado.
+[Execução #44795081023](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44795081023): testamos uma única requisição com Kimi via Chutes, com `reasoning.max_tokens=2048`, `max_tokens=8192`, preço limite 0,42/1,85 USD/M, uma tentativa e sem permissão de escrita. O job foi **cancelado por timeout operacional de 8 minutos** antes de devolver uma resposta validada. Não é possível inferir quantos tokens foram gerados ou o custo real sem telemetria de resposta. Chutes não demonstrou compatibilidade operacional aceitável para este caso. O workflow temporário foi retirado do diff. O raciocínio permanece desativado.
 
 ## Aceitação, segurança e pendências
 
