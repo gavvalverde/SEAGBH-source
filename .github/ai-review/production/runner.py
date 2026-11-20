@@ -30,11 +30,11 @@ MAX_SOURCE_FILE_BYTES = 32768
 MAX_SOURCE_SNIPPET_BYTES = 4096
 MAX_SOURCE_TOTAL_BYTES = 8192
 SOURCE_RADIUS = 12
-# Kimi K2.6 non-thinking; fail closed if the endpoint cannot prove zero reasoning.
+# Kimi K2.6 thinking pilot. Budget is requested, not an API-level guarantee.
 # Pinned cheapest provider at planning time; caps are per-million-token routing filters.
 PRODUCTION_MODEL = "moonshotai/kimi-k2.6"
 PRODUCTION_PROVIDER = "baidu"
-PRODUCTION_REASONING_ENABLED = False
+PRODUCTION_REASONING_BUDGET = 2048
 PRODUCTION_MAX_TOKENS = 8192
 PRODUCTION_TEMPERATURE = 0.0
 MAX_EVIDENCE_CATALOG_ROWS = 100
@@ -572,7 +572,7 @@ def build_production_payload(title, body, diff, *, context="", trunc_note="", om
     )
     if payload.get("model") != PRODUCTION_MODEL:
         raise Problem("production_model_mismatch")
-    payload["reasoning"] = {"enabled": PRODUCTION_REASONING_ENABLED}
+    payload["reasoning"] = {"max_tokens": PRODUCTION_REASONING_BUDGET}
     payload["max_tokens"] = PRODUCTION_MAX_TOKENS
     payload["temperature"] = PRODUCTION_TEMPERATURE
     payload["messages"][0]["content"] += _KIMI_OUTPUT_RULES

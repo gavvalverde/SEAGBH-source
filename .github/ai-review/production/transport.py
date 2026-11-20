@@ -227,8 +227,11 @@ class OpenRouter:
             # if reported usage proves the requested opt-out was not honored.
             if self.last_reasoning_control == "disabled_ignored":
                 raise Problem("reasoning_control_ignored", usage=self.last_usage)
-            if self.require_reasoning_usage and self.last_reasoning_control == "disabled_unverified":
+            if self.require_reasoning_usage and self.last_reasoning_control in (
+                    "disabled_unverified", "budget_unverified"):
                 raise Problem("reasoning_control_unverified", usage=self.last_usage)
+            if self.require_reasoning_usage and self.last_reasoning_control == "budget_reported_exceeded":
+                raise Problem("reasoning_budget_exceeded", usage=self.last_usage)
             if not isinstance(message, dict) or message.get("role") != "assistant" or message.get("tool_calls"):
                 raise Problem("unexpected_response")
             content = message.get("content")

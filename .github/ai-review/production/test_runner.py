@@ -242,7 +242,7 @@ class Integration(Offline):
         self.assertEqual(ai.payloads[0], expected)
         self.assertEqual((expected["model"], expected["temperature"], expected["max_tokens"]),
                          ("moonshotai/kimi-k2.6", 0.0, 8192))
-        self.assertEqual(expected["reasoning"], {"enabled": False})
+        self.assertEqual(expected["reasoning"], {"max_tokens": 2048})
         self.assertEqual(expected["response_format"]["type"], "json_schema")
         self.assertEqual(expected["response_format"]["json_schema"]["schema"], r._production_remote_schema())
         self.assertIs(expected["response_format"]["json_schema"]["strict"], False)
@@ -268,7 +268,7 @@ class Integration(Offline):
         self.assertNotIn("deepseek", json.dumps({k: v for k, v in prod.items() if k != "messages"}))
         self.assertEqual(prod["max_tokens"], 8192)
         self.assertEqual(prod["temperature"], 0.0)
-        self.assertEqual(prod["reasoning"], {"enabled": False})
+        self.assertEqual(prod["reasoning"], {"max_tokens": 2048})
         self.assertEqual(prod["response_format"]["type"], "json_schema")
         self.assertEqual(prod["response_format"]["json_schema"]["schema"], r._production_remote_schema())
         self.assertEqual(prod["provider"], {"only": ["baidu"],
@@ -974,17 +974,17 @@ class Transport(Offline):
         sent = json.loads(http.calls[0][4])
         self.assertEqual(sent["model"], "moonshotai/kimi-k2.6")
         self.assertEqual(sent["max_tokens"], 8192)
-        self.assertEqual(sent["reasoning"], {"enabled": False})
+        self.assertEqual(sent["reasoning"], {"max_tokens": 2048})
         self.assertEqual(sent["provider"]["only"], ["baidu"])
         self.assertEqual(len(http.calls), 1)
         self.assertEqual(len(github.posts), 1)
-        self.assertEqual(json.loads(output.getvalue())["reasoning_control"], "disabled_reported_zero")
+        self.assertEqual(json.loads(output.getvalue())["reasoning_control"], "budget_reported_within")
         self.assertNotIn("synthetic-key", output.getvalue())
 
     def test_kimi_failures_never_remove_parameters_retry_fallback_or_publish(self):
         cases = [("unsupported_" + parameter, HttpReply(status,
                     json.dumps({"error": "PRIVATE_" + parameter}).encode()), "http_error")
-                 for parameter, status in [("json_schema", 400), ("reasoning.enabled", 404),
+                 for parameter, status in [("json_schema", 400), ("reasoning.max_tokens", 404),
                                             ("temperature", 422)]]
         cases += [("http_" + str(status), HttpReply(status, b'{}'), "http_error")
                   for status in (429, 500, 503)]
@@ -1022,7 +1022,7 @@ class Transport(Offline):
                 sent = json.loads(http.calls[0][4])
                 self.assertEqual((sent["model"], sent["temperature"], sent["max_tokens"]),
                                  ("moonshotai/kimi-k2.6", 0.0, 8192))
-                self.assertEqual(sent["reasoning"], {"enabled": False})
+                self.assertEqual(sent["reasoning"], {"max_tokens": 2048})
                 self.assertEqual(sent["response_format"]["type"], "json_schema")
                 self.assertEqual(sent["response_format"]["json_schema"]["schema"], r._production_remote_schema())
                 self.assertEqual(sent["provider"], {"only": ["baidu"],
@@ -1056,35 +1056,46 @@ class Transport(Offline):
         self.assertEqual(len(http.calls), 1)
         sent = json.loads(http.calls[0][4])
         self.assertEqual(sent["max_tokens"], 8192)
-        self.assertEqual(sent["reasoning"], {"enabled": False})
+        self.assertEqual(sent["reasoning"], {"max_tokens": 2048})
         self.assertFalse(github.posts)
 
-    def test_production_disabled_reasoning_rejects_missing_positive_or_hidden_usage(self):
+    def test_production_reasoning_budget_requires_verifiable_usage_and_fails_closed(self):
         variants = [
-            ("missing", None, False, "reasoning_control_unverified"),
-            ("invalid", "PRIVATE_INVALID", False, "reasoning_control_unverified"),
-            ("positive", 99, False, "reasoning_control_ignored"),
-            ("hidden_reasoning", 0, True, "reasoning_control_ignored"),
+            ("missing", None, "reasoning_control_unverified", "budget_unverified"),
+            ("invalid", "PRIVATE_INVALID", "reasoning_control_unverified", "budget_unverified"),
+            ("over_budget", 2049, "reasoning_budget_exceeded", "budget_reported_exceeded"),
         ]
-        for name, reasoning, hidden, code in variants:
+        for name, reasoning, code, control in variants:
             with self.subTest(name=name):
                 reply = json.loads(envelope().body)
-                reply["usage"] = {"completion_tokens": 100}
+                reply["usage"] = {"completion_tokens": 3000}
                 if reasoning is not None:
                     reply["usage"]["completion_tokens_details"] = {"reasoning_tokens": reasoning}
-                if hidden:
-                    reply["choices"][0]["message"]["reasoning"] = "PRIVATE_REASONING"
                 http = FakeHTTP([HttpReply(200, json.dumps(reply).encode())])
                 model = OpenRouter("synthetic-key", http=http, max_attempts=1,
                                    require_reasoning_usage=True)
-                github = FakeGitHub()
-                outcome = r.run_review(event(), "true", github, model, version="kimi-usage-test")
+                gh = FakeGitHub()
+                outcome = r.run_review(event(), "true", gh, model, version="kimi-budget-test")
                 self.assertEqual((outcome.code, outcome.stage), (code, "model"))
-                self.assertFalse(outcome.published or github.posts)
-                self.assertEqual(model.last_reasoning_control,
-                    "disabled_unverified" if name in ("missing", "invalid") else "disabled_ignored")
+                self.assertFalse(outcome.published or gh.posts)
+                self.assertEqual(model.last_reasoning_control, control)
                 self.assertNotIn("PRIVATE", repr(model.last_usage))
                 self.assertEqual(len(http.calls), 1)
+
+    def test_production_reasoning_within_budget_can_publish_only_valid_review(self):
+        reply = json.loads(envelope().body)
+        reply["usage"] = {"completion_tokens": 500,
+            "completion_tokens_details": {"reasoning_tokens": 300}}
+        http = FakeHTTP([HttpReply(200, json.dumps(reply).encode())])
+        gh = FakeGitHub()
+        model = OpenRouter("synthetic-key", http=http, max_attempts=1,
+                           require_reasoning_usage=True)
+        outcome = r.run_review(event(), "true", gh, model, version="kimi-budget-valid")
+        self.assertEqual(outcome.code, "published")
+        self.assertTrue(outcome.published)
+        self.assertEqual(len(gh.posts), 1)
+        self.assertEqual(model.last_reasoning_control, "budget_reported_within")
+        self.assertEqual(json.loads(http.calls[0][4])["reasoning"], {"max_tokens": 2048})
 
     def test_numeric_input_total_and_cost_are_bounded_and_detached(self):
         reply = json.loads(envelope().body)
@@ -1334,6 +1345,7 @@ class Transport(Offline):
         self.assertFalse(gh.posts)
 
     def test_nonthinking_setting_ignored_by_provider_fails_closed(self):
+        # Historical DeepSeek profile still requires reasoning opt-out.
         reply = json.loads(envelope(review()).body)
         reply["usage"] = {
             "completion_tokens": 100,
@@ -1350,16 +1362,6 @@ class Transport(Offline):
             "completion_tokens": 100, "reasoning_tokens": 91, "visible_tokens": 9,
         })
         self.assertEqual(len(http.calls), 1)
-
-        github = FakeGitHub()
-        # Production must reject positive reasoning under non-thinking.
-        result = r.run_review(event(), "true", github,
-            OpenRouter("synthetic-key", http=FakeHTTP([wire]),
-                       max_attempts=1, require_reasoning_usage=True),
-            version="test-nonthinking-production")
-        self.assertEqual(result.code, "reasoning_control_ignored")
-        self.assertFalse(result.published)
-        self.assertFalse(github.posts)
 
     def test_nonthinking_valid_completion_passes_through(self):
         http = FakeHTTP([envelope(review())])
