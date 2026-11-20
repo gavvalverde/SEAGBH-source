@@ -45,7 +45,6 @@ jobs:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONNOUSERSITE: "1"
       PYTEST_DISABLE_PLUGIN_AUTOLOAD: "1"
-      TMPDIR: ${{ runner.temp }}
     defaults:
       run:
         shell: bash
@@ -64,6 +63,7 @@ jobs:
       - name: Install isolated licensing test dependencies
         run: |
           set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
           python -B -m venv "$RUNNER_TEMP/licenciamento-ci-venv"
           PY="$RUNNER_TEMP/licenciamento-ci-venv/bin/python"
           "$PY" -B -m pip --isolated --disable-pip-version-check --no-input install --only-binary=:all: --require-hashes --index-url https://pypi.org/simple -r tests/requirements-licenciamento.txt
@@ -71,6 +71,7 @@ jobs:
       - name: Run complete offline licensing regression suite
         run: |
           set -euo pipefail
+          export TMPDIR="$RUNNER_TEMP"
           PY="$RUNNER_TEMP/licenciamento-ci-venv/bin/python"
           "$PY" -B -c 'import sys; assert sys.version_info[:2] == (3, 12), sys.version; print(sys.version)'
           "$PY" -B -m pytest -q -p no:cacheprovider tests/unit/licenciamento
