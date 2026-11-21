@@ -355,40 +355,56 @@ Concluir a integração e seus testes exige missão própria. Esta etapa não al
 o resultado de exclusividade do preflight, não habilita restauração e não torna
 a ferramenta apta a substituir arquivos de banco.
 
-### 04D2B2 — piloto isolado de conexão operacional protegida
+### 04D2B2 / 04D2B4 — sessão SQLite protegida, piloto isolado
 
 O módulo `src/core/conexao_sqlite_protegida.py` oferece
-`abrir_conexao_operacional(banco=..., prazo=...)`, somente para testes e
-futuros consumidores explicitamente migrados. Primeiro adquire uma concessão
-**compartilhada** da barreira por banco canônico, depois abre
-`sqlite3.connect(..., timeout=30)`. Não executa PRAGMA/DDL automaticamente.
+`abrir_conexao_operacional(banco=..., prazo=...)`. A fábrica constrói e registra
+o dono antes de adquirir a concessão compartilhada. Abre SQLite com o caminho
+canônico da concessão, timeout de 30 s, transações legadas explícitas na
+configuração do driver e cache de statements desativado. Preserva a afinidade
+de thread padrão do driver. A sessão recusa chamadas em um PID diferente e
+a fábrica não executa PRAGMA ou DDL de inicialização.
 
-A sessão retorna uma conexão SQLite real ao entrar no contexto. O chamador
-controla `commit` e `rollback`; sair do contexto **fecha** a conexão,
-sem `commit` implícito. A concessão só é liberada depois de `close`
-confirmado. Em falha de abertura, a concessão é encerrada. Todas as
-sessões abertas permanecem referenciadas até `fechar()` confirmar o close:
-abandonar uma sessão ou falhar no close não pode liberar a concessão por GC
-enquanto uma conexão ainda existir. A recuperação exige fechamento explícito
-ou término do processo. Isso é fail-closed e pode reter recursos,
-não um mecanismo de recuperação automática; não usar em produção sem integrar
-tratamento e observabilidade de falhas.
+O contexto devolve a própria sessão. `executar(sql, parametros=())` executa
+uma instrução e devolve uma lista de tuplas, com o cursor fechado antes da
+entrega. A sessão oferece `commit()`, `rollback()` e `fechar()`. O
+fechamento não faz commit implícito. A sessão não pode ser copiada, serializada
+ou usada de outra thread. Operações reentrantes e contextos aninhados são
+recusados. A interface não fornece a conexão ou o cursor nativo, iteradores
+do driver, BLOB incremental, Backup API ou registro de callbacks externos.
+O authorizer recusa `ATTACH` e a abertura interna usada por `VACUUM` e
+`VACUUM INTO`. O escopo é SQL de aplicação confiável, com resultados que
+caibam em memória. Essa interface não é um sandbox para SQL ou código Python.
 
-A CI executa testes sintéticos em Ubuntu 24.04 e Windows Server 2022 (Python
-3.12), incluindo contenção com manutenção, duas conexões cooperativas,
-rollback em exceções, falhas de abertura/fechamento, abandono/GC, caminhos
-inseguros e ordem de aquisição antes do primeiro SQLite.
+A sessão fica referenciada até fechar cursor, conexão e concessão, nessa
+ordem. Uma exceção na abertura passa pelo mesmo cleanup. Erros de fechamento
+conservam o recurso incerto, invalidam novas operações e deixam a sessão
+registrada. Se a sessão foi entregue e a thread dona continua disponível,
+ela pode tentar `fechar()` novamente. Uma abertura que falhe também no
+cleanup pode reter a concessão sem entregar a sessão. Abandono e término da
+thread dona exigem tratamento no ciclo de vida da aplicação. O piloto não
+fornece auto-reparo nem sincronização de finalizadores no shutdown do
+interpretador. Use encerramento explícito e processos novos por spawn/exec,
+sem transportar sessões ou forks com sessões abertas.
 
-**Limite:** `Database`, janelas, workers, backup e migração ainda abrem
-conexões pelos próprios caminhos. Portanto, não existe exclusividade global
-sobre o SQLite operacional; este piloto não habilita restauração, quiescência
-nem autorização para substituir o banco. O `sqlite3.Connection.close()`
-pode concluir logicamente mesmo com cursores preparados, BLOB handles ou
-operações de backup ainda vivos: no SQLite, `sqlite3_close_v2()` pode adiar
-a desalocação nativa. Este piloto **não prova** que esses recursos terminaram
-antes de liberar a concessão. A migração transversal e fechamento correto de
-conexões, cursores e recursos reais são a próxima missão, após revisar os
-chamadores, a posse por thread e a política de commit/rollback.
+O sucesso de `sqlite3_close_v2()` pode representar fechamento lógico com
+recursos pendentes. Nos testes, um cursor nativo parcialmente consumido
+mantém um checkpoint WAL ocupado mesmo após `Connection.close()`. O teste
+do adaptador injeta falha antes de fechar um cursor real e verifica, em
+processo independente, que o checkpoint segue ocupado e a concessão impede
+manutenção. Após fechar o cursor e antes de liberar a concessão, o checkpoint
+volta a funcionar. Os demais testes cobrem falhas injetadas na construção,
+no registro, na abertura, na preparação/entrega e no fechamento. Sondas
+independentes e eventos verificam contenção, afinidade de thread e liberação.
+A matriz offline usa Python 3.12 em Ubuntu e Windows com dados sintéticos.
+[Documentação do SQLite sobre fechamento](https://www.sqlite.org/c3ref/close.html).
+
+**Limite de integração.** A conclusão é restrita aos recursos acessíveis
+pela interface do piloto. Database, workers, backup, preflight e migração
+continuam com ciclos próprios. A integração futura deve provar que todos os
+donos fecham suas sessões antes de concluir o encerramento e que o conjunto
+de operações necessário cabe na interface sem devolver handles nativos. A
+barreira não exclui clientes externos. A restauração segue bloqueada.
 
 A primeira rodada da CI identificou um auxiliar de teste iniciado por
 `testar_`, que o `unittest` executava como caso isolado. A correção
