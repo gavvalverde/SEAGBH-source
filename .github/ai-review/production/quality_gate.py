@@ -17,6 +17,10 @@ class QualityAssessment:
     checked_count: int
     unanchored_count: int
     duplicate_location_pairs: int = 0
+    quote_mismatch_count: int = 0
+    source_unavailable_count: int = 0
+    short_line_count: int = 0
+    invalid_reference_count: int = 0
 
     @property
     def requires_manual_review(self) -> bool:
@@ -29,10 +33,9 @@ def assess(findings: list[dict], code_lines: dict) -> QualityAssessment:
         raise ValueError("unvalidated_findings")
     if not isinstance(code_lines, dict):
         raise ValueError("invalid_diff_lines")
-    misses = sum(
-        not evidence.has_literal_code_anchor(finding, code_lines)
-        for finding in findings
-    )
+    statuses = [evidence.literal_anchor_status(finding, code_lines)
+                for finding in findings]
+    misses = sum(status != "anchored" for status in statuses)
     # Same exact path AND line is a collision signal, not proof of duplicate
     # causality. Hold the ENTIRE review; never choose a winner automatically.
     locations = {}
@@ -49,4 +52,8 @@ def assess(findings: list[dict], code_lines: dict) -> QualityAssessment:
     return QualityAssessment(
         checked_count=len(findings), unanchored_count=misses,
         duplicate_location_pairs=collision_count,
+        quote_mismatch_count=statuses.count("quote_mismatch"),
+        source_unavailable_count=statuses.count("source_unavailable"),
+        short_line_count=statuses.count("short_line"),
+        invalid_reference_count=statuses.count("invalid_reference"),
     )

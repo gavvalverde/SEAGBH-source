@@ -1,7 +1,7 @@
 """Regressões para evidências de código: offline, sem executar PRs."""
 import unittest
 
-from evidence import has_literal_code_anchor, new_file_lines
+from evidence import has_literal_code_anchor, literal_anchor_status, new_file_lines
 
 
 class CodeAnchorTests(unittest.TestCase):
@@ -56,6 +56,15 @@ class CodeAnchorTests(unittest.TestCase):
         finding = {"path": "src/x.py", "line": 20,
                    "evidence": "mensagem = 'operação inválida' "}
         self.assertTrue(has_literal_code_anchor(finding, source))
+
+    def test_anchor_diagnostics_are_fixed_codes(self):
+        src = {"x.py": {2: "quantity = normalize_quantity(value)", 3: "pass"}}
+        base = {"path": "x.py", "line": 2, "evidence": "quantity = normalize_quantity(value)"}
+        self.assertEqual(literal_anchor_status(base, src), "anchored")
+        self.assertEqual(literal_anchor_status({**base, "evidence": "PRIVATE_SENTINEL"}, src), "quote_mismatch")
+        self.assertEqual(literal_anchor_status({**base, "line": 80}, src), "source_unavailable")
+        self.assertEqual(literal_anchor_status({**base, "line": 3}, src), "short_line")
+        self.assertEqual(literal_anchor_status({**base, "line": None}, src), "invalid_reference")
 
     def test_no_input_is_executed_or_interpreted(self):
         source = {"src/x.py": {2: "$(rm -rf /); <script>alert(1)</script>"}}
