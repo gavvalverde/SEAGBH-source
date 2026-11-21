@@ -355,6 +355,35 @@ Concluir a integração e seus testes exige missão própria. Esta etapa não al
 o resultado de exclusividade do preflight, não habilita restauração e não torna
 a ferramenta apta a substituir arquivos de banco.
 
+### 04D2B2 — piloto isolado de conexão operacional protegida
+
+O módulo `src/core/conexao_sqlite_protegida.py` oferece
+`abrir_conexao_operacional(banco=..., prazo=...)`, somente para testes e
+futuros consumidores explicitamente migrados. Primeiro adquire uma concessão
+**compartilhada** da barreira por banco canônico, depois abre
+`sqlite3.connect(..., timeout=30)`. Não executa PRAGMA/DDL automaticamente.
+
+A sessão retorna uma conexão SQLite real ao entrar no contexto. O chamador
+controla `commit` e `rollback`; sair do contexto **fecha** a conexão,
+sem `commit` implícito. A concessão só é liberada depois de `close`
+confirmado. Em falha de abertura, a concessão é encerrada. Em falha de close,
+a sessão é retida em memória, sem liberar deliberadamente o lock, até
+tentativa explícita de fechamento ou término do processo. Isso é fail-closed,
+não um mecanismo de recuperação automática; não usar em produção sem integrar
+tratamento e observabilidade de falhas.
+
+A CI executa testes sintéticos em Ubuntu 24.04 e Windows Server 2022 (Python
+3.12), incluindo contenção com manutenção, duas conexões cooperativas,
+rollback em exceções, falhas de abertura/fechamento, caminhos inseguros e
+ordem de aquisição antes do primeiro SQLite.
+
+**Limite:** `Database`, janelas, workers, backup e migração ainda abrem
+conexões pelos próprios caminhos. Portanto, não existe exclusividade global
+sobre o SQLite operacional; este piloto não habilita restauração, quiescência
+nem autorização para substituir o banco. A migração transversal e fechamento
+correto de conexões reais são a próxima missão, depois de revisar os
+chamadores, thread ownership e rollback/commit.
+
 ## Proposta 04D2B — integração e recuperação ainda não implementadas
 
 ### Barreira de manutenção e clientes concorrentes

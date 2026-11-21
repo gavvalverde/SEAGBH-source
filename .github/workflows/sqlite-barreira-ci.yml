@@ -5,9 +5,11 @@ on:
     branches: [main]
     paths:
       - "src/core/barreira_sqlite.py"
+      - "src/core/conexao_sqlite_protegida.py"
       - "src/core/restauracao_sqlite.py"
       - "src/core/backup_sqlite.py"
       - "tests/unit/test_barreira_sqlite.py"
+      - "tests/unit/test_conexao_sqlite_protegida.py"
       - "tests/unit/test_restauracao_sqlite.py"
       - "tests/unit/test_backup_sqlite.py"
       - "docs/restauracao-sqlite-manutencao.md"
@@ -16,9 +18,11 @@ on:
     branches: [main]
     paths:
       - "src/core/barreira_sqlite.py"
+      - "src/core/conexao_sqlite_protegida.py"
       - "src/core/restauracao_sqlite.py"
       - "src/core/backup_sqlite.py"
       - "tests/unit/test_barreira_sqlite.py"
+      - "tests/unit/test_conexao_sqlite_protegida.py"
       - "tests/unit/test_restauracao_sqlite.py"
       - "tests/unit/test_backup_sqlite.py"
       - "docs/restauracao-sqlite-manutencao.md"
@@ -81,7 +85,8 @@ jobs:
           )
           subprocess.run([str(interpreter), "-B", "-c", diagnostics],
                          env=variables, check=True, timeout=30)
-          modules = ["tests.unit.test_barreira_sqlite", "tests.unit.test_restauracao_sqlite",
+          modules = ["tests.unit.test_barreira_sqlite", "tests.unit.test_conexao_sqlite_protegida",
+                     "tests.unit.test_restauracao_sqlite",
                      "tests.unit.test_backup_sqlite"]
           print("Tests:", ", ".join(modules), flush=True)
           subprocess.run([str(interpreter), "-B", "-W", "error::ResourceWarning",
