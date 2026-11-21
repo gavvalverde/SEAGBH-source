@@ -25,7 +25,11 @@ Requer filesystem com hard links, como NTFS. Se o recurso não for suportado,
 falha sem substituir o identificador existente.
 
 Um UUID inválido, truncado, não canônico ou de versão diferente de 4
-provoca erro explícito; nunca é trocado silenciosamente. Isso evita que
+provoca erro explícito; nunca é trocado silenciosamente.
+A leitura aceita o UUID v4 canônico sem terminador, com LF (gravado pela
+aplicação em modo binário) ou com um CRLF padrão de texto do Windows. Rejeita
+CR isolado, terminadores duplicados e sufixos adicionais. O arquivo escrito
+pela aplicação mantém sempre a representação canônica ASCII + LF. Isso evita que
 corrupção gere nova vaga de licença sem uma operação de recuperação.
 
 ## Integração futura com Windows

@@ -55,6 +55,24 @@ class IdentidadeInstalacaoTests(unittest.TestCase):
                     carregar_ou_criar_id_instalacao(self.arquivo)
                 self.assertEqual(self.arquivo.read_bytes(), invalida)
 
+    def test_lf_crlf_e_sem_quebra_sao_aceitos_sem_trocar_identidade(self):
+        original = uuid4()
+        for terminador in (b"", b"\n", b"\r\n"):
+            with self.subTest(terminador=terminador):
+                self.arquivo.write_bytes(str(original).encode("ascii") + terminador)
+                self.assertEqual(ler_id_instalacao(self.arquivo), original)
+                self.assertEqual(carregar_ou_criar_id_instalacao(self.arquivo), original)
+
+    def test_recusa_terminadores_truncados_duplicados_ou_misturados(self):
+        original = str(uuid4()).encode("ascii")
+        for terminador in (b"\r", b"\n\n", b"\r\r\n", b"\n\r", b"\r\n\n"):
+            with self.subTest(terminador=terminador):
+                dados = original + terminador
+                self.arquivo.write_bytes(dados)
+                with self.assertRaises(IdentidadeInstalacaoInvalida):
+                    carregar_ou_criar_id_instalacao(self.arquivo)
+                self.assertEqual(self.arquivo.read_bytes(), dados)
+
     def test_rejeita_uuid_v1_em_vez_de_aceitar_instalacao_invalida(self):
         self.arquivo.write_text(
             "00000000-0000-1000-8000-000000000001\n", encoding="ascii")

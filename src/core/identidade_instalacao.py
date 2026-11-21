@@ -21,7 +21,7 @@ class IdentidadeInstalacaoInvalida(ValueError):
 
 
 def ler_id_instalacao(caminho: Path) -> UUID:
-    """Lê UUID v4 em formato canônico, recusando arquivos adulterados."""
+    """Lê UUID v4 canônico com LF, CRLF ou sem terminador."""
     caminho = Path(caminho)
     # Isto é defesa básica contra redirecionamentos acidentais; NÃO é
     # proteção contra uma conta local capaz de modificar o diretório.
@@ -34,8 +34,14 @@ def ler_id_instalacao(caminho: Path) -> UUID:
         raise IdentidadeInstalacaoInvalida("identidade vazia ou excessiva")
     try:
         texto = conteudo.decode("ascii")
-        # Aceitar no máximo uma quebra de linha padrão; o resto é inválido.
-        valor = texto[:-1] if texto.endswith("\n") else texto
+        # LF é o formato emitido pela aplicação; CRLF é a quebra padrão
+        # de texto no Windows. Aceitar somente um terminador completo.
+        if texto.endswith("\r\n"):
+            valor = texto[:-2]
+        elif texto.endswith("\n"):
+            valor = texto[:-1]
+        else:
+            valor = texto
         identidade = UUID(valor)
     except (UnicodeError, ValueError, AttributeError):
         raise IdentidadeInstalacaoInvalida("formato de identidade inválido") from None
