@@ -316,6 +316,27 @@ class Integration(Offline):
         self.assertEqual(out.code, "quality_manual_review_required")
         self.assertFalse(gh.posts)
 
+    def test_kimi_semantic_refutation_is_single_call_bounded_prompt_only(self):
+        original = core.build_payload("T", "B", "D", model=r.PRODUCTION_MODEL)
+        prod = r.build_production_payload("T", "B", "D")
+        self.assertEqual(len(prod["messages"]), len(original["messages"]))
+        before = original["messages"][0]["content"]
+        after = prod["messages"][0]["content"]
+        self.assertTrue(after.startswith(before))
+        self.assertIn("a finally block executes after return", after)
+        self.assertIn("explicitly unsupported platform", after)
+        self.assertIn("tests explicitly expect failure", after)
+        self.assertIn("demonstrated security or data-integrity defects", after)
+        self.assertIn("actual reachable trigger", r._production_remote_schema()
+                      ["properties"]["findings"]["items"]["properties"]["body"]["description"])
+        self.assertLessEqual(len(after) - len(before), 3400)
+        self.assertEqual(prod["reasoning"], {"enabled": False})
+        self.assertEqual(prod["max_tokens"], 8192)
+        self.assertEqual(prod["temperature"], 0.0)
+        self.assertEqual(prod["provider"]["only"], ["baidu"])
+        self.assertEqual(prod["response_format"]["type"], "json_schema")
+        self.assertEqual(original["messages"][0]["content"], before)
+
     def test_kimi_remote_schema_does_not_modify_local_draft7(self):
         remote = r._production_remote_schema()
         self.assertNotIn("allOf", remote["properties"]["findings"]["items"])
@@ -324,6 +345,10 @@ class Integration(Offline):
         self.assertIn("allOf", core._schema["properties"]["findings"]["items"])
         self.assertNotIn("FULL exact source code line",
             core._schema["properties"]["findings"]["items"]["properties"]["evidence"]["description"])
+        self.assertIn("actual reachable trigger",
+            remote["properties"]["findings"]["items"]["properties"]["body"]["description"])
+        self.assertNotIn("actual reachable trigger",
+            core._schema["properties"]["findings"]["items"]["properties"]["body"]["description"])
         remote["properties"]["findings"]["items"]["properties"].clear()
         self.assertIn("evidence", r._production_remote_schema()["properties"]["findings"]["items"]["properties"])
         self.assertFalse(core.validate_review('{"summary":"x","findings":[{"path":"a.py"}]}').ok)
