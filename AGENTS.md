@@ -102,6 +102,15 @@ git diff --check
 - Não altere workflows, variáveis, modelos, raciocínio, limites de tokens ou publicação sem autorização explícita. O YAML não comprova os valores remotos de variáveis, secrets ou políticas.
 - `.github/workflows/ai-review-benchmark.yml` é um workflow legado, de execução manual potencialmente paga, e não possui todos os controles de orçamento por chamada existentes no piloto protegido de `.github/workflows/ai-review-pilot.yml`. Não dispare esses workflows, `run_bench.py`, pilotos pagos ou chamadas OpenRouter sem autorização específica. Preserve cases, GT, matcher e métricas fora do escopo autorizado.
 
+## Política de abertura e revisão de Pull Requests
+
+- **Padrão obrigatório:** publicar todo PR novo como **aberto para revisão** (`draft=false`, **Ready for review**) já na criação, após os testes pertinentes, inclusive quando o autor for Codex. Não criar PR em Draft por hábito.
+- A abertura deve permitir que **Kimi K2.6 (AI Reviewer)** e **Codex Review** sejam acionados pelos mecanismos existentes do GitHub. Confirmar separadamente o estado e o SHA analisado por cada revisão; um disparo não garante que ambos concluíram.
+- Acompanhar os checks de CI e revisões no **HEAD final**. Distinguir `success`, `skipped`, `failure`, revisão pendente, comentários e `quality_manual_review_required`. Revisão retida ou pulada **não equivale a aprovação**.
+- Investigar achados reproduzíveis, corrigir na mesma branch quando cabível e conferir as verificações novamente. Não repetir inferências pagas manualmente, alterar modelo, tokens, qualidade ou segredos sem autorização explícita.
+- **Não fazer merge automaticamente** apenas porque o PR está Ready ou porque os bots não apontaram defeitos. Respeitar a decisão de integração do responsável e as proteções operacionais do projeto.
+- Exceções ao estado Ready exigem pedido explícito do responsável ou um bloqueio real de segurança/publicação; comunicar o motivo sem camuflar a pendência.
+
 ## Fluxo de trabalho e entrega
 
 1. Investigue implementação, instruções, estado Git e chamadores; explique o problema e sua causa provável antes de editar código.
