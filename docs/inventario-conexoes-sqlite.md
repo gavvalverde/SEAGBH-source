@@ -206,6 +206,37 @@ A habilitação operacional espera a correção dos donos de todas as instância
 alcançadas pela fábrica. O plano não exige mudança de dados reais, migração
 automática de diretórios ou modificação do AI Reviewer.
 
+## Ciclo de vida da GUI (04D2B6)
+
+O inventário acima registra o fluxo anterior. A janela agora usa a mesma
+fábrica para o banco principal, o dashboard e a checagem de atrasos. Sem
+caminho explícito, a fábrica continua sendo `Database()`. Em homologação,
+passe `banco_sqlite_protegido` com um caminho absoluto e sintético. Só o
+caminho é compartilhado. Cada worker abre, consulta e fecha sua própria
+sessão. Resultados bem-sucedidos saem depois do fechamento. A falha de
+consulta do dashboard preserva os últimos dados válidos.
+
+O pedido de saída bloqueia novos trabalhos, cancela cooperativamente os
+workers e aguarda a conclusão do backup em curso. Os workers permanecem
+referenciados até a confirmação de término. A janela fecha o banco principal
+na thread da GUI, depois dos workers. Falha de fechamento mantém o dono
+vivo e a saída pendente até uma nova tentativa. Se a montagem da interface
+falhar e a limpeza também falhar, o ponto de entrada mantém a tentativa
+disponível na thread que abriu o banco.
+
+A saída do Qt e o reinício após atualização usam o mesmo fluxo. Um
+download pode demorar a reagir ao cancelamento durante I/O bloqueado. O
+atualizador é iniciado depois da drenagem. Se falhar ao iniciar nessa
+etapa, a GUI informa a falha e conclui o fechamento já confirmado.
+
+O backup fica indisponível no modo protegido. Uma integração futura
+precisa adquirir a concessão compartilhada para a identidade canônica do
+banco antes de abrir a origem e mantê-la até o fim da Backup API e o
+fechamento da conexão de origem. O lock do catálogo protege os artefatos
+separadamente. O encerramento cobre os recursos controlados pela GUI.
+Processos externos, clientes legados, falhas permanentes de driver e
+encerramentos forçados pelo sistema permanecem fora dessa garantia.
+
 ## Limites desta auditoria
 
 O inventário é do código rastreado na revisão citada. Não há inspeção de bancos

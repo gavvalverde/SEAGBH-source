@@ -167,6 +167,14 @@ class ConexaoSQLiteProtegida:
         raise TypeError("conexao_protegida_nao_copiavel")
 
 
+class FechamentoPendente(RuntimeError):
+    """A abertura falhou e o mesmo dono precisa concluir a limpeza."""
+
+    def __init__(self, fechar):
+        super().__init__("fechamento_pendente")
+        self.fechar = fechar
+
+
 def abrir_conexao_operacional(*, banco: str | Path,
                              prazo: float = 0) -> ConexaoSQLiteProtegida:
     """Registra o dono antes de adquirir a concessão e abrir o banco."""
@@ -175,12 +183,12 @@ def abrir_conexao_operacional(*, banco: str | Path,
         _registrar(sessao)
         sessao._abrir(banco, prazo)
         return sessao
-    except BaseException as erro_abertura:
+    except BaseException:
         # Uma abertura incompleta segue a mesma ordem de fechamento. Se o
         # cleanup falhar, a referência no registro mantém a proteção e o erro
         # de abertura fica encadeado à falha de fechamento.
         try:
             sessao.fechar()
         except BaseException as erro_fechamento:
-            raise erro_fechamento from erro_abertura
+            raise FechamentoPendente(sessao.fechar) from erro_fechamento
         raise
