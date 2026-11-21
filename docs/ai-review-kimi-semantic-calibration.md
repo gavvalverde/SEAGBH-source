@@ -37,3 +37,17 @@ PR #16 era somente fixture de teste, com instrução expressa para não mesclar:
   - PR #28: resposta vazia de achados, JSON/schema válidos, sem citação suspeita; 7.397 tokens de entrada, 230 de saída, reasoning reportado zero, US$ 0,001630.
 - A versão longa anterior usou 6.174 e 9.995 tokens de entrada nos dois casos. **Economia observada de 2.598 tokens de prompt por chamada**, com desempenho melhor nessa amostra. Sem garantia de consistência estatística ou de ausência de bugs reais no PR #28.
 - O PR #60 passou a incluir o prompt compacto no código candidato. Será preciso repetir a comparação com o código de produção candidato, sem sobrescrita temporária do prompt, antes de decidir sobre integração.
+
+## Repetição usando o runner candidato, sem sobrescrever prompt (21/11/2026)
+
+- [Execução #44914683530](https://github.com/gavvalverde/SEAGBH-source/actions/runs/44914683530), duas chamadas (PR #16 fechado como fixture histórica in-memory, PR #28 aberto), token GitHub somente leitura, sem retry e sem publicação:
+  - Fixture #16: **5 regiões de defeitos detectadas, 5 citações ancoradas**, sem duplicatas: SQL, estoque, autorização, caminhos e reabastecimento. Foram 3.576 tokens de entrada, 1.504 de saída, zero de reasoning reportado; **US$ 0,003107**.
+  - PR #28: **0 achados**, JSON válido e sem repetição dos dois falsos positivos conhecidos. Foram 7.397 tokens de entrada, 220 de saída, zero de reasoning reportado; **US$ 0,001781**.
+- Com o A/B #44914432478, são **duas observações positivas de cinco regiões na fixture e duas observações sem os falsos positivos no #28**. Não houve comentário em PR em qualquer piloto.
+- A entrada economizou 2.598 tokens em ambos os casos, comparada ao prompt longo testado, redução de aproximadamente **42,1%** no fixture #16 e **26,0%** no #28. Parte da economia total depende do tamanho do diff; não prometer esse percentual para PRs arbitrários.
+- Custos reportados de todas as **sete** chamadas pagas desta missão, incluindo os dois experimentos anteriores com prompt longo: **US$ 0,018751**. Um teste compacto anterior falhou por indentação antes de inferência; não gerou cobrança reportada.
+- O resultado confirma aderência contratual, não precisão estatística nem equivalência comprovada ao DeepSeek. Um review sem achados no PR #28 não garante ausência de defeitos adicionais reais.
+
+## Limpeza antes da revisão
+
+O workflow temporário de avaliação paga foi retirado do diff do PR #60. Nenhuma alteração permanente em workflows, secrets, modelo, roteamento, limite de saída ou políticas de publicação. A CI offline deve ser validada no commit final.
