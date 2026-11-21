@@ -414,6 +414,51 @@ mais 103 casos por plataforma no preflight. A primeira revisão Kimi não
 detectou o problema de descoberta. Na repetição, o gate de qualidade
 reteve uma resposta por citação curta, sem publicar um parecer inconclusivo.
 
+### 04D2B5 — Database com SQLite protegido em homologação
+
+`Database(banco_sqlite_protegido=caminho_absoluto)` é a seleção explícita
+para testes e homologação interna. Nesse modo, a fábrica usa somente o caminho
+fornecido e a identidade canônica da concessão. A obtenção do lock compartilhado
+antecede o connect, os PRAGMAs e todo o DDL. O modo protegido não cria o marcador
+legado `.lock`. `Database()` mantém a seleção de backend e o fluxo anterior,
+inclusive para PostgreSQL. GUI e workers ainda chamam `Database()`.
+
+O cursor de compatibilidade do piloto é uma fachada sobre linhas materializadas
+e o ID capturado antes de fechar o cursor SQLite. Ele oferece as operações
+consumidas pelos métodos de negócio e valida a thread dona também ao entregar
+resultados já materializados. O cursor e a conexão nativos ficam dentro da
+sessão. BLOB incremental, Backup API e conexões brutas continuam fora do
+contrato. As consultas do modo protegido materializam todo o resultado em
+memória, inclusive quando o chamador usa somente `fetchone()`.
+
+A inicialização mantém o DDL original e o parser nativo de `executescript`.
+Na configuração legada do driver, `executescript` pode confirmar uma transação
+pendente antes do script. A API de inicialização dedicada recusa essa situação.
+O script atual começa sem transação e preserva a aplicação de cada DDL conforme
+o SQLite. Uma falha do script pode deixar tabelas anteriores ao erro criadas.
+A migração de `eventos.local_evento` e `eventos.notas` é distinta: no piloto,
+usa `BEGIN IMMEDIATE` para serializar a inspeção e aplicar as colunas numa
+transação. Uma falha reverte a migração e é propagada. A ativação de FKs e do
+WAL é conferida antes de iniciar o esquema.
+[Semântica transacional do driver Python 3.12](https://docs.python.org/3.12/library/sqlite3.html#sqlite3.Cursor.executescript).
+
+Os métodos de escrita continuam confirmando suas unidades de negócio. No
+piloto, falha de execução ou de commit provoca rollback. Se rollback falhar,
+a fachada tenta fechar a sessão e deixa o erro encadeado. `Database.fechar()`
+no modo protegido delega ao fechamento SQLite, que reverte transações
+pendentes. O fechamento não confirma escritas. Um erro de cursor ou conexão
+que impeça o fechamento conserva a concessão e recusa novos usos. A thread
+dona deve concluir o fechamento antes de terminar. Se ela desaparecer com
+sessão aberta, o piloto pode reter a proteção durante o restante do processo.
+A futura coordenação da GUI deve tratar esse estado explicitamente.
+
+Os testes com arquivos temporários verificam esquema novo e legado, CRUD,
+IDs, reversão de operações compostas, erros nas fronteiras de abertura e
+fechamento e contenção real em processos independentes. A regressão PostgreSQL
+usa um driver simulado. A mudança prepara a próxima etapa de ciclo de vida
+dos workers e da GUI. O comportamento padrão e o bloqueio da restauração
+continuam como antes.
+
 ## Proposta 04D2B — integração e recuperação ainda não implementadas
 
 O [inventário 04D2B3](inventario-conexoes-sqlite.md) detalha os acessos

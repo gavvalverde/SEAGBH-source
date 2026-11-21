@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import sqlite3
@@ -25,6 +26,12 @@ def _registrar(sessao: ConexaoSQLiteProtegida) -> None:
 def _autorizar(acao, _arg1, _arg2, _banco, _origem):
     # ATTACH e VACUUM podem abrir outro banco fora do namespace da concessão.
     return sqlite3.SQLITE_DENY if acao == sqlite3.SQLITE_ATTACH else sqlite3.SQLITE_OK
+
+
+@dataclass(frozen=True, slots=True)
+class ResultadoSQLite:
+    linhas: list[tuple]
+    lastrowid: int | None
 
 
 class ConexaoSQLiteProtegida:
@@ -63,7 +70,8 @@ class ConexaoSQLiteProtegida:
         if threading.current_thread() is not self.__thread:
             raise RuntimeError("conexao_protegida_thread_incorreta")
 
-    def __verificar_disponivel(self) -> None:
+    def verificar_disponivel(self) -> None:
+        """Valida o dono e o estado, inclusive para consumidores de resultados."""
         self.__verificar_dono()
         if self.__ocupada:
             raise RuntimeError("conexao_protegida_operacao_ativa")
@@ -72,7 +80,7 @@ class ConexaoSQLiteProtegida:
 
     @contextmanager
     def __operacao(self):
-        self.__verificar_disponivel()
+        self.verificar_disponivel()
         self.__ocupada = True
         try:
             yield self.__conexao
@@ -88,16 +96,31 @@ class ConexaoSQLiteProtegida:
                 raise
             self.__cursor = None
 
+    @contextmanager
+    def __cursor_controlado(self, conexao):
+        self.__cursor = conexao.cursor()
+        try:
+            yield self.__cursor
+        finally:
+            self.__fechar_cursor()
+
     def executar(self, sql: str, parametros=()) -> list[tuple]:
         """Executa uma instrução e encerra o cursor antes de devolver as linhas."""
+        return self.executar_resultado(sql, parametros).linhas
+
+    def executar_resultado(self, sql: str, parametros=()) -> ResultadoSQLite:
+        """Captura o lastrowid da instrução junto às linhas materializadas."""
+        with self.__operacao() as conexao, self.__cursor_controlado(conexao) as cursor:
+            cursor.execute(sql, parametros)
+            return ResultadoSQLite(cursor.fetchall(), cursor.lastrowid)
+
+    def executar_script_inicializacao(self, script: str) -> None:
+        """Executa DDL confiável com o parser nativo, fora de transação ativa."""
         with self.__operacao() as conexao:
-            self.__cursor = conexao.cursor()
-            try:
-                self.__cursor.execute(sql, parametros)
-                linhas = self.__cursor.fetchall()
-            finally:
-                self.__fechar_cursor()
-        return linhas
+            if conexao.in_transaction:
+                raise RuntimeError("sqlite_script_com_transacao_ativa")
+            with self.__cursor_controlado(conexao) as cursor:
+                cursor.executescript(script)
 
     def commit(self) -> None:
         with self.__operacao() as conexao:
@@ -130,7 +153,7 @@ class ConexaoSQLiteProtegida:
             self.__ocupada = False
 
     def __enter__(self) -> ConexaoSQLiteProtegida:
-        self.__verificar_disponivel()
+        self.verificar_disponivel()
         if self.__em_contexto:
             raise RuntimeError("conexao_protegida_contexto_ativo")
         self.__em_contexto = True

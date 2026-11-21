@@ -463,6 +463,35 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
                     chamada(sessao)
             self.verificar_ocupado()
 
+    def test_resultado_materializado_conserva_id_da_instrucao(self):
+        with protegido.abrir_conexao_operacional(banco=self.banco) as sessao:
+            sessao.executar("CREATE TABLE registros (id INTEGER PRIMARY KEY, nome TEXT)")
+            primeiro = sessao.executar_resultado("INSERT INTO registros(nome) VALUES (?)", ("a",))
+            segundo = sessao.executar_resultado("INSERT INTO registros(nome) VALUES (?) RETURNING id",
+                                                 ("b",))
+            sessao.commit()
+            linhas = sessao.executar("SELECT id, nome FROM registros ORDER BY id")
+        self.assertEqual((primeiro.linhas, primeiro.lastrowid), ([], 1))
+        self.assertEqual((segundo.linhas, segundo.lastrowid), ([(2,)], 2))
+        self.assertEqual(linhas, [(1, "a"), (2, "b")])
+
+    def test_script_usa_parser_nativo_sem_confirmar_transacao_pendente(self):
+        with protegido.abrir_conexao_operacional(banco=self.banco) as sessao:
+            sessao.executar_script_inicializacao("""
+                CREATE TABLE registros (nome TEXT);
+                CREATE TRIGGER observar AFTER INSERT ON registros
+                BEGIN UPDATE registros SET nome = 'texto; com ponto e vírgula'; END;
+            """)
+            sessao.executar("INSERT INTO registros VALUES ('a')")
+            with self.assertRaisesRegex(RuntimeError, "sqlite_script_com_transacao_ativa"):
+                sessao.executar_script_inicializacao("CREATE TABLE indevida (id);")
+            sessao.rollback()
+        with closing(sqlite3.connect(self.banco)) as conexao:
+            with closing(conexao.execute("SELECT nome FROM registros")) as cursor:
+                self.assertEqual(cursor.fetchall(), [])
+            with closing(conexao.execute("SELECT name FROM sqlite_schema WHERE name='indevida'")) as cursor:
+                self.assertIsNone(cursor.fetchone())
+
 
 if __name__ == "__main__":
     unittest.main()
