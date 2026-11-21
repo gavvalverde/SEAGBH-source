@@ -13,7 +13,7 @@ jobs:
   evaluate:
     if: >-
       github.repository == 'gavvalverde/SEAGBH-source' &&
-      github.event.head_commit.message == 'test(ai-review): avaliar Kimi semantico somente uma vez' &&
+      github.event.head_commit.message == 'test(ai-review): avaliar Kimi semantico revisado uma vez' &&
       github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -63,13 +63,26 @@ jobs:
           if not key or not token:
               print('{"evaluation":"credentials_unavailable"}')
               sys.exit(1)
-          github = r.GitHub(token)
+          class HistoricalReadOnlyGithub(r.GitHub):
+              def pr(self, number):
+                  item = super().pr(number)
+                  if number == 16:
+                      if (item.get("state") != "closed"
+                              or item.get("head", {}).get("sha") !=
+                                 "6721e83a5c5c2c1844c78f6d47e133962419fd90"):
+                          raise Problem("fixture_changed")
+                      item = dict(item)
+                      item["state"] = "open"  # In-memory fixture only; never GitHub POST
+                      item["draft"] = False
+                  return item
+          github = HistoricalReadOnlyGithub(token)
+          raw_github = r.GitHub(token)
           results = []
           for number, expected_sha, expected_state in CASES:
               record = {"pr": number, "published": False}
               model = None
               try:
-                  pr = github.pr(number)
+                  pr = raw_github.pr(number)
                   if (pr.get("number") != number or pr.get("state") != expected_state
                           or pr.get("head", {}).get("sha") != expected_sha
                           or pr.get("base", {}).get("ref") != "main"
@@ -116,7 +129,7 @@ jobs:
                   model = OpenRouter(key, max_attempts=1, require_reasoning_usage=True)
                   content = model.complete(payload)
                   # This never posts. Check the head is still exactly the same immutable SHA.
-                  current = github.pr(number)
+                  current = raw_github.pr(number)
                   if current.get("head", {}).get("sha") != expected_sha:
                       record["code"] = "head_changed_after_model"
                       print(json.dumps(record, sort_keys=True), flush=True)
