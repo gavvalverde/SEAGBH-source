@@ -382,9 +382,21 @@ inseguros e ordem de aquisição antes do primeiro SQLite.
 **Limite:** `Database`, janelas, workers, backup e migração ainda abrem
 conexões pelos próprios caminhos. Portanto, não existe exclusividade global
 sobre o SQLite operacional; este piloto não habilita restauração, quiescência
-nem autorização para substituir o banco. A migração transversal e fechamento
-correto de conexões reais são a próxima missão, depois de revisar os
-chamadores, thread ownership e rollback/commit.
+nem autorização para substituir o banco. O `sqlite3.Connection.close()`
+pode concluir logicamente mesmo com cursores preparados, BLOB handles ou
+operações de backup ainda vivos: no SQLite, `sqlite3_close_v2()` pode adiar
+a desalocação nativa. Este piloto **não prova** que esses recursos terminaram
+antes de liberar a concessão. A migração transversal e fechamento correto de
+conexões, cursores e recursos reais são a próxima missão, após revisar os
+chamadores, a posse por thread e a política de commit/rollback.
+
+A primeira rodada da CI identificou um auxiliar de teste iniciado por
+`testar_`, que o `unittest` executava como caso isolado. A correção
+renomeou-o para `verificar_ocupado`, adicionou regressão para sessões
+abandonadas em GC e confirmou a matriz: 163 casos por plataforma na barreira,
+mais 103 casos por plataforma no preflight. A primeira revisão Kimi não
+detectou o problema de descoberta. Na repetição, o gate de qualidade
+reteve uma resposta por citação curta, sem publicar um parecer inconclusivo.
 
 ## Proposta 04D2B — integração e recuperação ainda não implementadas
 

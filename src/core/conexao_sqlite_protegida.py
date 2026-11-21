@@ -4,6 +4,11 @@ NÃO altera Database, workers, backup, UI ou política de restauração. Uma
 concessão de uso operacional é adquirida antes de sqlite3.connect e mantida
 até a confirmação do fechamento da conexão. Não autentica nem impede clientes
 SQLite externos que não participam do protocolo.
+
+ATENÇÃO: sqlite3.Connection.close() confirma o fechamento lógico do objeto
+Python, não prova quiescência nativa de cursores/BLOBs/backups pendentes
+(sqlite3_close_v2 pode adiar a desalocação). Antes de integrar em Database,
+é obrigatório fechar esses recursos e testar o ciclo em processos reais.
 """
 
 from __future__ import annotations
