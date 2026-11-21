@@ -65,10 +65,19 @@ _KIMI_OUTPUT_RULES = (
     "corresponding try/except. Do not allege that an early return bypasses a "
     "cleanup finally; to report leaked resources or exception masking, show "
     "a concrete reachable failure of the cleanup itself and its impact.\n"
+    "Example: a try/finally that calls temp_path.unlink still cleans up after "
+    "return from except FileExistsError. Do not invent a resource leak from "
+    "the position of that return. An independent cleanup failure needs its "
+    "own reachable trigger and consequence, not hypothetical permissions.\n"
     "Distinguish intentional failure on an explicitly unsupported platform "
     "or filesystem from a regression affecting supported operations. Do not "
     "report a missing fallback when it contradicts a documented contract and "
     "tests explicitly expect failure, unless a supported requirement is broken.\n"
+    "Example: when a function states that hard links are mandatory and its "
+    "tests explicitly expect OSError on unsupported filesystems with cleanup, "
+    "that is an intended fail-closed contract, not proof that a fallback is "
+    "missing. A nicer exception message is a separate UX request, not a "
+    "demonstrated logic defect; still report any proven broken supported path.\n"
     "A speculative race without a reachable interleaving is not a finding. "
     "Compare every pair of candidate findings and omit duplicate symptoms "
     "of one root cause. Report real independently reproducible bugs even when "
@@ -547,7 +556,9 @@ def _production_remote_schema():
     item["properties"]["body"]["description"] = (
         "State an actual reachable trigger, the failing control flow and real "
         "impact. Check existing cleanup, supported-environment contracts and "
-        "tests for a counterexample; omit speculative or refuted allegations."
+        "tests for a counterexample; omit speculative or refuted allegations. "
+        "A required capability missing from an unsupported environment is not "
+        "a regression without a violated supported contract."
     )
     return schema
 

@@ -326,6 +326,8 @@ class Integration(Offline):
         self.assertIn("a finally block executes after return", after)
         self.assertIn("explicitly unsupported platform", after)
         self.assertIn("tests explicitly expect failure", after)
+        self.assertIn("hard links are mandatory", after)
+        self.assertIn("temp_path.unlink still cleans up", after)
         self.assertIn("demonstrated security or data-integrity defects", after)
         self.assertIn("actual reachable trigger", r._production_remote_schema()
                       ["properties"]["findings"]["items"]["properties"]["body"]["description"])
@@ -346,6 +348,8 @@ class Integration(Offline):
         self.assertNotIn("FULL exact source code line",
             core._schema["properties"]["findings"]["items"]["properties"]["evidence"]["description"])
         self.assertIn("actual reachable trigger",
+            remote["properties"]["findings"]["items"]["properties"]["body"]["description"])
+        self.assertIn("required capability missing",
             remote["properties"]["findings"]["items"]["properties"]["body"]["description"])
         self.assertNotIn("actual reachable trigger",
             core._schema["properties"]["findings"]["items"]["properties"]["body"]["description"])
