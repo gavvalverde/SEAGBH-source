@@ -13,7 +13,7 @@ jobs:
   evaluate:
     if: >-
       github.repository == 'gavvalverde/SEAGBH-source' &&
-      github.event.head_commit.message == 'test(ai-review): comparar Kimi compacto uma vez' &&
+      github.event.head_commit.message == 'test(ai-review): comparar Kimi compacto corrigido uma vez' &&
       github.run_attempt == 1
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -128,7 +128,7 @@ jobs:
                       print(json.dumps(record, sort_keys=True), flush=True)
                       sys.exit(1)
                   payload["messages"][0]["content"] = COMPACT_SYSTEM
-          model = OpenRouter(key, max_attempts=1, require_reasoning_usage=True)
+                  model = OpenRouter(key, max_attempts=1, require_reasoning_usage=True)
                   content = model.complete(payload)
                   # This never posts. Check the head is still exactly the same immutable SHA.
                   current = raw_github.pr(number)
