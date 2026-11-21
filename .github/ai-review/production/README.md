@@ -55,14 +55,15 @@ These rules are NOT exemptions for real concurrency, security, schema,
 transaction, or CI bugs. The prompt is shared between the benchmark and
 production; no ground truth is included in API requests.
 
-The production runner now gates each accepted finding against the literal
-NEW-file line at the exact reported path and line. Missing/short/unverifiable
-quotes cause **quality_manual_review_required**, a non-zero status without
-posting anything; it does not relabel a suspected bug as "clean". It applies
-regardless of reported confidence or severity and does not infer truth from
-the quote. The GitHub Action prints only a fixed code and the number of
-unanchored findings, never provider text or source paths. This is a
-conservative release gate and may hold valid bugs for manual examination.
+The production runner checks each accepted finding at its reported NEW-file
+path and line. A short line can be cited in a block of two or three consecutive
+literal lines, including the anchor, from the supplied diff at the pinned SHA.
+The whole block must match and contain at least 12 non-whitespace characters.
+Unverifiable quotes cause **quality_manual_review_required** without publication.
+The gate applies regardless of confidence or severity. A matching quote
+establishes a source location and still requires review of the causal claim.
+Diagnostics contain fixed codes and numeric counts without provider text or
+source paths.
 **The production workflow is intentionally advisory.** Monitor false-positive
 and false-negative trade-offs on real PRs. File-level findings and findings
 whose exact affected line is shorter than the minimum quote length can
@@ -121,7 +122,9 @@ from PyPI, with pip configuration isolation. Artifact hashes are not yet locked.
 ## Flow and scope
 
 `event_snapshot` validates policy and identity. Current PR metadata is checked
-before collection, before the paid request and before publication. The compare
+before collection, before and after inference, and before publication. A
+confirmed closed PR returns `skip_closed` with exit code zero and no review
+published. The compare
 endpoint receives immutable base...head SHAs; live PR endpoints are not used to
 obtain patches. Missing patches, mismatched file counts, inconsistent hunk
 counters and unsafe/duplicate paths abort before a paid request.
@@ -137,7 +140,16 @@ diff and 16 KiB context manifest. Whole files exceeding budgets are omitted and
 marked partial; no review proceeds if none fit. Titles/descriptions are bounded
 to 1024/4096 UTF-8 bytes and any shortening also marks the review partial. The
 published heading reflects actual partial scope independently of model claims.
+The runner reports included and omitted file counts, flags omitted tests and
+lists a bounded set of escaped paths in partial review comments.
 Binary/missing patches and metadata-only renames without patches fail safely.
+
+The citation catalog is complete when its eligible rows fit the existing
+limits. Otherwise it uses a labeled sample selected round-robin across supplied
+files. The sample can use at most 768 serialized bytes saved by shortening the
+fixed instructions. The diff and its validation scope remain authoritative
+for all citations. The previous request byte envelope is preserved. Serialized
+bytes are a size comparison and do not measure billed model tokens.
 
 `core.build_payload` delegates to the shared, vetted prompt builder. The
 production runner retains the model and requested reasoning profile from
