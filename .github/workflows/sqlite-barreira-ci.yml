@@ -12,6 +12,17 @@ on:
       - "tests/unit/test_backup_sqlite.py"
       - "docs/restauracao-sqlite-manutencao.md"
       - ".github/workflows/sqlite-barreira-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/core/barreira_sqlite.py"
+      - "src/core/restauracao_sqlite.py"
+      - "src/core/backup_sqlite.py"
+      - "tests/unit/test_barreira_sqlite.py"
+      - "tests/unit/test_restauracao_sqlite.py"
+      - "tests/unit/test_backup_sqlite.py"
+      - "docs/restauracao-sqlite-manutencao.md"
+      - ".github/workflows/sqlite-barreira-ci.yml"
 
 permissions:
   contents: read
