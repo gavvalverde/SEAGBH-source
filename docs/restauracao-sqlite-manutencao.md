@@ -357,6 +357,10 @@ a ferramenta apta a substituir arquivos de banco.
 
 ## Proposta 04D2B — integração e recuperação ainda não implementadas
 
+O [inventário 04D2B3](inventario-conexoes-sqlite.md) detalha os acessos
+operacionais, os limites do piloto de conexão do PR #62 e a sequência de
+integração até a validação de quiescência.
+
 ### Barreira de manutenção e clientes concorrentes
 
 Criar ferramenta separada, com caminhos/backend explícitos, sem importar a
