@@ -1,5 +1,6 @@
 """Qt offscreen, sessões sintéticas e uma sonda SQLite em processo independente."""
 
+from http.client import HTTPResponse
 from io import BytesIO
 import json
 import os
@@ -17,7 +18,7 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 try:
     from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication
+    from PyQt6.QtWidgets import QApplication, QDialog
 except ImportError:
     raise unittest.SkipTest("PyQt6 indisponível: encerramento Qt real não executado.")
 
@@ -297,6 +298,40 @@ class EncerramentoGUI(unittest.TestCase):
             repetir.assert_called_once()
         self.assertEqual(self._sondar_manutencao(), "livre")
 
+    def test_dialogos_modais_aninhados_terminam_antes_do_banco_principal(self):
+        janela = self._janela()
+        externo = QDialog(janela.tab_dashboard)
+        interno = QDialog(externo)
+        ordem = []
+        fechar = janela.db.fechar_para_gui
+
+        def registrar_fechamento():
+            ordem.append(("banco", QApplication.activeModalWidget() is None))
+            fechar()
+            # Libera o teste mesmo se o banco fechar com os diálogos abertos.
+            if interno.isVisible():
+                interno.reject()
+            if externo.isVisible():
+                externo.reject()
+
+        def abrir_interno():
+            QTimer.singleShot(0, janela.close)
+            ordem.append(("interno", interno.exec()))
+
+        limite = QTimer()
+        limite.setSingleShot(True)
+        limite.timeout.connect(interno.reject)
+        limite.timeout.connect(externo.reject)
+        limite.start(5000)
+        with patch.object(janela.db, "fechar_para_gui", side_effect=registrar_fechamento):
+            QTimer.singleShot(0, abrir_interno)
+            ordem.append(("externo", externo.exec()))
+            self._aguardar(lambda: janela.encerramento_confirmado)
+        self.assertTrue(limite.isActive(), "O fechamento dos diálogos excedeu o prazo")
+        limite.stop()
+        self.assertEqual(ordem, [("interno", QDialog.DialogCode.Rejected),
+                                 ("externo", QDialog.DialogCode.Rejected), ("banco", True)])
+
     def test_backup_protegido_recusa_antes_de_consultar_caminho_operacional(self):
         janela = self._janela(real=True)
         with patch.object(main_window, "FazerBackupDialog") as dialogo, \
@@ -361,6 +396,21 @@ class EncerramentoGUI(unittest.TestCase):
         self.assertTrue(cancelado.is_set())
         self.assertTrue(resposta.closed)
         self.assertFalse(caminho.exists())
+
+    def test_download_truncado_sem_hash_recusa_corpo_e_remove_arquivo(self):
+        caminho = self.raiz / "download-sintetico.exe"
+
+        class SocketSintetico:
+            def makefile(self, *_):
+                return BytesIO(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc")
+
+        resposta = HTTPResponse(SocketSintetico())
+        resposta.begin()
+        with patch.object(atualizacao, "urlopen", return_value=resposta):
+            sucesso = atualizacao.baixar_atualizacao("https://example.invalid/update", str(caminho))
+        self.assertFalse(sucesso)
+        self.assertFalse(caminho.exists())
+        self.assertTrue(resposta.closed)
 
     def test_atualizacao_aguarda_worker_e_sessao_principal_antes_de_aplicar(self):
         iniciou, liberar, bloquear = self._bloqueio()

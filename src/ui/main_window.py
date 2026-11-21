@@ -752,9 +752,6 @@ class MainWindow(QMainWindow):
             self._dl_thread.cancelar()
         if self._backup_dialog is not None:
             self._backup_dialog.preparar_saida()
-        modal = QApplication.activeModalWidget()
-        if isinstance(modal, QDialog) and self.isAncestorOf(modal) and modal is not self._backup_dialog:
-            modal.reject()
         self.statusBar().showMessage("Encerrando… aguardando operações em andamento.")
 
     def _agendar_encerramento(self):
@@ -764,8 +761,18 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _continuar_encerramento(self):
         if (not self._encerrando or self.encerramento_confirmado
-                or self._fechamento_principal_pendente
-                or self._atrasos_thread is not None or self._dl_thread is not None
+                or self._fechamento_principal_pendente):
+            return
+
+        # A árvore QObject inclui os diálogos filhos mesmo em janelas próprias.
+        modal = QApplication.activeModalWidget()
+        if (isinstance(modal, QDialog) and modal is not self._backup_dialog
+                and modal in self.findChildren(QDialog)):
+            modal.reject()
+            self._agendar_encerramento()
+            return
+
+        if (self._atrasos_thread is not None or self._dl_thread is not None
                 or self._backup_dialog is not None
                 or (self.tab_dashboard is not None and self.tab_dashboard.consultando)):
             return

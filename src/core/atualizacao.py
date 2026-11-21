@@ -110,6 +110,9 @@ def baixar_atualizacao(url: str, destino: str,
                     if progresso_cb:
                         progresso_cb(recebido, total)
 
+        if total > 0 and recebido != total:
+            return False
+
         # ── Validação de integridade ────────────────────────────────────────
         if sha256_esperado and sha256_hash:
             hash_calculado = sha256_hash.hexdigest().lower()
