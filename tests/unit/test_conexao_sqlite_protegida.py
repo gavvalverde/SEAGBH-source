@@ -3,6 +3,8 @@
 from contextlib import closing
 from pathlib import Path
 import sqlite3
+import gc
+import weakref
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -21,7 +23,7 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
     def manutencao(self):
         return adquirir_manutencao(backend="sqlite", banco=self.banco, prazo=0)
 
-    def testar_ocupado(self):
+    def verificar_ocupado(self):
         with self.assertRaises(ErroBarreira) as erro:
             self.manutencao()
         self.assertEqual(erro.exception.codigo, "ocupado")
@@ -33,7 +35,7 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
         def verificar_ordenacao(caminho, **kwargs):
             chamados.append(Path(caminho))
             self.assertTrue(caminho.is_absolute())
-            self.testar_ocupado()
+            self.verificar_ocupado()
             return original(caminho, **kwargs)
 
         with patch.object(protegido.sqlite3, "connect", side_effect=verificar_ordenacao):
@@ -42,7 +44,7 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
                 conn.execute("CREATE TABLE registros (id INTEGER PRIMARY KEY)")
                 conn.execute("INSERT INTO registros VALUES (7)")
                 conn.commit()
-                self.testar_ocupado()
+                self.verificar_ocupado()
         self.assertEqual(chamados, [self.banco])
         with self.manutencao():
             with closing(original(self.banco)) as conn:
@@ -54,9 +56,9 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
         segunda = protegido.abrir_conexao_operacional(banco=self.banco)
         self.addCleanup(segunda.fechar)
         self.assertIsNot(primeira.conexao, segunda.conexao)
-        self.testar_ocupado()
+        self.verificar_ocupado()
         primeira.fechar()
-        self.testar_ocupado()
+        self.verificar_ocupado()
         segunda.fechar()
         with self.manutencao():
             pass
@@ -126,10 +128,26 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError):
             sessao.fechar()
         self.assertIn(sessao, protegido._FALHAS_FECHAMENTO)
-        self.testar_ocupado()
+        self.verificar_ocupado()
         falso.falhar = False
         sessao.fechar()
         self.assertNotIn(sessao, protegido._FALHAS_FECHAMENTO)
+        with self.manutencao():
+            pass
+
+    def test_gc_nao_libera_concessao_de_sessao_abandonada(self):
+        sessao = protegido.abrir_conexao_operacional(banco=self.banco)
+        ref = weakref.ref(sessao)
+        self.addCleanup(lambda: ref() and ref().fechar())
+        conexao = sessao.conexao
+        del sessao
+        gc.collect()
+        self.assertIsNotNone(ref())
+        self.assertIn(ref(), protegido._SESSOES_ABERTAS)
+        self.assertEqual(conexao.execute("SELECT 1").fetchone(), (1,))
+        self.verificar_ocupado()
+        ref().fechar()
+        self.assertNotIn(ref(), protegido._SESSOES_ABERTAS)
         with self.manutencao():
             pass
 

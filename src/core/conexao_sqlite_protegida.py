@@ -17,8 +17,9 @@ from .barreira_sqlite import Concessao, adquirir_uso_operacional
 __all__ = ["ConexaoSQLiteProtegida", "abrir_conexao_operacional"]
 
 _EMISSAO = object()
-_FALHAS_FECHAMENTO_MUTEX = threading.Lock()
+_REGISTRO_MUTEX = threading.Lock()
 _FALHAS_FECHAMENTO: set[ConexaoSQLiteProtegida] = set()
+_SESSOES_ABERTAS: set[ConexaoSQLiteProtegida] = set()
 
 
 class ConexaoSQLiteProtegida:
@@ -26,8 +27,10 @@ class ConexaoSQLiteProtegida:
 
     A transação pertence ao chamador. O contexto não executa commit implícito:
     fechar uma transação pendente deixa o sqlite3 aplicar rollback. Em caso de
-    falha de close, reter uma referência forte evita liberar o lock por GC;
-    o chamador deve tentar fechar novamente ou encerrar o processo.
+    A sessão fica referenciada até close confirmado, inclusive quando o
+    chamador abandona o objeto ou close falha. Isso evita liberar a concessão
+    por GC enquanto uma conexão ainda puder existir. A recuperação exige
+    fechar explicitamente ou encerrar o processo; não há auto-reparo.
     """
 
     def __init__(self, conexao: sqlite3.Connection, concessao: Concessao,
@@ -54,7 +57,7 @@ class ConexaoSQLiteProtegida:
                 except BaseException:
                     # Se o objeto sumir após uma falha, __del__ da concessão
                     # poderia liberar o lock sem confirmação do close SQLite.
-                    with _FALHAS_FECHAMENTO_MUTEX:
+                    with _REGISTRO_MUTEX:
                         _FALHAS_FECHAMENTO.add(self)
                     raise
                 self._conexao = None
@@ -64,8 +67,9 @@ class ConexaoSQLiteProtegida:
                 self._concessao.fechar()
                 self._concessao = None
 
-            with _FALHAS_FECHAMENTO_MUTEX:
+            with _REGISTRO_MUTEX:
                 _FALHAS_FECHAMENTO.discard(self)
+                _SESSOES_ABERTAS.discard(self)
 
     def __enter__(self) -> sqlite3.Connection:
         return self.conexao
@@ -89,4 +93,9 @@ def abrir_conexao_operacional(*, banco: str | Path,
     except BaseException:
         concessao.fechar()
         raise
-    return ConexaoSQLiteProtegida(conexao, concessao, _emissao=_EMISSAO)
+    sessao = ConexaoSQLiteProtegida(conexao, concessao, _emissao=_EMISSAO)
+    # Uma referência forte evita que GC libere a concessão caso o chamador
+    # descarte a sessão sem fechar o SQLite que continua em uso.
+    with _REGISTRO_MUTEX:
+        _SESSOES_ABERTAS.add(sessao)
+    return sessao

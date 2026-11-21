@@ -366,16 +366,18 @@ futuros consumidores explicitamente migrados. Primeiro adquire uma concessão
 A sessão retorna uma conexão SQLite real ao entrar no contexto. O chamador
 controla `commit` e `rollback`; sair do contexto **fecha** a conexão,
 sem `commit` implícito. A concessão só é liberada depois de `close`
-confirmado. Em falha de abertura, a concessão é encerrada. Em falha de close,
-a sessão é retida em memória, sem liberar deliberadamente o lock, até
-tentativa explícita de fechamento ou término do processo. Isso é fail-closed,
+confirmado. Em falha de abertura, a concessão é encerrada. Todas as
+sessões abertas permanecem referenciadas até `fechar()` confirmar o close:
+abandonar uma sessão ou falhar no close não pode liberar a concessão por GC
+enquanto uma conexão ainda existir. A recuperação exige fechamento explícito
+ou término do processo. Isso é fail-closed e pode reter recursos,
 não um mecanismo de recuperação automática; não usar em produção sem integrar
 tratamento e observabilidade de falhas.
 
 A CI executa testes sintéticos em Ubuntu 24.04 e Windows Server 2022 (Python
 3.12), incluindo contenção com manutenção, duas conexões cooperativas,
-rollback em exceções, falhas de abertura/fechamento, caminhos inseguros e
-ordem de aquisição antes do primeiro SQLite.
+rollback em exceções, falhas de abertura/fechamento, abandono/GC, caminhos
+inseguros e ordem de aquisição antes do primeiro SQLite.
 
 **Limite:** `Database`, janelas, workers, backup e migração ainda abrem
 conexões pelos próprios caminhos. Portanto, não existe exclusividade global
