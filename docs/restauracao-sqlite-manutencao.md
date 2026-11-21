@@ -355,6 +355,65 @@ Concluir a integração e seus testes exige missão própria. Esta etapa não al
 o resultado de exclusividade do preflight, não habilita restauração e não torna
 a ferramenta apta a substituir arquivos de banco.
 
+### 04D2B2 / 04D2B4 — sessão SQLite protegida, piloto isolado
+
+O módulo `src/core/conexao_sqlite_protegida.py` oferece
+`abrir_conexao_operacional(banco=..., prazo=...)`. A fábrica constrói e registra
+o dono antes de adquirir a concessão compartilhada. Abre SQLite com o caminho
+canônico da concessão, timeout de 30 s, transações legadas explícitas na
+configuração do driver e cache de statements desativado. Preserva a afinidade
+de thread padrão do driver. A sessão recusa chamadas em um PID diferente e
+a fábrica não executa PRAGMA ou DDL de inicialização.
+
+O contexto devolve a própria sessão. `executar(sql, parametros=())` executa
+uma instrução e devolve uma lista de tuplas, com o cursor fechado antes da
+entrega. A sessão oferece `commit()`, `rollback()` e `fechar()`. O
+fechamento não faz commit implícito. A sessão não pode ser copiada, serializada
+ou usada de outra thread. Operações reentrantes e contextos aninhados são
+recusados. A interface não fornece a conexão ou o cursor nativo, iteradores
+do driver, BLOB incremental, Backup API ou registro de callbacks externos.
+O authorizer recusa `ATTACH` e a abertura interna usada por `VACUUM` e
+`VACUUM INTO`. O escopo é SQL de aplicação confiável, com resultados que
+caibam em memória. Essa interface não é um sandbox para SQL ou código Python.
+
+A sessão fica referenciada até fechar cursor, conexão e concessão, nessa
+ordem. Uma exceção na abertura passa pelo mesmo cleanup. Erros de fechamento
+conservam o recurso incerto, invalidam novas operações e deixam a sessão
+registrada. Se a sessão foi entregue e a thread dona continua disponível,
+ela pode tentar `fechar()` novamente. Uma abertura que falhe também no
+cleanup pode reter a concessão sem entregar a sessão. Abandono e término da
+thread dona exigem tratamento no ciclo de vida da aplicação. O piloto não
+fornece auto-reparo nem sincronização de finalizadores no shutdown do
+interpretador. Use encerramento explícito e processos novos por spawn/exec,
+sem transportar sessões ou forks com sessões abertas.
+
+O sucesso de `sqlite3_close_v2()` pode representar fechamento lógico com
+recursos pendentes. Nos testes, um cursor nativo parcialmente consumido
+mantém um checkpoint WAL ocupado mesmo após `Connection.close()`. O teste
+do adaptador injeta falha antes de fechar um cursor real e verifica, em
+processo independente, que o checkpoint segue ocupado e a concessão impede
+manutenção. Após fechar o cursor e antes de liberar a concessão, o checkpoint
+volta a funcionar. Os demais testes cobrem falhas injetadas na construção,
+no registro, na abertura, na preparação/entrega e no fechamento. Sondas
+independentes e eventos verificam contenção, afinidade de thread e liberação.
+A matriz offline usa Python 3.12 em Ubuntu e Windows com dados sintéticos.
+[Documentação do SQLite sobre fechamento](https://www.sqlite.org/c3ref/close.html).
+
+**Limite de integração.** A conclusão é restrita aos recursos acessíveis
+pela interface do piloto. Database, workers, backup, preflight e migração
+continuam com ciclos próprios. A integração futura deve provar que todos os
+donos fecham suas sessões antes de concluir o encerramento e que o conjunto
+de operações necessário cabe na interface sem devolver handles nativos. A
+barreira não exclui clientes externos. A restauração segue bloqueada.
+
+A primeira rodada da CI identificou um auxiliar de teste iniciado por
+`testar_`, que o `unittest` executava como caso isolado. A correção
+renomeou-o para `verificar_ocupado`, adicionou regressão para sessões
+abandonadas em GC e confirmou a matriz: 163 casos por plataforma na barreira,
+mais 103 casos por plataforma no preflight. A primeira revisão Kimi não
+detectou o problema de descoberta. Na repetição, o gate de qualidade
+reteve uma resposta por citação curta, sem publicar um parecer inconclusivo.
+
 ## Proposta 04D2B — integração e recuperação ainda não implementadas
 
 O [inventário 04D2B3](inventario-conexoes-sqlite.md) detalha os acessos
