@@ -7,6 +7,7 @@ import os
 import sys
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 
 try:
     import psycopg  # type: ignore
@@ -91,15 +92,84 @@ class _CompatCursor:
         return getattr(self._cursor, name)
 
 
+class _AcessoSQLiteProtegido:
+    """Adapta apenas os resultados e as operações usadas por Database."""
+
+    def __init__(self, sessao):
+        self._sessao = sessao
+        self._linhas = iter(())
+        self._lastrowid = None
+        self._recuperacao_falhou = False
+
+    def _operar(self, acao, *args):
+        self._sessao.verificar_disponivel()
+        self._linhas = iter(())
+        self._lastrowid = None
+        try:
+            return acao(*args)
+        except BaseException:
+            self._reverter_ou_fechar()
+            raise
+
+    def execute(self, query, params=None):
+        resultado = self._operar(self._sessao.executar_resultado, query,
+                                 () if params is None else params)
+        self._linhas = iter(resultado.linhas)
+        self._lastrowid = resultado.lastrowid
+
+    def executescript(self, script):
+        self._operar(self._sessao.executar_script_inicializacao, script)
+
+    @property
+    def lastrowid(self):
+        self._sessao.verificar_disponivel()
+        return self._lastrowid
+
+    def fetchone(self):
+        self._sessao.verificar_disponivel()
+        return next(self._linhas, None)
+
+    def fetchall(self):
+        self._sessao.verificar_disponivel()
+        return list(self._linhas)
+
+    def commit(self):
+        self._operar(self._sessao.commit)
+
+    def recuperar(self):
+        if not self._recuperacao_falhou:
+            self._sessao.verificar_disponivel()
+            self._reverter_ou_fechar()
+
+    def _reverter_ou_fechar(self):
+        """Reverte uma operação falha ou encerra a sessão se a reversão falhar."""
+        try:
+            self._sessao.rollback()
+        except BaseException:
+            self._recuperacao_falhou = True
+            self.close()
+            raise
+
+    def close(self):
+        self._sessao.fechar()
+
+
 class Database:
     """Wrapper de dados com suporte a SQLite e PostgreSQL."""
 
-    def __init__(self):
+    def __init__(self, *, banco_sqlite_protegido: str | Path | None = None):
         """Inicializa conexão com banco de dados.
+
+        Um caminho explícito seleciona o SQLite protegido para homologação.
         
         Raises:
             Exception: Se não conseguir conectar ao banco de dados
         """
+        self._sqlite_protegido = banco_sqlite_protegido is not None
+        if self._sqlite_protegido:
+            self._inicializar_sqlite_protegido(banco_sqlite_protegido)
+            return
+
         import logging
         logger = logging.getLogger(__name__)
 
@@ -151,6 +221,26 @@ class Database:
             self._atualizar_estrutura()
         except Exception as e:
             logger.error(f"Falha ao inicializar banco de dados: {e}")
+            raise
+
+    def _inicializar_sqlite_protegido(self, banco: str | Path) -> None:
+        from .conexao_sqlite_protegida import abrir_conexao_operacional
+
+        sessao = abrir_conexao_operacional(banco=banco)
+        try:
+            self.backend = "sqlite"
+            self.conn = self.cursor = _AcessoSQLiteProtegido(sessao)
+            self.cursor.execute("PRAGMA foreign_keys = ON")
+            self.cursor.execute("PRAGMA foreign_keys")
+            if self.cursor.fetchone() != (1,):
+                raise RuntimeError("sqlite_protegido_foreign_keys_indisponivel")
+            self.cursor.execute("PRAGMA journal_mode = WAL")
+            if self.cursor.fetchone() != ("wal",):
+                raise RuntimeError("sqlite_protegido_wal_indisponivel")
+            self._criar_tabelas()
+            self._atualizar_estrutura()
+        except BaseException:
+            sessao.fechar()
             raise
 
     # ── DDL ───────────────────────────────────────────────────────────────
@@ -271,6 +361,9 @@ class Database:
 
     def _atualizar_estrutura(self):
         """Adiciona colunas novas se não existirem (migração)."""
+        if self._sqlite_protegido:
+            # Serializa a inspeção e as alterações entre inicializações.
+            self.cursor.execute("BEGIN IMMEDIATE")
         for col, ddl in [
             ("local_evento", "ALTER TABLE eventos ADD COLUMN local_evento TEXT NOT NULL DEFAULT 'Não especificado'"),
             ("notas",        "ALTER TABLE eventos ADD COLUMN notas TEXT DEFAULT ''"),
@@ -280,7 +373,8 @@ class Database:
             try:
                 self.cursor.execute(ddl)
             except Exception:
-                pass
+                if self._sqlite_protegido:
+                    raise
         self.conn.commit()
 
     # ── Eventos ───────────────────────────────────────────────────────────
@@ -330,8 +424,8 @@ class Database:
                 )
             self.conn.commit()
             return evento_id
-        except Exception:
-            self.conn.rollback()
+        except BaseException as erro:
+            self._reverter_operacao_composta(erro)
             raise
 
     def obter_evento(self, evento_id) -> dict | None:
@@ -525,8 +619,8 @@ class Database:
             self.cursor.execute("DELETE FROM manutencao WHERE equipamento_id=?", (equip_id,))
             self.cursor.execute("DELETE FROM equipamentos WHERE id=?", (equip_id,))
             self.conn.commit()
-        except Exception:
-            self.conn.rollback()
+        except BaseException as erro:
+            self._reverter_operacao_composta(erro)
             raise
 
     def obter_equipamento(self, equip_id) -> tuple | None:
@@ -827,7 +921,16 @@ class Database:
 
     # ── Ciclo de vida ─────────────────────────────────────────────────────
 
+    def _reverter_operacao_composta(self, erro: BaseException) -> None:
+        if self._sqlite_protegido:
+            self.conn.recuperar()
+        elif isinstance(erro, Exception):
+            self.conn.rollback()
+
     def fechar(self):
+        if self._sqlite_protegido:
+            self.conn.close()  # SQLite reverte a transação pendente no fechamento.
+            return
         try:
             self.conn.commit()
             self.conn.close()
