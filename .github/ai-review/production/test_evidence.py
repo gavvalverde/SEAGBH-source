@@ -66,6 +66,32 @@ class CodeAnchorTests(unittest.TestCase):
         self.assertEqual(literal_anchor_status({**base, "line": 3}, src), "short_line")
         self.assertEqual(literal_anchor_status({**base, "line": None}, src), "invalid_reference")
 
+    def test_short_line_can_be_verified_with_a_literal_adjacent_block(self):
+        source = {"x.py": {10: "    if resource_is_owned():", 11: "        return",
+                           12: "    finish_resource_cleanup()"}}
+        for first, last in ((10, 11), (11, 12), (10, 12)):
+            with self.subTest(first=first, last=last):
+                quote = "\n".join(source["x.py"][number] for number in range(first, last + 1))
+                item = {"path": "x.py", "line": 11, "evidence": quote}
+                self.assertEqual(literal_anchor_status(item, source), "anchored")
+                self.assertTrue(has_literal_code_anchor({**item, "evidence": quote.replace("\n", "\r\n")}, source))
+
+    def test_invented_or_unverified_multiline_evidence_is_not_anchored(self):
+        source = {"x.py": {1: "    if resource_is_owned():", 2: "        return",
+                           4: "    finish_resource_cleanup()", 5: "    finish_transaction()"},
+                  "other.py": {3: "    invented_from_other_file()"}}
+        for line, quote in (
+            (2, "    if resource_is_owned():\n        break"),
+            (2, "if resource_is_owned():\n        return"),
+            (2, "        return\n    finish_resource_cleanup()"),
+            (2, "        return\n    invented_from_other_file()"),
+            (2, "    finish_resource_cleanup()\n    finish_transaction()"),
+            (1, "    if resource_is_owned():\n        return\n    fabricate_cleanup()"),
+        ):
+            with self.subTest(line=line, quote=quote):
+                item = {"path": "x.py", "line": line, "evidence": quote}
+                self.assertEqual(literal_anchor_status(item, source), "quote_mismatch")
+
     def test_no_input_is_executed_or_interpreted(self):
         source = {"src/x.py": {2: "$(rm -rf /); <script>alert(1)</script>"}}
         finding = {"path": "src/x.py", "line": 2,

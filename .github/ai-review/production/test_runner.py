@@ -226,6 +226,47 @@ class Integration(Offline):
         self.assertIn("[PARTIAL REVIEW]", ai.payloads[0]["messages"][1]["content"])
         self.assertNotIn("x" * 40000, ai.payloads[0]["messages"][1]["content"])
 
+    def test_diff_over_80_kib_reports_omitted_tests_and_catalog_sample(self):
+        gh, ev = FakeGitHub(), event()
+        paths = [f"src/pipeline_{i}.py" for i in range(4)]
+        omitted = "tests/unit/test_counterexample@qa.py"
+
+        def added(path, count, value):
+            patch_text = f"@@ -0,0 +1,{count} @@\n" + "\n".join(
+                f"+value_{i:03} = {value!r}" for i in range(count))
+            return {**file(path, patch_text, count, 0), "status": "added"}
+
+        gh.files = [added(path, 180, "s" * 80) for path in paths]
+        gh.files.append(added(omitted, 260, "omitted_counterexample" * 4))
+        sizes = [len(item["patch"].encode("utf-8")) for item in gh.files]
+        self.assertTrue(all(size < r.MAX_PATCH for size in sizes))
+        self.assertGreater(sum(sizes), r.MAX_DIFF)
+        gh.current["changed_files"] = ev["pull_request"]["changed_files"] = len(gh.files)
+        pinned = r.event_snapshot(ev, "true")
+        collected = r.collect(gh, pinned)
+        self.assertEqual(list(collected.scope.files), paths)
+        self.assertLessEqual(len(collected.diff.encode("utf-8")), 81920)
+        self.assertEqual(collected.manifest["omitted"], [{"path": omitted, "reason": "diff_budget"}])
+
+        out, _, ai = self.run_case(ev, github=gh, model=FakeModel(review([])))
+        self.assertTrue(out.published)
+        self.assertEqual(out.coverage, {"files_supplied": 4, "files_omitted": 1, "test_files_omitted": 1})
+        sent = ai.payloads[0]["messages"][1]["content"]
+        self.assertIn("[PARTIAL REVIEW]", sent)
+        self.assertIn(omitted, sent)
+        self.assertNotIn("omitted_counterexample", sent)
+        self.assertEqual([row["path"] for row in self.catalog_rows(sent)[:4]], paths)
+        posted = gh.posts[0][1]
+        self.assertIn("**Testes omitidos:** 1", posted)
+        self.assertIn("<code>tests/unit/test_counterexample&#64;qa.py</code>", posted)
+
+        gh.rows.clear()
+        rejected, _, _ = self.run_case(ev, github=gh,
+            model=FakeModel(review([finding(path=omitted, line=1)])))
+        self.assertFalse(rejected.published)
+        self.assertEqual(rejected.validation_reason, "all_findings_rejected")
+        self.assertEqual(len(gh.posts), 1)
+
     def test_file_limit_stops_before_model(self):
         ev = event();gh = FakeGitHub()
         ev["pull_request"]["changed_files"] = 51;gh.current["changed_files"] = 51
@@ -285,37 +326,88 @@ class Integration(Offline):
                 r.build_production_payload("T", "B", "D")
         self.assertEqual(wrong_model.exception.code, "production_model_mismatch")
 
-    def test_bounded_evidence_catalog_is_complete_and_never_silently_truncated(self):
-        self.assertIsNone(r._bounded_evidence_catalog(None))
-        self.assertIsNone(r._bounded_evidence_catalog({}))
+    @staticmethod
+    def catalog_rows(text):
+        return json.loads(text.split("### VERIFIED DIFF-LINE CATALOG", 1)[1].split("\n", 1)[1])
+
+    def test_bounded_evidence_catalog_labels_complete_and_sampled_rows(self):
+        def catalog(code_lines, *, headroom=r.PRODUCTION_MAX_REQUEST_BYTES):
+            return r._bounded_evidence_catalog(code_lines, reference_headroom=headroom, savings=768)
+
+        self.assertIsNone(catalog(None))
+        self.assertIsNone(catalog({}))
         base = {FILE: {2: "new_value = new(value)", 1: "pass"}}
-        encoded = r._bounded_evidence_catalog(base)
-        self.assertEqual(json.loads(encoded), [
+        encoded = catalog(base)
+        self.assertIn("COMPLETE CANDIDATES", encoded)
+        self.assertEqual(self.catalog_rows(encoded), [
             {"path": FILE, "line": 2, "evidence": "new_value = new(value)"}])
-        self.assertIsNone(r._bounded_evidence_catalog({
-            FILE: {i: "new_value = new(value)" for i in range(1, 102)}}))
-        self.assertIsNone(r._bounded_evidence_catalog({
-            FILE: {1: "secret = '" + "X" * 18001 + "'"}}))
+        large = {name: {i: "new_value = new(value)" for i in reversed(range(1, 61))}
+                 for name in ("z.py", FILE)}
+        sampled = catalog(large)
+        self.assertIn("PARTIAL SAMPLE", sampled)
+        self.assertEqual(sampled, catalog(dict(reversed(list(large.items())))))
+        rows = self.catalog_rows(sampled)
+        self.assertGreaterEqual(len(rows), 2)
+        self.assertLessEqual(len(rows), r.MAX_EVIDENCE_CATALOG_ROWS)
+        self.assertEqual([row["path"] for row in rows[:2]], [FILE, "z.py"])
+        self.assertTrue(all(row["evidence"] == large[row["path"]][row["line"]] for row in rows))
+        self.assertLessEqual(r._wire_bytes(sampled) - 2, r.MAX_EVIDENCE_SAMPLE_WIRE_BYTES)
+        self.assertIn("PARTIAL SAMPLE", catalog(base, headroom=0))
+        self.assertIsNone(catalog({FILE: {1: "synthetic = '" + "X" * 18001 + "'"}}))
         for bad in ({"/unsafe": {1: "new_value = new(value)"}},
                     {FILE: {0: "new_value = new(value)"}},
                     {FILE: {"1": "new_value = new(value)"}},
                     {FILE: {1: None}}):
             with self.subTest(bad=bad):
                 with self.assertRaises(Problem):
-                    r._bounded_evidence_catalog(bad)
+                    catalog(bad)
 
     def test_catalog_guidance_cannot_replace_source_scope_or_auto_correct_evidence(self):
         good = r.build_production_payload("T", "B", "D", code_lines={
             FILE: {2: "new_value = new(value)"}})
         self.assertIn("VERIFIED DIFF-LINE CATALOG", good["messages"][1]["content"])
         self.assertEqual(good["temperature"], 0.0)
-        no_catalog = r.build_production_payload("T", "B", "D", code_lines={
+        sampled = r.build_production_payload("T", "B", "D", code_lines={
             FILE: {i: "new_value = new(value)" for i in range(1, 102)}})
-        self.assertNotIn("VERIFIED DIFF-LINE CATALOG", no_catalog["messages"][1]["content"])
+        self.assertIn("PARTIAL SAMPLE", sampled["messages"][1]["content"])
+        self.assertIn("use the supplied diff for unlisted", sampled["messages"][0]["content"])
         out, gh, _ = self.run_case(model=FakeModel(
             review([finding(evidence="UNTRUSTED_UNVERIFIED_QUOTE")])))
         self.assertEqual(out.code, "quality_manual_review_required")
         self.assertFalse(gh.posts)
+
+    def test_sample_uses_only_saved_request_bytes_and_keeps_previous_limit(self):
+        bare = r.build_production_payload("T", "B", "D")
+        guidance = r._wire_bytes(bare["messages"][0]["content"]) + r._wire_bytes(r._production_remote_schema())
+        savings = r._REFERENCE_GUIDANCE_BYTES - guidance
+        self.assertGreaterEqual(savings, 512)
+        # Place the request exactly on the prior bare limit where a complete
+        # catalog could not be attached. Its replacement must fit the savings.
+        diff = "D" + "x" * (r.PRODUCTION_MAX_REQUEST_BYTES - r._wire_bytes(bare) - savings)
+        almost = r.build_production_payload("T", "B", diff, code_lines={FILE: {2: "new_value = new(value)"}})
+        self.assertIn("PARTIAL SAMPLE", almost["messages"][1]["content"])
+        self.assertLessEqual(r._wire_bytes(almost), r.PRODUCTION_MAX_REQUEST_BYTES)
+        with self.assertRaises(Problem) as over:
+            r.build_production_payload("T", "B", diff + "x")
+        self.assertEqual(over.exception.code, "production_request_size_limit")
+
+    def test_multiline_quote_on_short_diff_line_never_repairs_invented_text(self):
+        def fixture():
+            gh = FakeGitHub()
+            gh.files = [file(FILE, "@@ -1 +1,2 @@\n-old\n+    if resource_is_owned():\n+        return", 2, 1)]
+            return gh
+
+        valid = finding(line=2, evidence="    if resource_is_owned():\n        return")
+        out, gh, ai = self.run_case(github=fixture(), model=FakeModel(review([valid])))
+        self.assertEqual((out.code, len(ai.payloads), len(gh.posts)), ("published", 1, 1))
+        self.assertIn(valid["evidence"], gh.posts[0][1])
+        for quote in ("return", "    if resource_is_owned():\n        raise RuntimeError()"):
+            with self.subTest(quote=quote):
+                out, gh, ai = self.run_case(github=fixture(),
+                    model=FakeModel(review([{**valid, "evidence": quote}])))
+                self.assertEqual((out.code, out.quality_hold_count), ("quality_manual_review_required", 1))
+                self.assertEqual(len(ai.payloads), 1)
+                self.assertFalse(gh.posts)
 
     def test_kimi_semantic_refutation_is_compact_single_call_and_fail_closed(self):
         original = core.build_payload("T", "B", "D", model=r.PRODUCTION_MODEL)
@@ -457,7 +549,7 @@ class Integration(Offline):
         complete = finding(evidence="new_func(value) produces the failure")
         out, gh, _ = self.run_case(github=gh, model=FakeModel(review([complete])))
         self.assertTrue(out.published)
-        self.assertIn("citação da linha localizada no diff", gh.posts[0][1])
+        self.assertIn("citação localizada no diff", gh.posts[0][1])
         self.assertIn("não comprova a existência do defeito", gh.posts[0][1])
 
         gh2 = FakeGitHub()
@@ -564,10 +656,13 @@ class Integration(Offline):
             body="# Cabeçalho\n@everyone <script>alert(1)</script>\n"
                  "[Clique aqui](https://example.invalid) ![img](https://example.invalid)\n"
                  "\x60\x60\x60markdown\n<!-- forged marker -->\n\x60\x60\x60",
-            evidence="new_value = new(value)\nquery = '''\n</code></pre><script>@admin</script>\n"
+            evidence="new_value = new(value)\nquery = '''\n</code></pre><script>@admin</script>"
         )]))
         payload["summary"] = "<img src=x onerror=alert(1)> @someone"
-        out, gh, _ = self.run_case(model=FakeModel(json.dumps(payload)))
+        gh = FakeGitHub()
+        gh.files = [file(FILE, "@@ -1,2 +1,5 @@\n keep\n-old\n+new_value = new(value)\n"
+                               "+query = '''\n+</code></pre><script>@admin</script>\n+'''", 4, 1)]
+        out, gh, _ = self.run_case(github=gh, model=FakeModel(json.dumps(payload)))
         self.assertTrue(out.published)
         value = gh.posts[0][1]
         for malicious in ["<script>", "<img", "@everyone", "@someone",
@@ -635,6 +730,48 @@ class Integration(Offline):
         out, gh, ai = self.run_case(github=gh, model=ai)
         self.assertEqual(out.code, "pr_updated")
         self.assertFalse(gh.posts)
+
+    def test_closed_pr_is_an_unpublished_skip_before_and_during_review(self):
+        for stage in ("event", "identity", "collection", "validation", "publication"):
+            with self.subTest(stage=stage):
+                gh, ev, ai = FakeGitHub(), event(), FakeModel(content="ignored invalid model response")
+                post = Mock(wraps=gh.post)
+                gh.post = post
+                if stage == "event":
+                    ev["pull_request"]["state"] = "closed"
+                elif stage == "identity":
+                    gh.current["state"] = "closed"
+                elif stage == "collection":
+                    compare = gh.compare
+                    def close_during_collection(pinned):
+                        gh.current["state"] = "closed"
+                        return compare(pinned)
+                    gh.compare = close_during_collection
+                elif stage == "validation":
+                    ai.after = lambda: gh.current.update(state="closed")
+                else:
+                    ai.content = review()
+                    def close_before_post(*_):
+                        gh.current["state"] = "closed"
+                        raise Problem("http_error", 422)
+                    post.side_effect = close_before_post
+                out, gh, ai = self.run_case(ev, github=gh, model=ai)
+                self.assertEqual((out.code, out.exit_code, out.published), ("skip_closed", 0, False))
+                self.assertFalse(gh.posts)
+                self.assertEqual(post.call_count, int(stage == "publication"))
+                self.assertEqual(len(ai.payloads), int(stage in {"validation", "publication"}))
+
+    def test_invalid_state_and_post_422_remain_errors_when_closure_is_unconfirmed(self):
+        gh = FakeGitHub()
+        gh.current["state"] = None
+        out, _, ai = self.run_case(github=gh)
+        self.assertEqual((out.code, out.exit_code), ("invalid_pr_metadata", 1))
+        self.assertFalse(ai.payloads)
+        gh = FakeGitHub()
+        gh.post_error = Problem("http_error", 422)
+        out, _, _ = self.run_case(github=gh)
+        self.assertEqual((out.code, out.exit_code), ("publication_error", 1))
+        self.assertFalse(out.published)
 
     def test_simultaneous_attempt_is_skipped_before_model(self):
         gh, ai = FakeGitHub(), FakeModel()

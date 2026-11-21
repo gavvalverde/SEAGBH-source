@@ -48,6 +48,15 @@ def literal_anchor_status(finding: dict, code_lines: dict) -> str:
     source = code_lines.get(path)
     if not isinstance(source, dict) or not isinstance(source.get(number), str):
         return "source_unavailable"
+    block = quote.replace("\r\n", "\n").split("\n")
+    if len(block) > 1:
+        if not source[number].strip() or sum(not char.isspace() for char in quote) < _MIN_QUOTE_CHARS:
+            return "short_line"
+        if len(block) <= 3:
+            for first in range(max(1, number - len(block) + 1), number + 1):
+                if all(source.get(first + index) == line for index, line in enumerate(block)):
+                    return "anchored"
+        return "quote_mismatch"
     normalized = " ".join(source[number].split())
     if len(normalized) < _MIN_QUOTE_CHARS:
         return "short_line"
