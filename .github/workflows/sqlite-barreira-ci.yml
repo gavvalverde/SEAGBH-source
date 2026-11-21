@@ -1,0 +1,78 @@
+name: SQLite Maintenance Barrier Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/core/barreira_sqlite.py"
+      - "src/core/restauracao_sqlite.py"
+      - "src/core/backup_sqlite.py"
+      - "tests/unit/test_barreira_sqlite.py"
+      - "tests/unit/test_restauracao_sqlite.py"
+      - "tests/unit/test_backup_sqlite.py"
+      - "docs/restauracao-sqlite-manutencao.md"
+      - ".github/workflows/sqlite-barreira-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  barrier:
+    name: SQLite barrier (${{ matrix.os }}, Python 3.12)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+      - name: Run isolated offline barrier, preflight and backup regressions
+        timeout-minutes: 5
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import venv
+
+          assert sys.version_info[:2] == (3, 12), sys.version
+          environment = Path(os.environ["RUNNER_TEMP"]) / "sqlite-barreira-venv"
+          venv.EnvBuilder(with_pip=False).create(environment)
+          interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+          temporary = environment / "test-tmp"
+          temporary.mkdir(mode=0o700)
+          variables = dict(os.environ, TMPDIR=str(temporary), TEMP=str(temporary), TMP=str(temporary))
+          diagnostics = (
+              "import importlib.util, platform, sqlite3, sys; "
+              "assert sys.version_info[:2] == (3, 12), sys.version; "
+              "assert sys.prefix != sys.base_prefix, 'Virtual environment required'; "
+              "assert importlib.util.find_spec('pip') is None, 'Environment must not include pip'; "
+              "print('Python:', sys.version); "
+              "print('SQLite:', sqlite3.sqlite_version); "
+              "print('Platform:', platform.platform()); "
+              "print('Venv: isolated, without pip or additional dependencies')"
+          )
+          subprocess.run([str(interpreter), "-B", "-c", diagnostics],
+                         env=variables, check=True, timeout=30)
+          modules = ["tests.unit.test_barreira_sqlite", "tests.unit.test_restauracao_sqlite",
+                     "tests.unit.test_backup_sqlite"]
+          print("Tests:", ", ".join(modules), flush=True)
+          subprocess.run([str(interpreter), "-B", "-W", "error::ResourceWarning",
+                          "-m", "unittest", "-v", *modules],
+                         env=variables, check=True, timeout=180)
