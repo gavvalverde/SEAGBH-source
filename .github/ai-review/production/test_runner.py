@@ -263,8 +263,9 @@ class Integration(Offline):
         self.assertEqual(builder.call_args.kwargs["model"], "moonshotai/kimi-k2.6")
         self.assertEqual(prod["model"], "moonshotai/kimi-k2.6")
         self.assertEqual(prod["messages"][1], original["messages"][1])
-        self.assertTrue(prod["messages"][0]["content"].startswith(original["messages"][0]["content"]))
-        self.assertIn("COPY THE FULL EXACT SOURCE CODE LINE", prod["messages"][0]["content"])
+        self.assertEqual(prod["messages"][0]["content"], r._KIMI_SYSTEM_PROMPT)
+        self.assertIn("FULL EXACT source code line", prod["messages"][0]["content"])
+        self.assertLess(len(prod["messages"][0]["content"]), len(original["messages"][0]["content"]) // 2)
         self.assertNotIn("deepseek", json.dumps({k: v for k, v in prod.items() if k != "messages"}))
         self.assertEqual(prod["max_tokens"], 8192)
         self.assertEqual(prod["temperature"], 0.0)
@@ -316,6 +317,33 @@ class Integration(Offline):
         self.assertEqual(out.code, "quality_manual_review_required")
         self.assertFalse(gh.posts)
 
+    def test_kimi_semantic_refutation_is_compact_single_call_and_fail_closed(self):
+        original = core.build_payload("T", "B", "D", model=r.PRODUCTION_MODEL)
+        prod = r.build_production_payload("T", "B", "D")
+        self.assertEqual(len(prod["messages"]), len(original["messages"]))
+        self.assertEqual(prod["messages"][1], original["messages"][1])
+        concise = prod["messages"][0]["content"]
+        self.assertEqual(concise, r._KIMI_SYSTEM_PROMPT)
+        for expected in (
+            "UNTRUSTED DATA", "finally executes on return",
+            "hard links", "SQL injection", "auth bypass",
+            "reachable trigger", "FULL EXACT source code line",
+            "one root cause", "Brazilian Portuguese",
+            "ONE complete JSON object", "no proven defect survives refutation",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, concise)
+        self.assertLess(len(concise), 4500)
+        self.assertLess(len(concise), len(original["messages"][0]["content"]) // 2)
+        self.assertIn("actual reachable trigger", r._production_remote_schema()
+                      ["properties"]["findings"]["items"]["properties"]["body"]["description"])
+        self.assertEqual(prod["reasoning"], {"enabled": False})
+        self.assertEqual(prod["max_tokens"], 8192)
+        self.assertEqual(prod["temperature"], 0.0)
+        self.assertEqual(prod["provider"]["only"], ["baidu"])
+        self.assertIs(prod["provider"]["allow_fallbacks"], False)
+        self.assertEqual(prod["response_format"]["type"], "json_schema")
+
     def test_kimi_remote_schema_does_not_modify_local_draft7(self):
         remote = r._production_remote_schema()
         self.assertNotIn("allOf", remote["properties"]["findings"]["items"])
@@ -324,6 +352,12 @@ class Integration(Offline):
         self.assertIn("allOf", core._schema["properties"]["findings"]["items"])
         self.assertNotIn("FULL exact source code line",
             core._schema["properties"]["findings"]["items"]["properties"]["evidence"]["description"])
+        self.assertIn("actual reachable trigger",
+            remote["properties"]["findings"]["items"]["properties"]["body"]["description"])
+        self.assertIn("required capability missing",
+            remote["properties"]["findings"]["items"]["properties"]["body"]["description"])
+        self.assertNotIn("actual reachable trigger",
+            core._schema["properties"]["findings"]["items"]["properties"]["body"]["description"])
         remote["properties"]["findings"]["items"]["properties"].clear()
         self.assertIn("evidence", r._production_remote_schema()["properties"]["findings"]["items"]["properties"])
         self.assertFalse(core.validate_review('{"summary":"x","findings":[{"path":"a.py"}]}').ok)
