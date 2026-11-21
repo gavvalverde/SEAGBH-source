@@ -3,11 +3,14 @@ Camada de acesso a dados — isola TODO o SQL do resto da aplicação.
 Reutiliza o mesmo seaghb.db da versão Tkinter.
 """
 
+import logging
 import os
 import sys
 import sqlite3
 from datetime import datetime
 from pathlib import Path
+
+from .conexao_sqlite_protegida import FechamentoPendente
 
 try:
     import psycopg  # type: ignore
@@ -166,6 +169,7 @@ class Database:
             Exception: Se não conseguir conectar ao banco de dados
         """
         self._sqlite_protegido = banco_sqlite_protegido is not None
+        self._fechamento_gui_iniciado = False
         if self._sqlite_protegido:
             self._inicializar_sqlite_protegido(banco_sqlite_protegido)
             return
@@ -219,8 +223,12 @@ class Database:
 
             self._criar_tabelas()
             self._atualizar_estrutura()
-        except Exception as e:
-            logger.error(f"Falha ao inicializar banco de dados: {e}")
+        except BaseException:
+            try:
+                self.fechar_para_gui(confirmar=False)
+            except BaseException as erro_fechamento:
+                raise FechamentoPendente(self.fechar_para_gui) from erro_fechamento
+            logger.error("Falha ao inicializar banco de dados")
             raise
 
     def _inicializar_sqlite_protegido(self, banco: str | Path) -> None:
@@ -240,7 +248,10 @@ class Database:
             self._criar_tabelas()
             self._atualizar_estrutura()
         except BaseException:
-            sessao.fechar()
+            try:
+                sessao.fechar()
+            except BaseException as erro_fechamento:
+                raise FechamentoPendente(sessao.fechar) from erro_fechamento
             raise
 
     # ── DDL ───────────────────────────────────────────────────────────────
@@ -936,3 +947,23 @@ class Database:
             self.conn.close()
         except Exception:
             pass
+
+    def fechar_para_gui(self, *, confirmar=True):
+        """Confirma a limpeza na thread dona e permite repetir um close falho."""
+        if self._sqlite_protegido:
+            self.fechar()
+            return
+        primeira_tentativa = not self._fechamento_gui_iniciado
+        self._fechamento_gui_iniciado = True
+        if confirmar and primeira_tentativa and self.conn is not None:
+            try:
+                self.conn.commit()
+            except Exception:
+                # O driver reverte dados pendentes no close. Não repetir commit.
+                logging.getLogger(__name__).error("Falha no commit final da GUI; encerrando conexão")
+        if self.cursor is not None:
+            self.cursor.close()
+            self.cursor = None
+        if self.conn is not None:
+            self.conn.close()
+            self.conn = None

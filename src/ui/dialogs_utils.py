@@ -186,13 +186,17 @@ class _BackupThread(QThread):
 class FazerBackupDialog(QDialog):
     """Backup seguro em background, sem usar a conexão da janela principal."""
 
-    def __init__(self, db: Database, parent=None):
+    backup_finalizado = pyqtSignal()
+
+    def __init__(self, db: Database, parent=None, *, quit_coordenado=False):
         super().__init__(parent)
         self._backend = db.backend
         self._worker: _BackupThread | None = None
         self._cancelamento_solicitado = False
         self._fechar_pendente = False
         self._sair_pendente = False
+        self._quit_coordenado = quit_coordenado
+        self._saida_da_janela = False
         self.setWindowTitle("💾 Fazer Backup")
         self.resize(540, 290)
         self.setModal(True)
@@ -240,7 +244,7 @@ class FazerBackupDialog(QDialog):
         return self._worker is not None
 
     def _fazer_backup(self):
-        if self.em_andamento:
+        if self.em_andamento or self._saida_da_janela:
             return
         if self._backend != "sqlite":
             QMessageBox.warning(self, "Backup indisponível",
@@ -263,7 +267,8 @@ class FazerBackupDialog(QDialog):
         worker.progresso.connect(self._atualizar_progresso, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(self._backup_finalizado, Qt.ConnectionType.QueuedConnection)
         # quit() pode ser solicitado por timers da aplicação durante o diálogo modal.
-        QApplication.instance().installEventFilter(self)
+        if not self._quit_coordenado:
+            QApplication.instance().installEventFilter(self)
         try:
             worker.start()
         except RuntimeError as exc:
@@ -301,6 +306,13 @@ class FazerBackupDialog(QDialog):
         self._fechar_pendente = True
         self._cancelar_backup()
 
+    def preparar_saida(self):
+        self._saida_da_janela = True
+        if self.em_andamento:
+            self.solicitar_fechamento()
+        else:
+            self.reject()
+
     def eventFilter(self, objeto, evento):
         if evento.type() == QEvent.Type.Quit and self.em_andamento:
             self._sair_pendente = True
@@ -332,10 +344,18 @@ class FazerBackupDialog(QDialog):
         worker = self._worker
         if worker is None:
             return
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._backup_finalizado)
+            return
         resultado, erro = worker.resultado, worker.erro
         self._worker = None
         worker.deleteLater()
-        QApplication.instance().removeEventFilter(self)
+        if not self._quit_coordenado:
+            QApplication.instance().removeEventFilter(self)
+        if self._saida_da_janela:
+            self.reject()
+            self.backup_finalizado.emit()
+            return
         self.btn_criar.setEnabled(True)
         self.btn_cancelar.setEnabled(False)
         self.progresso.setRange(0, 100)
@@ -362,6 +382,7 @@ class FazerBackupDialog(QDialog):
             self.reject()
         if self._sair_pendente:
             QTimer.singleShot(0, QApplication.quit)
+        self.backup_finalizado.emit()
 
     @staticmethod
     def _mensagens_avisos(avisos):

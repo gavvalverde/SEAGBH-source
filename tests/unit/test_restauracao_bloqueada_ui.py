@@ -133,6 +133,7 @@ class RestauracaoBloqueadaUI(unittest.TestCase):
         tipo = type("JanelaSintetica", (QMainWindow,), {n: namespace[n] for n in nomes})
         janela = tipo()
         janela.db = BancoSemAcesso(backend)
+        janela._sqlite_protegido = False
         for nome in ("_alternar_tema", "_abrir_auditoria", "_fazer_backup",
                      "_verificar_permissoes", "_verificar_atualizacao", "_checar_atrasos"):
             setattr(janela, nome, Mock())

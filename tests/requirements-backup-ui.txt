@@ -1,12 +1,15 @@
-# Exclusive to the Ubuntu 24.04 x86_64 / CPython 3.12 Qt regression job.
+# Ubuntu 24.04 and Windows Server 2022 x86_64 / CPython 3.12.
 # Keep the same Qt packages as the locally validated development environment.
 # SHA-256 values are for the corresponding binary wheels published on PyPI.
-# PyQt6: cp39-abi3-manylinux_2_34_x86_64 (also supports CPython 3.12).
+# PyQt6: cp39-abi3-manylinux_2_34_x86_64 and cp39-abi3-win_amd64.
 PyQt6==6.10.2 \
-    --hash=sha256:78e1b3d5763e4cbc84485aef600e0aba5e1932fd263b716f92cd1a40dfa5e924
-# PyQt6-Qt6: py3-none-manylinux_2_34_x86_64.
+    --hash=sha256:78e1b3d5763e4cbc84485aef600e0aba5e1932fd263b716f92cd1a40dfa5e924 \
+    --hash=sha256:bd328cb70bc382c48861cd5f0a11b2b8ae6f5692d5a2d6679ba52785dced327b
+# PyQt6-Qt6: py3-none-manylinux_2_34_x86_64 and py3-none-win_amd64.
 PyQt6-Qt6==6.10.2 \
-    --hash=sha256:19c10b5f0806e9f9bac2c9759bd5d7d19a78967f330fd60a2db409177fa76e49
-# PyQt6-sip: cp312-cp312-manylinux1_x86_64.manylinux_2_5_x86_64.
+    --hash=sha256:19c10b5f0806e9f9bac2c9759bd5d7d19a78967f330fd60a2db409177fa76e49 \
+    --hash=sha256:c4b7f7d66cc58bddf1bc1ca28dfcf7a45f58cfcb11d81d13a0510409dd4957ac
+# PyQt6-sip: cp312-cp312-manylinux1_x86_64.manylinux_2_5_x86_64 and cp312-cp312-win_amd64.
 PyQt6-sip==13.11.1 \
-    --hash=sha256:0df15849946cea969d3ff2b24b76149262b6044aea2c5403e4f70c24c973a4c8
+    --hash=sha256:0df15849946cea969d3ff2b24b76149262b6044aea2c5403e4f70c24c973a4c8 \
+    --hash=sha256:1d1c67179c1924b28e3d7f04585639e7a7c0946f62390efc6ccf2a6206e595d3

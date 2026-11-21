@@ -5,14 +5,22 @@ on:
     branches: [main]
     paths:
       - "src/ui/__init__.py"
+      - "src/main_qt.py"
+      - "src/ui/consulta_database_thread.py"
       - "src/ui/dialogs_utils.py"
       - "src/ui/main_window.py"
+      - "src/ui/tab_dashboard.py"
       - "src/core/__init__.py"
+      - "src/core/atualizacao.py"
+      - "src/core/barreira_sqlite.py"
+      - "src/core/conexao_sqlite_protegida.py"
       - "src/core/database.py"
       - "src/core/backup_sqlite.py"
       - "tests/__init__.py"
       - "tests/unit/__init__.py"
       - "tests/unit/test_backup_ui.py"
+      - "tests/unit/test_database_sqlite_protegido.py"
+      - "tests/unit/test_encerramento_gui.py"
       - "tests/unit/test_restauracao_bloqueada_ui.py"
       - "tests/unit/test_backup_sqlite.py"
       - "tests/requirements-backup-ui.txt"
@@ -23,15 +31,22 @@ permissions:
 
 jobs:
   backup-ui:
-    runs-on: ubuntu-24.04
+    name: ${{ matrix.nome }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            nome: backup-ui
+          - os: windows-2022
+            nome: backup-ui (Windows)
     timeout-minutes: 10
     env:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONNOUSERSITE: "1"
+      PYTHONUTF8: "1"
       QT_QPA_PLATFORM: offscreen
-    defaults:
-      run:
-        shell: bash
     steps:
       - name: Checkout without persisted credentials
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -45,6 +60,8 @@ jobs:
           python-version: "3.12"
           check-latest: false
       - name: Install native Qt runtime libraries
+        if: runner.os == 'Linux'
+        shell: bash
         run: |
           set -euo pipefail
           # Shared OpenGL/EGL libraries used by the binary Qt GUI modules.
@@ -52,22 +69,45 @@ jobs:
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends libegl1 libopengl0
       - name: Install isolated Qt test dependencies with hashes
+        shell: python
         run: |
-          set -euo pipefail
-          export TMPDIR="$RUNNER_TEMP"
-          python -B -m venv "$RUNNER_TEMP/backup-ui-ci-venv"
-          PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
-          "$PY" -B -m pip --isolated --disable-pip-version-check --no-input install --only-binary=:all: --require-hashes --index-url https://pypi.org/simple -r tests/requirements-backup-ui.txt
-          "$PY" -B -m pip --isolated --disable-pip-version-check check
-      - name: Verify Python 3.12 and initialize real offscreen Qt
-        run: |
-          set -euo pipefail
-          export TMPDIR="$RUNNER_TEMP"
-          export XDG_RUNTIME_DIR="$RUNNER_TEMP/backup-ui-runtime"
-          mkdir -m 700 -p "$XDG_RUNTIME_DIR"
-          PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
-          timeout --kill-after=10s 30s "$PY" -B -W error::ResourceWarning - <<'PYTHON'
           import os
+          from pathlib import Path
+          import subprocess
+          import sys
+          import venv
+
+          assert sys.version_info[:2] == (3, 12), sys.version
+          raiz = Path(os.environ["RUNNER_TEMP"])
+          os.environ.update(TMPDIR=str(raiz), TEMP=str(raiz), TMP=str(raiz))
+          ambiente = raiz / "backup-ui-ci-venv"
+          venv.EnvBuilder(with_pip=True).create(ambiente)
+          python = ambiente / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+          pip = [str(python), "-B", "-m", "pip", "--isolated", "--disable-pip-version-check"]
+          subprocess.run([*pip, "--no-input", "install", "--only-binary=:all:",
+                          "--require-hashes", "--index-url", "https://pypi.org/simple",
+                          "-r", "tests/requirements-backup-ui.txt"], check=True, timeout=240)
+          subprocess.run([*pip, "check"], check=True, timeout=30)
+      - name: Verify Python 3.12 and run Qt offscreen and SQLite regressions
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+
+          raiz = Path(os.environ["RUNNER_TEMP"])
+          ambiente = raiz / "backup-ui-ci-venv"
+          python = ambiente / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+          temporario = raiz / "backup-ui-tmp"
+          temporario.mkdir(mode=0o700)
+          env = dict(os.environ, TMPDIR=str(temporario), TEMP=str(temporario), TMP=str(temporario))
+          if os.name != "nt":
+              runtime = raiz / "backup-ui-runtime"
+              runtime.mkdir(mode=0o700)
+              env["XDG_RUNTIME_DIR"] = str(runtime)
+          diagnostico = """
+          import os
+          import platform
           import sqlite3
           import sys
           from importlib.metadata import version
@@ -78,6 +118,7 @@ jobs:
           assert sys.version_info[:2] == (3, 12), sys.version
           assert sys.prefix != sys.base_prefix, "Isolated virtual environment required"
           assert os.environ["QT_QPA_PLATFORM"] == "offscreen"
+          print("Platform:", platform.platform())
           print("Python:", sys.version)
           print("SQLite:", sqlite3.sqlite_version)
           for package in ("PyQt6", "PyQt6-Qt6", "PyQt6-sip"):
@@ -86,12 +127,13 @@ jobs:
           app = QApplication([])
           assert app.platformName() == "offscreen", app.platformName()
           print("Qt platform:", app.platformName())
-          PYTHON
-      - name: Run real Qt integration and SQLite service regressions
-        run: |
-          set -euo pipefail
-          export TMPDIR="$RUNNER_TEMP"
-          export XDG_RUNTIME_DIR="$RUNNER_TEMP/backup-ui-runtime"
-          PY="$RUNNER_TEMP/backup-ui-ci-venv/bin/python"
-          timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_ui tests.unit.test_restauracao_bloqueada_ui
-          timeout --kill-after=10s 90s "$PY" -B -W error::ResourceWarning -m unittest -v tests.unit.test_backup_sqlite
+          """
+          comando = [str(python), "-B", "-W", "error::ResourceWarning"]
+          subprocess.run([*comando, "-c", diagnostico], check=True, timeout=30, env=env)
+          for modulos in (
+              ["tests.unit.test_backup_ui", "tests.unit.test_restauracao_bloqueada_ui"],
+              ["tests.unit.test_encerramento_gui"],
+              ["tests.unit.test_backup_sqlite"],
+          ):
+              subprocess.run([*comando, "-m", "unittest", "-v", *modulos],
+                             check=True, timeout=120, env=env)

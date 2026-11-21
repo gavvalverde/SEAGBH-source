@@ -5,6 +5,7 @@ Ponto de entrada da versão PyQt6 do SEAGBH.
 import sys
 import os
 import signal
+import logging
 
 # Garante que o diretório src/ esteja no path para imports relativos
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,14 +52,52 @@ def main():
     alerta_revogacao = payload.get("_alerta_revogacao") if payload else None
 
     # ── App principal ─────────────────────────────────────────────────
-    window_ref = {"window": None}
+    window = None
+    recuperacao = None
+
+    def mostrar_falha_inicio(erro):
+        from core.conexao_sqlite_protegida import FechamentoPendente
+        from PyQt6.QtWidgets import QDialog, QLabel, QMessageBox, QPushButton, QVBoxLayout
+
+        nonlocal recuperacao
+        logging.getLogger(__name__).error("Falha ao abrir a janela principal")
+        if not isinstance(erro, FechamentoPendente):
+            QMessageBox.critical(None, "Inicialização", "Não foi possível iniciar o SEAGBH.")
+            app.quit()
+            return
+        dialogo = QDialog()
+        dialogo.setWindowTitle("Fechamento de banco pendente")
+        layout = QVBoxLayout(dialogo)
+        layout.addWidget(QLabel("O banco precisa ser fechado antes de sair."))
+        tentar = QPushButton("Tentar fechar novamente")
+        layout.addWidget(tentar)
+        recuperacao = dialogo
+
+        def recuperar():
+            nonlocal recuperacao
+            try:
+                erro.fechar()
+            except BaseException:
+                logging.getLogger(__name__).error("Fechamento após falha de inicialização pendente")
+                return
+            recuperacao = None
+            dialogo.close()
+            dialogo.deleteLater()
+            app.quit()
+
+        tentar.clicked.connect(recuperar)
+        dialogo.show()
 
     def on_splash_done():
-        window = MainWindow(
-            alerta_vencimento=alerta,
-            alerta_revogacao=alerta_revogacao,
-        )
-        window_ref["window"] = window
+        nonlocal window
+        try:
+            window = MainWindow(
+                alerta_vencimento=alerta,
+                alerta_revogacao=alerta_revogacao,
+            )
+        except BaseException as erro:
+            mostrar_falha_inicio(erro)
+            return
         window.showMaximized()
 
         # Se iniciado após atualização, exibe mensagem e executa rotina pós-update
@@ -69,12 +108,23 @@ def main():
 
     splash = SplashScreen(on_finished=on_splash_done, duration_ms=3600)
 
-    try:
-        exit_code = app.exec()
-    except KeyboardInterrupt:
-        import logging
-        logging.getLogger(__name__).warning("Aplicacao interrompida por KeyboardInterrupt")
-        exit_code = 0
+    exit_code = None
+    while True:
+        try:
+            resultado = app.exec()
+        except KeyboardInterrupt:
+            logging.getLogger(__name__).warning("Aplicacao interrompida por KeyboardInterrupt")
+            resultado = 0
+        if exit_code is None:
+            exit_code = resultado
+        if recuperacao is not None:
+            recuperacao.show()
+        elif window is not None and not window.encerramento_confirmado:
+            # exit() pode retornar do loop sem passar pelo evento Quit.
+            # Reentra no loop para que os slots de término ainda sejam atendidos.
+            window.solicitar_saida()
+        else:
+            break
 
     sys.exit(exit_code)
 
