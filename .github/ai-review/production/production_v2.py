@@ -99,10 +99,23 @@ def run_review_v2(event, enabled, github, model, *, version):
             # If the full diff plus candidates exceeds the per-request ceiling,
             # no claim is published and none is silently discarded.
             refute_chunk = refutation_scope
+            # The model may adjudicate an opaque ID, but never serialize a
+            # replacement mechanism. Each ID binds the immutable original
+            # finding and its discovery order, including same-line hypotheses.
+            originals = {
+                contract.candidate_id(finding, index): finding
+                for index, finding in enumerate(candidates)
+            }
+            if len(originals) != len(candidates):
+                raise Problem("v2_candidate_collision")
+            immutable = [
+                {"candidate_id": cid, "finding": original}
+                for cid, original in originals.items()
+            ]
             refute_payload = contract.make_payload(
-                pinned, plan, refute_chunk, candidates=candidates
+                pinned, plan, refute_chunk, candidates=immutable
             )
-            # Also enforce the aggregate budget with the REAL refutation bytes.
+            # Actual refutation bytes must also fit the aggregate cost bound.
             contract.worst_case_usd(payloads + [refute_payload],
                                     reserve_refutation=False)
             runner.ensure_current(github, pinned)
@@ -111,16 +124,15 @@ def run_review_v2(event, enabled, github, model, *, version):
             if usage is not None and usage.get("cost_micro_usd", 0) > contract.MAX_TOTAL_USD * 1_000_000:
                 raise Problem("v2_reported_budget_exceeded")
             stage = "validation"
-            allowed = frozenset(c["anchor_id"] for c in candidates)
-            verdict = contract.validate_reply(content, allowed)
-            contract.require_semantic_completion(verdict)
-            original = {json.dumps(x, sort_keys=True, ensure_ascii=True)
-                        for x in candidates}
-            if any(json.dumps(x, sort_keys=True, ensure_ascii=True) not in original
-                   for x in verdict["findings"]):
-                # Refutation may retain or drop claims, NEVER rewrite causes.
-                raise Problem("v2_refutation_changed_claim")
-            candidates = verdict["findings"]
+            verdict = contract.validate_refutation_reply(
+                content, frozenset(originals)
+            )
+            retained = {item["candidate_id"] for item in verdict["verdicts"]
+                        if item["decision"] == "retain"}
+            # Publish only trusted discovery objects, never model-written
+            # findings from the refutation response.
+            candidates = [finding for cid, finding in originals.items()
+                          if cid in retained]
 
         # A matching anchor is not a semantic verdict. Retain distinct mechanisms
         # at a location; only deduplicate identical root-cause descriptions.

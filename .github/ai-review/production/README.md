@@ -51,7 +51,11 @@ patch bytes, including unchanged context and deletions.
 well as causal trigger, mechanism, impact, refutations considered and original
 `anchor_id` for each candidate. Low overall confidence or any incomplete
 answer is retained, never published as a clean global review. The additional
-adjudication call may retain or drop original claims, not rewrite causes.
+adjudication call now returns a separate typed verdict for every opaque
+`candidate_id` (retain, refute or uncertain), with an independent countercheck.
+Missing, duplicate, forged or uncertain decisions hold the entire review.
+Only original discovery finding objects can be published; refutation never
+rewrites trigger/mechanism/impact or invents a new allegation.
 
 Discovery requests are capped at 90,000 serialized bytes; the full-diff
 refutation is capped at 200,000 bytes, reserving 50,000 bytes for candidates
