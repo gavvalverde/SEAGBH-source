@@ -126,10 +126,38 @@ def split_patch(path, patch, status):
     return result
 
 
+def _added_new_lines(patch):
+    """Return changed (+) lines with absolute NEW coordinates.
+
+    Keep context in the diff for reasoning; only changed lines are citeable.
+    A deletion-only fragment can use an explicitly file-level anchor.
+    """
+    rows = {}
+    pos = None
+    for line in patch.split("\n"):
+        line = line.removesuffix("\r")
+        header = _HUNK.fullmatch(line)
+        if header:
+            pos = int(header[3])
+            continue
+        if pos is None or line == r"\ No newline at end of file":
+            continue
+        if line.startswith("+"):
+            rows[pos] = line[1:]
+            pos += 1
+        elif line.startswith(" "):
+            pos += 1
+        elif line.startswith("-"):
+            continue
+        else:
+            raise Problem("v2_patch_invalid")
+    return rows
+
+
 def _anchors_for(part, chunk_id=0):
-    lines = evidence.new_file_lines(part.patch)
+    lines = _added_new_lines(part.patch)
     if not lines:
-        # Trechos com somente remocoes nao possuem coordenada NEW.
+        # Only deletions: location is file-level, never an invented NEW line.
         lines = {None: ""}
     result = []
     for line, source in sorted(lines.items(), key=lambda pair: -1 if pair[0] is None else pair[0]):
@@ -138,7 +166,6 @@ def _anchors_for(part, chunk_id=0):
         ).encode("utf-8")).hexdigest()
         result.append(("a" + digest[:16], part.path, line, digest, chunk_id))
     return result
-
 
 def build_plan(github, pinned):
     if pinned.changed_files > runner.MAX_FILES:
