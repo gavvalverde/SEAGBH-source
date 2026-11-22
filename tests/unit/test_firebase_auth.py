@@ -602,7 +602,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
         janela = self._janela_autenticada()
         registro = {"cliente": "Cliente Teste", "id": "licenca-ficticia"}
         erro, _ = _erro_http({"error": "Permission denied"}, 403)
-        self.transporte_database.side_effect = [_resposta(None), erro]
+        self.transporte_database.side_effect = erro
         with (
             patch.object(janela, "_linha_selecionada", return_value=registro),
             patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
@@ -612,9 +612,55 @@ class FirebaseAuthQtTests(unittest.TestCase):
         ):
             janela._on_excluir()
         aviso.assert_called_once()
-        self.assertEqual(self.transporte_database.call_count, 2)
+        self.assertEqual(self.transporte_database.call_count, 1)
+        self.assertEqual(self.transporte_database.call_args.args[0].get_method(), "PATCH")
         self.salvar_morto.assert_not_called()
         self.salvar_historico.assert_not_called()
+
+    def test_exclusao_atomica_envia_patch_multilocal_e_so_entao_atualiza_historico(self):
+        janela = self._janela_autenticada()
+        registro = {"cliente": "Cliente Teste", "id": "licenca-ficticia"}
+        self.historico.return_value = [registro]
+        self.salvar_historico.side_effect = None
+        self.salvar_morto.side_effect = None
+        self.transporte_database.side_effect = None
+        self.transporte_database.return_value = _resposta(None)
+        with (
+            patch.object(janela, "_linha_selecionada", return_value=registro),
+            patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
+            patch.object(self.ui, "_carregar_arquivo_morto", return_value=[]),
+            patch.object(janela, "_carregar_tabela"),
+            patch.object(self.ui, "_mostrar_toast"),
+        ):
+            janela._on_excluir()
+
+        self.transporte_database.assert_called_once()
+        req = self.transporte_database.call_args.args[0]
+        self.assertEqual(req.get_method(), "PATCH")
+        self.assertEqual(urlsplit(req.full_url).path, "/.json")
+        self.assertEqual(
+            json.loads(req.data),
+            {"licenses/licenca-ficticia": None, "revoked/licenca-ficticia": None},
+        )
+        self.salvar_morto.assert_called_once_with([registro])
+        self.salvar_historico.assert_called_once_with([])
+
+    def test_exclusao_com_id_inseguro_nao_envia_requisicao(self):
+        janela = self._janela_autenticada()
+        registro = {"cliente": "Cliente Teste", "id": "../updates/latest"}
+        with (
+            patch.object(janela, "_linha_selecionada", return_value=registro),
+            patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
+            patch.object(self.ui.QMessageBox, "critical") as aviso,
+            patch.object(self.ui, "_carregar_arquivo_morto", side_effect=AssertionError),
+            self.assertLogs(self.ui.__name__, "WARNING") as logs,
+        ):
+            janela._on_excluir()
+        aviso.assert_called_once()
+        self.transporte_database.assert_not_called()
+        self.salvar_morto.assert_not_called()
+        self.salvar_historico.assert_not_called()
+        self.assertNotIn("../updates/latest", "\n".join(logs.output))
 
     def test_restauracao_recusada_preserva_registros_locais(self):
         registro = {"cliente": "Cliente Teste", "id": "licenca-ficticia"}

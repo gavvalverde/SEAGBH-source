@@ -7,6 +7,7 @@ Executar:  python tools/gerador_chaves.py
 
 import sys
 import os
+import re
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
@@ -175,6 +176,25 @@ def _firebase_get(path: str) -> tuple[bool, object]:
 
 def _firebase_delete(path: str) -> bool:
     ok, _ = _firebase_request("DELETE", path)
+    return ok
+
+
+def _excluir_licenca_remota_atomicamente(lid: str) -> bool:
+    """Apaga licença e revogação em UM update multilocal do Realtime Database.
+
+    O PATCH em /.json usa caminhos relativos, com null para excluir ambos.
+    Se as regras recusarem qualquer caminho, nenhum dos dois deve ser alterado.
+    O resultado HTTP não comprova o estado remoto quando a resposta se perde.
+    """
+    if not isinstance(lid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", lid):
+        _LOGGER.warning("Realtime Database: exclusão recusada | Código: ID_INVALIDO")
+        return False
+
+    payload = json.dumps({
+        f"licenses/{lid}": None,
+        f"revoked/{lid}": None,
+    }, separators=(",", ":")).encode("utf-8")
+    ok, _ = _firebase_request("PATCH", "", payload)
     return ok
 
 
@@ -946,12 +966,13 @@ class GerenciamentoClientes(QWidget):
 
         lid = reg["id"]
 
-        # ── Sincronizar com Firebase: remover a licença ─────────────────────
-        # Deletar do Firebase tanto a licença quanto sua revogação
-        if not _firebase_delete(f"licenses/{lid}") or not _firebase_delete(f"revoked/{lid}"):
+        # A remocao dos dois caminhos remotos deve ser uma unica escrita atomica.
+        # Em timeout, o estado remoto pode ser incerto; nunca marque sucesso local.
+        if not _excluir_licenca_remota_atomicamente(lid):
             QMessageBox.critical(
                 self, "Erro de sincronização",
-                "A exclusão no Firebase não foi concluída. O registro local foi preservado.",
+                "A exclusão no Firebase não foi confirmada. O registro local foi "
+                "preservado. Confira o estado remoto antes de repetir.",
             )
             return
         # Remover do cache local
