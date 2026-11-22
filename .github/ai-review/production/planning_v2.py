@@ -136,7 +136,7 @@ def _anchors_for(part, chunk_id=0):
         digest = hashlib.sha256(json.dumps(
             [part.path, line, part.patch if line is None else source, chunk_id], ensure_ascii=True
         ).encode("utf-8")).hexdigest()
-        result.append(("a" + digest[:16], part.path, line, digest))
+        result.append(("a" + digest[:16], part.path, line, digest, chunk_id))
     return result
 
 
