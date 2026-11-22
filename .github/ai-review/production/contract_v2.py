@@ -125,8 +125,13 @@ SYSTEM_PROMPT = (
     "Be VERY concise: mechanism MAX 450 characters (schema hard limit 800), "
     "trigger MAX 250 (hard 600), impact MAX 250 (hard 600), "
     "counterevidence MAX 350 (hard 800), suggested_fix MAX 200 (hard 500), "
-    "title MAX 100 (hard 160), summary MAX 400 (hard 800), "
-    "reviewed_scope MAX 400 (hard 900). Use one or two precise sentences "
+    "title MAX 100 (hard 160). Top-level summary must be ONE concise "
+    "sentence, ideally <= 180 characters (local hard max 800). "
+    "Top-level reviewed_scope must be ONE concise sentence about THIS chunk, "
+    "ideally <= 280 characters (local hard max 900). The runner separately "
+    "publishes the deterministic path/hunk/line inventory: DO NOT enumerate "
+    "files or repeat the patch in summary/reviewed_scope. Use one or two "
+    "precise sentences "
     "per causal field. Never repeat the patch or lengthy quotations in prose. "
     "Use only the enumerations from the supplied schema and NO additional keys. "
     "Each finding MUST select an exact supplied anchor_id, never a path/line guess. "
@@ -163,6 +168,16 @@ def remote_schema():
     obj.pop("$schema", None)
     obj.pop("$id", None)
     obj["properties"]["schema_version"] = {"enum": [2]}
+    # PR-wide file lists and inventory belong in the deterministic coverage
+    # report, not in model prose. Provider hints are stricter than local
+    # validation, so invalid provider output is NEVER repaired or clipped.
+    for field, target in (("summary", 240), ("reviewed_scope", 360)):
+        obj["properties"][field]["maxLength"] = target
+        obj["properties"][field]["description"] = (
+            "ONE concise factual pt-BR sentence, <= {} characters. "
+            "Do not list every PR path, duplicate diff snippets or restate "
+            "other chunks. Explain only the provided chunk and its result."
+        ).format(target)
     # Strengthen provider-facing hints without weakening the local constraints.
     finding = obj["properties"]["findings"]["items"]["properties"]
     for field, target in {

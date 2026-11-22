@@ -153,7 +153,13 @@ class V2Offline(unittest.TestCase):
         prompt = payload["messages"][0]["content"]
         self.assertIn("mechanism MAX 450 characters", prompt)
         self.assertIn("counterevidence MAX 350", prompt)
+        self.assertIn("summary must be ONE concise", prompt)
+        self.assertIn("DO NOT enumerate", prompt)
         remote = payload["response_format"]["json_schema"]["schema"]
+        self.assertEqual(remote["properties"]["summary"]["maxLength"], 240)
+        self.assertEqual(remote["properties"]["reviewed_scope"]["maxLength"], 360)
+        self.assertEqual(contract.SCHEMA["properties"]["summary"]["maxLength"], 800)
+        self.assertEqual(contract.SCHEMA["properties"]["reviewed_scope"]["maxLength"], 900)
         field = remote["properties"]["findings"]["items"]["properties"]["mechanism"]
         self.assertEqual(field["maxLength"], 800)
         self.assertIn("UNDER 450 characters", field["description"])
@@ -161,6 +167,14 @@ class V2Offline(unittest.TestCase):
             contract.SCHEMA["properties"]["findings"]["items"]["properties"]["mechanism"]["maxLength"],
             800,
         )
+
+    def test_overlong_summary_remains_blocked_without_truncation(self):
+        doc = dict(CLEAN, summary="Resumo extenso com contexto inventado " * 35)
+        out, gh, ai = self._run([doc], github=FakeGitHub())
+        self.assertEqual(out.code, "v2_schema_maxLength_root_summary")
+        self.assertFalse(out.published)
+        self.assertFalse(gh.posts)
+        self.assertEqual(len(ai.payloads), 1)
 
     def test_schema_failure_codes_never_contain_untrusted_response(self):
         cases = [
