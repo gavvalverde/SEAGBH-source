@@ -131,7 +131,7 @@ def _anchors_for(part, chunk_id=0):
     if not lines:
         # Trechos com somente remocoes nao possuem coordenada NEW.
         lines = {None: ""}
-        result = []
+    result = []
     for line, source in sorted(lines.items(), key=lambda pair: -1 if pair[0] is None else pair[0]):
         digest = hashlib.sha256(json.dumps(
             [part.path, line, part.patch if line is None else source, chunk_id], ensure_ascii=True
