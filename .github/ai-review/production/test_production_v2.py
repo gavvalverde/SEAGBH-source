@@ -29,6 +29,23 @@ def one_finding(anchor):
     }
 
 
+def refutation(findings, decisions=None, **overrides):
+    """A refutation carries IDs/verdicts ONLY, never rewritten causal findings."""
+    decisions = decisions or ["retain"] * len(findings)
+    value = {
+        "schema_version": 2, "analysis_status": "complete",
+        "confidence_overall": "medium",
+        "verdicts": [
+            {"candidate_id": contract.candidate_id(finding, index),
+             "decision": decision,
+             "countercheck": "Guarda e testes do trecho foram confrontados"}
+            for index, (finding, decision) in enumerate(zip(findings, decisions))
+        ],
+    }
+    value.update(overrides)
+    return value
+
+
 class Model:
     def __init__(self, replies):
         self.replies = list(replies)
@@ -79,7 +96,9 @@ class V2Offline(unittest.TestCase):
 
     def test_causal_finding_requires_separate_refutation(self):
         discovery = dict(CLEAN, findings=[one_finding(self.anchor)])
-        out, gh, ai = self._run([discovery, discovery])
+        out, gh, ai = self._run([
+            discovery, refutation(discovery["findings"]),
+        ])
         self.assertEqual(out.code, "published")
         self.assertEqual(len(ai.payloads), 2)
         self.assertIn("candidates_to_refute", ai.payloads[1]["messages"][1]["content"])
@@ -89,7 +108,9 @@ class V2Offline(unittest.TestCase):
 
     def test_refuted_candidates_can_produce_clean_only_after_second_call(self):
         discovery = dict(CLEAN, findings=[one_finding(self.anchor)])
-        out, gh, ai = self._run([discovery, CLEAN])
+        out, gh, ai = self._run([
+            discovery, refutation(discovery["findings"], ["refute"]),
+        ])
         self.assertEqual((out.code, out.published), ("published", True))
         self.assertEqual(len(ai.payloads), 2)
         self.assertIn("Achados (0)", gh.posts[0][1])
@@ -170,20 +191,70 @@ class V2Offline(unittest.TestCase):
         self.assertEqual(len(ai.payloads), 0)
         self.assertEqual(len(gh.posts), 0)
 
-    def test_refutation_cannot_introduce_new_claim(self):
-        original = dict(CLEAN, findings=[one_finding(self.anchor)])
-        for changed_claim in (
-            dict(one_finding(self.anchor), title="Outro defeito sem justificativa"),
-            dict(one_finding(self.anchor), mechanism="Uma outra causa completamente nova"),
-            dict(one_finding(self.anchor), trigger="Uma entrada diferente nao revisada"),
-            dict(one_finding(self.anchor), impact="Um impacto causal totalmente diferente"),
+    def test_refutation_rejects_missing_unknown_duplicate_and_uncertain_ids(self):
+        finding = one_finding(self.anchor)
+        original = dict(CLEAN, findings=[finding])
+        good = refutation([finding])
+        valid_row = good["verdicts"][0]
+        forged = {**valid_row, "candidate_id": "c" + "f" * 16}
+        cases = [
+            (dict(good, verdicts=[]), "v2_refutation_missing_decisions"),
+            (dict(good, verdicts=[forged]), "v2_refutation_unknown_candidate"),
+            (dict(good, verdicts=[valid_row, valid_row]),
+             "v2_refutation_duplicate_candidate"),
+            (dict(good, verdicts=[{**valid_row, "decision": "uncertain"}]),
+             "v2_refutation_uncertain"),
+            (dict(good, verdicts=[{**valid_row, "countercheck": ""}]),
+             "v2_schema_minLength_verdict_countercheck"),
+            (dict(good, findings=[finding]), "v2_schema_additionalProperties_root_field"),
+        ]
+        for response, code in cases:
+            with self.subTest(code=code):
+                out, gh, ai = self._run([original, response], github=FakeGitHub())
+                self.assertEqual(out.code, code)
+                self.assertFalse(gh.posts)
+
+    def test_refutation_schema_never_rewrites_original_mechanism(self):
+        finding = one_finding(self.anchor)
+        original = dict(CLEAN, findings=[finding])
+        out, gh, ai = self._run([original, refutation([finding])])
+        self.assertEqual(out.code, "published")
+        self.assertIn(finding["mechanism"], gh.posts[0][1])
+        response_schema = ai.payloads[1]["response_format"]["json_schema"]
+        self.assertEqual(response_schema["name"], "seagbh_refutation_v2")
+        self.assertIn("verdicts", response_schema["schema"]["properties"])
+        self.assertNotIn("findings", response_schema["schema"]["properties"])
+        self.assertIn(
+            "candidate_id",
+            ai.payloads[1]["messages"][1]["content"],
+        )
+
+    def test_same_anchor_distinct_causes_are_adjudicated_independently(self):
+        a = one_finding(self.anchor)
+        b = dict(a, title="Outra falha distinta na mesma linha",
+                 mechanism="Falha alternativa nao equivalente na mesma chamada")
+        original = dict(CLEAN, findings=[a, b])
+        decision = refutation([a, b], ["refute", "retain"])
+        self.assertNotEqual(decision["verdicts"][0]["candidate_id"],
+                            decision["verdicts"][1]["candidate_id"])
+        out, gh, ai = self._run([original, decision])
+        self.assertEqual(out.code, "published")
+        self.assertNotIn(a["mechanism"], gh.posts[0][1])
+        self.assertIn(b["mechanism"], gh.posts[0][1])
+
+    def test_refutation_low_confidence_and_incomplete_are_held(self):
+        finding = one_finding(self.anchor)
+        first = dict(CLEAN, findings=[finding])
+        for change, expected in (
+            ({"analysis_status": "incomplete"}, "v2_model_declared_incomplete"),
+            ({"confidence_overall": "low"}, "v2_model_low_confidence"),
         ):
-            with self.subTest(changed_claim=changed_claim):
+            with self.subTest(change=change):
                 out, gh, ai = self._run(
-                    [original, dict(CLEAN, findings=[changed_claim])],
+                    [first, refutation([finding], **change)],
                     github=FakeGitHub(),
                 )
-                self.assertEqual(out.code, "v2_refutation_changed_claim")
+                self.assertEqual(out.code, expected)
                 self.assertFalse(gh.posts)
 
     def test_semantically_incomplete_discovery_never_publishes_clean(self):
@@ -206,7 +277,8 @@ class V2Offline(unittest.TestCase):
     def test_semantically_incomplete_refutation_never_publishes(self):
         original = dict(CLEAN, findings=[one_finding(self.anchor)])
         out, gh, ai = self._run(
-            [original, dict(CLEAN, analysis_status="incomplete", findings=[])])
+            [original, refutation(original["findings"],
+                                  analysis_status="incomplete")])
         self.assertEqual(out.code, "v2_model_declared_incomplete")
         self.assertFalse(gh.posts)
         self.assertEqual(len(ai.payloads), 2)
