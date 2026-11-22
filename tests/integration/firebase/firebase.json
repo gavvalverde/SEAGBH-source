@@ -1,0 +1,12 @@
+{
+  "database": {
+    "rules": "rules.fixture.json"
+  },
+  "emulators": {
+    "auth": { "host": "127.0.0.1", "port": 19199 },
+    "database": { "host": "127.0.0.1", "port": 19200 },
+    "hub": { "host": "127.0.0.1", "port": 19440 },
+    "logging": { "host": "127.0.0.1", "port": 19450 },
+    "ui": { "enabled": false }
+  }
+}
