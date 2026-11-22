@@ -29,7 +29,13 @@ fazer o quality gate parecer verde.
    de confiança geral baixa retém publicação em vez de aparentar revisão limpa.
    A refutação agora usa um JSON Schema separado de veredictos e identificadores
    opacos `candidate_id`: para CADA candidato, responde `retain`, `refute`
-   ou `uncertain` com uma contraprova causal. Não reescreve os campos de um
+   ou `uncertain` com uma contraprova causal. Cada veredicto também classifica
+   `current_state` e descreve `behavior_path` no código PÓS-patch:
+   `retain` só pode corresponder a `reachable_regression`; correções
+   adicionadas, limitações intencionais e bugs preexistentes são `refute`;
+   falta de evidências é `uncertain`. Contradição estruturada impede
+   publicação. Isto NÃO verifica automaticamente a verdade da explicação.
+   Não reescreve os campos de um
    finding original. O campo auxiliar `countercheck` exige texto com ao menos
    12 caracteres, mas não impõe limite artificial de caracteres: permanecem
    o teto de 4096 tokens por resposta e o máximo de 1 MiB no transporte.
