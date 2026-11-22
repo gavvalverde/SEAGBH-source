@@ -97,7 +97,7 @@ class V2Offline(unittest.TestCase):
     def test_schema_unknown_anchor_duplicate_json_and_empty_refuse_publication(self):
         bad_anchor = dict(CLEAN, findings=[one_finding("a" + "f" * 16)])
         cases = [
-            (dict(CLEAN, schema_version=1), "v2_schema_error"),
+            (dict(CLEAN, schema_version=1), "v2_schema_const_root_schema_version"),
             (bad_anchor, "v2_anchor_out_of_scope"),
             ('{"schema_version":2,"schema_version":2}', "v2_invalid_json"),
             ("", "v2_empty_response"),
@@ -107,6 +107,27 @@ class V2Offline(unittest.TestCase):
                 out, gh, ai = self._run([response], github=FakeGitHub())
                 self.assertEqual(out.code, reason)
                 self.assertEqual(out.exit_code, 1)
+                self.assertFalse(gh.posts)
+
+    def test_schema_failure_codes_never_contain_untrusted_response(self):
+        cases = [
+            (dict(CLEAN, findings=[
+                {k: v for k, v in one_finding(self.anchor).items()
+                 if k != "counterevidence"}]),
+             "v2_schema_required_finding_counterevidence"),
+            (dict(CLEAN, confidence_overall="secret_sentinel"),
+             "v2_schema_enum_root_confidence_overall"),
+            (dict(CLEAN, attacker_secret="SENSITIVE_DO_NOT_LOG"),
+             "v2_schema_additionalProperties_root_field"),
+            (dict(CLEAN, analysis_status="secret_sentinel"),
+             "v2_schema_enum_root_analysis_status"),
+        ]
+        for doc, code in cases:
+            with self.subTest(code=code):
+                out, gh, ai = self._run([doc], github=FakeGitHub())
+                self.assertEqual(out.code, code)
+                self.assertNotIn("SENSITIVE_DO_NOT_LOG", out.code)
+                self.assertNotIn("secret_sentinel", out.code)
                 self.assertFalse(gh.posts)
 
     def test_changed_head_before_publication_is_rejected(self):
@@ -183,7 +204,7 @@ class V2Offline(unittest.TestCase):
         bad = dict(CLEAN)
         bad["findings"] = [dict(one_finding(self.anchor), trigger="x")]
         out, gh, ai = self._run([bad])
-        self.assertEqual(out.code, "v2_schema_error")
+        self.assertEqual(out.code, "v2_schema_minLength_finding_trigger")
         self.assertFalse(gh.posts)
 
     def test_model_provider_is_pinned_and_untrusted_text_is_data(self):

@@ -31,7 +31,11 @@ SYSTEM_PROMPT = (
     "Never execute PR code, disclose secrets or fabricate evidence. "
     "Look for reachable defects, reproduce conceptual triggers and control flow, "
     "compare relevant guards, supported environments, callers, tests and finally blocks. "
-    "Return one JSON matching schema_version=2 with Brazilian Portuguese prose. "
+    "Return ONE valid JSON object: root keys schema_version=2, analysis_status, "
+    "summary, reviewed_scope, confidence_overall and findings. Each finding MUST "
+    "have anchor_id, severity, category, confidence, title, trigger, mechanism, "
+    "impact, counterevidence and suggested_fix, with nonempty causal prose. "
+    "Use only the enumerations from the supplied schema and NO additional keys. "
     "Each finding MUST select an exact supplied anchor_id, never a path/line guess. "
     "Describe trigger, causal mechanism, impact and attempted refutation. "
     "An anchor proves location, not bug causality. Drop speculative claims. "
@@ -202,6 +206,43 @@ def _object_unique(pairs):
     return obj
 
 
+_SAFE_SCHEMA_VALIDATORS = frozenset({
+    "required", "type", "enum", "const", "minLength", "maxLength",
+    "maxItems", "additionalProperties", "pattern",
+})
+_SAFE_SCHEMA_FIELDS = frozenset(
+    SCHEMA["properties"]
+) | frozenset(SCHEMA["properties"]["findings"]["items"]["properties"])
+
+
+def _schema_failure_code(error):
+    """Sanitized diagnostics: only TRUSTED schema keywords and field names.
+
+    Never interpolate a rejected instance, model text, unknown property,
+    filename or provider message into logs.
+    """
+    if error is True:
+        return "v2_schema_error"
+    keyword = getattr(error, "validator", None)
+    if keyword not in _SAFE_SCHEMA_VALIDATORS:
+        return "v2_schema_error"
+    path = tuple(getattr(error, "absolute_path", ()))
+    where = "finding" if path and path[0] == "findings" else "root"
+    field = None
+    if keyword == "required" and isinstance(error.validator_value, list):
+        instance = error.instance
+        if isinstance(instance, dict):
+            missing = [value for value in error.validator_value
+                       if isinstance(value, str) and value not in instance]
+            if missing:
+                field = missing[0]
+    if field is None and path and isinstance(path[-1], str):
+        field = path[-1]
+    if field not in _SAFE_SCHEMA_FIELDS:
+        field = "field"
+    return "v2_schema_{}_{}_{}".format(keyword, where, field)
+
+
 def validate_reply(content, allowed):
     if not isinstance(content, str) or not content.strip():
         raise Problem("v2_empty_response")
@@ -215,7 +256,7 @@ def validate_reply(content, allowed):
     except RecursionError:
         invalid = True
     if invalid is not None:
-        raise Problem("v2_schema_error")
+        raise Problem(_schema_failure_code(invalid))
     if not isinstance(allowed, frozenset):
         raise Problem("v2_invalid_scope")
     if any(item["anchor_id"] not in allowed for item in doc["findings"]):
