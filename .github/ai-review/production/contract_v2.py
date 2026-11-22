@@ -35,9 +35,15 @@ SYSTEM_PROMPT = (
     "Each finding MUST select an exact supplied anchor_id, never a path/line guess. "
     "Describe trigger, causal mechanism, impact and attempted refutation. "
     "An anchor proves location, not bug causality. Drop speculative claims. "
-    "Use analysis_status=complete ONLY if the entire provided scope was "
-    "actually examined and the answer is sufficiently supported. If scope, "
-    "context, budget or reasoning is insufficient, use analysis_status=incomplete. "
+    "DISCOVERY analyzes EXACTLY ONE chunk of the PR; other chunks are "
+    "covered in separate requests and candidates refuted over the full diff. "
+    "For discovery, analysis_status=complete means you examined ALL code "
+    "supplied in THIS CHUNK, not the other chunks or the entire PR. "
+    "Do not label a chunk incomplete merely because the global PR has more "
+    "chunks. State reviewed_scope only for the current chunk. "
+    "For refutation, analysis_status refers to the supplied full-diff scope. "
+    "If a required guard/caller is genuinely missing or evidence is insufficient "
+    "for THIS scope, return analysis_status=incomplete without guessing. "
     "During refutation, only retain or remove EXACT original candidate objects: "
     "do not rewrite trigger, mechanism, impact or any causal fields. "
     "Do not infer missing tests or absent callers if they were not supplied."
@@ -81,6 +87,9 @@ def make_payload(pinned, plan, chunk, *, candidates=None):
         "files_total": len(plan.files),
         "all_changed_paths": list(plan.files),
         "phase": mode,
+        "completion_scope": ("this_chunk_only" if mode == "discover"
+                             else "all_changed_diff_fragments"),
+        "other_chunks_analyzed_separately": mode == "discover",
         "title": pinned.title[:1024],
         "body": pinned.body[:2048],
         "patch": "\n".join(
@@ -158,9 +167,10 @@ def require_semantic_completion(result):
     The structured field is authoritative; prose is never silently
     reclassified as complete. Low overall confidence requires human review.
     """
-    if (result["analysis_status"] != "complete" or
-            result["confidence_overall"] == "low"):
-        raise Problem("v2_semantic_incomplete")
+    if result["analysis_status"] != "complete":
+        raise Problem("v2_model_declared_incomplete")
+    if result["confidence_overall"] == "low":
+        raise Problem("v2_model_low_confidence")
 
 
 def worst_case_usd(payloads, *, reserve_refutation=True):
