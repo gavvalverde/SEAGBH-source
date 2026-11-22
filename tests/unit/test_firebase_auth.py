@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from email.message import Message
 from pathlib import Path
-from threading import Event
+from threading import Event, get_ident
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
@@ -313,6 +313,18 @@ class FirebaseAuthTests(unittest.TestCase):
                 self.assertIsNone(auth.token_firebase())
                 self.assertEqual(self.urlopen.call_count, chamadas)
 
+    def test_resposta_de_renovacao_em_andamento_nao_restaura_logout(self):
+        self._login_ok()
+        self.relogio.return_value = 3700.0
+
+        def responder_apos_logout(*args, **kwargs):
+            auth.logout_firebase()
+            return _resposta({"id_token": "novo-id-token", "expires_in": "3600"})
+
+        self.urlopen.side_effect = responder_apos_logout
+        self.assertIsNone(auth.token_firebase())
+        self.assertFalse(auth.sessao_firebase_renovavel())
+
 
 try:
     from PyQt6.QtCore import Qt
@@ -504,6 +516,87 @@ class FirebaseAuthQtTests(unittest.TestCase):
             janela._on_exportar_pdf()
         self.assertEqual(aviso.call_count, 2)
         salvar_pdf.assert_not_called()
+
+    def test_acoes_locais_renovam_sessao_vencida_em_thread_e_prosseguem_na_ui(self):
+        ui_thread = get_ident()
+        casos = (
+            ("_on_copiar", "_copiar_chave"),
+            ("_on_exportar_pdf", "_selecionar_destino_pdf"),
+            ("_on_restaurar", "_abrir_restauracao"),
+        )
+        for acionar, executar in casos:
+            with self.subTest(acao=acionar):
+                janela = self._janela_autenticada()
+                vencimento = self.auth._AUTH_SESSION.expira_em
+                liberar = Event()
+                threads_renovacao = []
+                threads_acao = []
+
+                def responder(*args, **kwargs):
+                    threads_renovacao.append(get_ident())
+                    liberar.wait(3)
+                    return _resposta({"id_token": "novo-id-token", "expires_in": "3600"})
+
+                self.transporte_auth.side_effect = responder
+                with (
+                    patch.object(self.auth.time, "monotonic", return_value=vencimento),
+                    patch.object(janela, executar, side_effect=lambda: threads_acao.append(get_ident())),
+                ):
+                    getattr(janela, acionar)()
+                    sinal = QSignalSpy(janela._renovacao.finished)
+                    try:
+                        self.assertFalse(janela.isEnabled())
+                        self.assertEqual(threads_acao, [])
+                        getattr(janela, acionar)()
+                    finally:
+                        liberar.set()
+                        terminou = sinal.wait(3000)
+                    self.assertTrue(terminou)
+                    self.assertEqual(threads_acao, [ui_thread])
+                    self.assertTrue(janela.isEnabled())
+                self.assertEqual(len(threads_renovacao), 1)
+                self.assertNotEqual(threads_renovacao[0], ui_thread)
+
+    def test_renovacao_recusada_nao_executa_acao_pendente(self):
+        janela = self._janela_autenticada()
+        self.transporte_auth.side_effect = URLError("rede simulada")
+        with (
+            patch.object(self.auth.time, "monotonic", return_value=self.auth._AUTH_SESSION.expira_em),
+            patch.object(janela, "_copiar_chave") as copiar,
+            patch.object(self.ui.QMessageBox, "warning") as aviso,
+            self.assertLogs(self.auth.__name__, "WARNING"),
+        ):
+            janela._on_copiar()
+            sinal = QSignalSpy(janela._renovacao.finished)
+            self.assertTrue(sinal.wait(3000))
+        copiar.assert_not_called()
+        aviso.assert_called_once()
+        self.assertFalse(self.auth.sessao_firebase_renovavel())
+
+    def test_fechar_durante_renovacao_descarta_acao_pendente(self):
+        janela = self._janela_autenticada()
+        janela.show()
+        liberar = Event()
+
+        def responder(*args, **kwargs):
+            liberar.wait(3)
+            return _resposta({"id_token": "novo-id-token", "expires_in": "3600"})
+
+        self.transporte_auth.side_effect = responder
+        with (
+            patch.object(self.auth.time, "monotonic", return_value=self.auth._AUTH_SESSION.expira_em),
+            patch.object(janela, "_copiar_chave") as copiar,
+        ):
+            janela._on_copiar()
+            sinal = QSignalSpy(janela._renovacao.finished)
+            try:
+                self.assertFalse(janela.close())
+            finally:
+                liberar.set()
+                terminou = sinal.wait(3000)
+            self.assertTrue(terminou)
+        self.assertFalse(janela.isVisible())
+        copiar.assert_not_called()
 
     def test_exclusao_recusada_preserva_registros_locais(self):
         janela = self._janela_autenticada()

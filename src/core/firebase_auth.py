@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from http.client import HTTPException
 from pathlib import Path
+from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -84,6 +85,7 @@ class _SessaoFirebase:
 
 
 _AUTH_SESSION: _SessaoFirebase | None = None
+_SESSAO_LOCK = Lock()
 
 
 class _SemRedirecionamento(HTTPRedirectHandler):
@@ -250,7 +252,7 @@ def login_firebase(email: str, senha: str) -> FalhaAuth | None:
     }).encode("utf-8")
     try:
         dados = _post(_LOGIN_URL, corpo, "application/json")
-        _AUTH_SESSION = _SessaoFirebase(
+        sessao = _SessaoFirebase(
             id_token=_texto_sessao(dados.get("idToken"), FalhaAuth.TOKEN_AUSENTE),
             refresh_token=_texto_sessao(dados.get("refreshToken"), FalhaAuth.RESPOSTA_INVALIDA),
             uid=_texto_sessao(dados.get("localId"), FalhaAuth.RESPOSTA_INVALIDA),
@@ -259,11 +261,21 @@ def login_firebase(email: str, senha: str) -> FalhaAuth | None:
     except _ErroAuth as erro:
         _registrar_falha("login recusado", erro)
         return erro.codigo
+    with _SESSAO_LOCK:
+        _AUTH_SESSION = sessao
     return None
 
 
-def _refresh_token(sessao: _SessaoFirebase) -> bool:
+def _substituir_sessao(anterior: _SessaoFirebase, nova: _SessaoFirebase | None) -> bool:
     global _AUTH_SESSION
+    with _SESSAO_LOCK:
+        if _AUTH_SESSION is not anterior:
+            return False
+        _AUTH_SESSION = nova
+        return True
+
+
+def _refresh_token(sessao: _SessaoFirebase) -> bool:
     corpo = urlencode({
         "grant_type": "refresh_token",
         "refresh_token": sessao.refresh_token,
@@ -274,22 +286,26 @@ def _refresh_token(sessao: _SessaoFirebase) -> bool:
             raise _ErroAuth(FalhaAuth.SESSAO_INVALIDA)
         id_token = dados.get("id_token") or dados.get("idToken")
         refresh_token = dados.get("refresh_token", sessao.refresh_token)
-        _AUTH_SESSION = _SessaoFirebase(
+        nova = _SessaoFirebase(
             id_token=_texto_sessao(id_token, FalhaAuth.TOKEN_AUSENTE),
             refresh_token=_texto_sessao(refresh_token, FalhaAuth.RESPOSTA_INVALIDA),
             uid=sessao.uid,
             expira_em=_expiracao(dados.get("expires_in")),
         )
     except _ErroAuth as erro:
-        logout_firebase()
+        _substituir_sessao(sessao, None)
         _registrar_falha("renovação recusada", erro)
         return False
-    return True
+    return _substituir_sessao(sessao, nova)
 
 
 def sessao_firebase_ativa() -> bool:
     sessao = _AUTH_SESSION
     return sessao is not None and time.monotonic() < sessao.expira_em
+
+
+def sessao_firebase_renovavel() -> bool:
+    return _AUTH_SESSION is not None
 
 
 def token_firebase() -> str | None:
@@ -303,4 +319,5 @@ def token_firebase() -> str | None:
 
 def logout_firebase() -> None:
     global _AUTH_SESSION
-    _AUTH_SESSION = None
+    with _SESSAO_LOCK:
+        _AUTH_SESSION = None

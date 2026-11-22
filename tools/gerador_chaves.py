@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 import json
 import hashlib
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from http.client import HTTPException
 from pathlib import Path
@@ -52,6 +53,7 @@ from core.firebase_auth import (
     login_firebase as _login_firebase,
     logout_firebase as _logout,
     sessao_firebase_ativa,
+    sessao_firebase_renovavel,
     token_firebase as _get_id_token,
 )
 from core.licenca import gerar_chave, validar_chave, PLANOS, FIREBASE_URL, DIAS_ALERTA
@@ -409,6 +411,15 @@ class LoginDialog(QDialog):
 #  Janela principal
 # ══════════════════════════════════════════════════════════════════════════════
 
+class _RenovacaoWorker(QThread):
+    def run(self):
+        try:
+            _get_id_token()
+        except Exception:
+            _logout()
+            _LOGGER.error("Firebase Auth: renovação recusada | Código: ERRO_INTERNO")
+
+
 class GerenciamentoClientes(QWidget):
     def __init__(self):
         if not sessao_firebase_ativa():
@@ -417,18 +428,54 @@ class GerenciamentoClientes(QWidget):
         self.setWindowTitle("Gerenciamento de Clientes — SEAGBH")
         self.setMinimumSize(1020, 750)
         self._firebase_cache: dict[str, dict] = {}
+        self._renovacao: _RenovacaoWorker | None = None
+        self._acao_apos_renovacao: Callable[[], None] | None = None
+        self._fechar_apos_renovacao = False
         self._build_ui()
         self._carregar_firebase_dados()
         self._carregar_tabela()
 
-    def _exigir_sessao(self) -> bool:
+    def _com_sessao(self, acao: Callable[[], None]) -> None:
+        if self._renovacao is not None:
+            return
         if sessao_firebase_ativa():
-            return True
+            acao()
+        elif sessao_firebase_renovavel():
+            self._acao_apos_renovacao = acao
+            self._renovacao = _RenovacaoWorker(self)
+            self._renovacao.finished.connect(self._concluir_renovacao)
+            self._renovacao.finished.connect(self._renovacao.deleteLater)
+            self.setEnabled(False)
+            self.setCursor(Qt.CursorShape.WaitCursor)
+            self._renovacao.start()
+        else:
+            self._avisar_sessao_encerrada()
+
+    def _concluir_renovacao(self) -> None:
+        acao = self._acao_apos_renovacao
+        self._acao_apos_renovacao = None
+        self._renovacao = None
+        self.setEnabled(True)
+        self.unsetCursor()
+        if self._fechar_apos_renovacao:
+            self.close()
+        elif acao is not None and sessao_firebase_ativa():
+            acao()
+        else:
+            self._avisar_sessao_encerrada()
+
+    def closeEvent(self, event):
+        if self._renovacao is not None:
+            self._fechar_apos_renovacao = True
+            event.ignore()
+            return
+        super().closeEvent(event)
+
+    def _avisar_sessao_encerrada(self) -> None:
         QMessageBox.warning(
             self, "Sessão encerrada",
             "Entre novamente no Gerenciamento de Clientes para realizar esta ação.",
         )
-        return False
 
     # ══════════════════════════════════════════════════════════════════════
     #  UI
@@ -776,8 +823,9 @@ class GerenciamentoClientes(QWidget):
         self.entry_cliente.clear()
 
     def _on_copiar(self):
-        if not self._exigir_sessao():
-            return
+        self._com_sessao(self._copiar_chave)
+
+    def _copiar_chave(self):
         reg = self._linha_selecionada()
         if not reg:
             QMessageBox.warning(self, "Aviso", "Selecione uma licença na tabela!")
@@ -933,8 +981,9 @@ class GerenciamentoClientes(QWidget):
         )
 
     def _on_restaurar(self):
-        if not self._exigir_sessao():
-            return
+        self._com_sessao(self._abrir_restauracao)
+
+    def _abrir_restauracao(self):
         morto = _carregar_arquivo_morto()
         if not morto:
             QMessageBox.information(self, "Info", "Não há licenças excluídas para restaurar.")
@@ -1052,20 +1101,22 @@ class GerenciamentoClientes(QWidget):
         dlg.exec()
 
     def _on_exportar_pdf(self):
-        if not self._exigir_sessao():
-            return
+        self._com_sessao(self._selecionar_destino_pdf)
+
+    def _selecionar_destino_pdf(self):
+        caminho, _ = QFileDialog.getSaveFileName(
+            self, "Exportar Licenças", "licencas_seagbh.pdf",
+            "PDF (*.pdf)"
+        )
+        if caminho:
+            self._com_sessao(lambda: self._exportar_pdf(caminho))
+
+    def _exportar_pdf(self, caminho):
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib import colors
         from reportlab.lib.units import mm
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-
-        caminho, _ = QFileDialog.getSaveFileName(
-            self, "Exportar Licenças", "licencas_seagbh.pdf",
-            "PDF (*.pdf)"
-        )
-        if not caminho or not self._exigir_sessao():
-            return
 
         historico = _carregar_historico()
         hoje_str = datetime.now().strftime("%Y-%m-%d")
