@@ -54,6 +54,7 @@ jobs:
             /.github/ai-review/production/
             /.github/ai-review/benchmarks/harness/prompt_builder.py
             /.github/ai-review/review-schema.json
+            /.github/ai-review/review-schema-v2.json
       - name: Install pinned production dependencies in an ephemeral venv
         if: steps.activation.outputs.enabled == 'true'
         shell: bash
