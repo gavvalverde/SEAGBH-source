@@ -1,11 +1,12 @@
-# AI Reviewer: DeepSeek V4.1 Flash 1017 (opt-in PR reviews)
+# SEAGBH AI Reviewer | Kimi K2.6 v2 (opt-in PR reviews)
 
 The workflow is installed on `main` and is opt-in via the repository variable
 `AI_REVIEW_ENABLED=true`. Once enabled, it reviews every eligible internal,
 non-draft PR targeting `main`, including new commits to those PRs.
 `AI_REVIEW_TARGET_PR` is obsolete and ignored. Source changes and offline CI
-do not activate paid calls by themselves. Each eligible new PR HEAD can cost
-one OpenRouter request; set a strict OpenRouter API key spending limit first.
+do not activate paid calls by themselves. Each eligible new PR HEAD has a conservative v2 per-review spending ceiling
+of US$0.20, with up to eight discovery calls and one refutation call.
+Set an independent OpenRouter API key spending limit as a safeguard.
 
 ## How to activate for all development PRs
 
@@ -16,7 +17,7 @@ one OpenRouter request; set a strict OpenRouter API key spending limit first.
    verify `OPENROUTER_API_KEY` is available as a secret. Under **Variables**,
    set `AI_REVIEW_ENABLED` to the exact lowercase string `true`.
 3. Create a regular **non-draft** PR from a branch inside this repository
-   to `main`. The `AI PR Review (DeepSeek Thinking)` workflow should run
+   to `main`. The `AI PR Review (Kimi K2.6 Non-Thinking / Baidu)` workflow should run
    on `opened`, `synchronize`, `reopened` and `ready_for_review`.
    Drafts, forks and PRs to other branches are intentionally ignored.
 4. Inspect the Actions result and the bot's COMMENT review. Findings are
@@ -32,6 +33,41 @@ It is not a required merge status by itself; CI and human judgement remain
 independent. No global per-day or per-month quota is implemented in the
 repository. The external OpenRouter key/account limit is the financial
 kill-switch.
+
+## Current v2 contract (issue #68)
+
+The trusted `runner.py` CLI delegates to `production_v2.main()`. The v1
+`run_review` API and historical tests remain available for regression tests.
+The model remains Kimi K2.6 via Baidu/OpenRouter, non-thinking, at most 4,096
+completion tokens per request with explicit routing price ceilings.
+
+`planning_v2.py` validates every patch from a fixed-SHA compare and partitions
+large hunks without silently dropping source. Only added NEW lines receive
+numbered anchors; deletion-only fragments receive file-level anchors. All
+context remains in the patch, and the SHA256 manifest commits to the complete
+patch bytes, including unchanged context and deletions.
+
+`review-schema-v2.json` requires an explicit `analysis_status=complete` as
+well as causal trigger, mechanism, impact, refutations considered and original
+`anchor_id` for each candidate. Low overall confidence or any incomplete
+answer is retained, never published as a clean global review. The additional
+adjudication call may retain or drop original claims, not rewrite causes.
+
+Discovery requests are capped at 90,000 serialized bytes; the full-diff
+refutation is capped at 200,000 bytes, reserving 50,000 bytes for candidates
+before any paid inference. All requests receive an aggregate US$0.20 preflight
+cap; no retry is permitted. The external OpenRouter key spending limit remains
+the independent financial backstop. PR code is never executed.
+
+The offline CI executes `test_planning_v2.py` and
+`test_production_v2.py` alongside the legacy suites in Python 3.12 on
+Linux and Windows. See `docs/ai-reviewer-v2-architecture.md`.
+
+## Historical v1 notes
+
+The remainder of this document describes earlier configurations, experiments,
+and limitations. Its historical model names and 80 KiB v1 limit do not apply
+to the v2 entrypoint.
 
 ## Conservative same-line collision hold (2026-11-19)
 

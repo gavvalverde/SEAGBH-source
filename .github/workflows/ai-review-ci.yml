@@ -47,5 +47,43 @@ jobs:
           "$PY" -B .github/ai-review/benchmarks/harness/test_pilot_guarded.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_quality_metrics.py
           "$PY" -B .github/ai-review/production/test_runner.py
+          "$PY" -B .github/ai-review/production/test_planning_v2.py
+          "$PY" -B .github/ai-review/production/test_production_v2.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
           "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
+
+  offline-windows-v2:
+    name: AI Reviewer v2 offline (Windows, Python 3.12)
+    runs-on: windows-2022
+    timeout-minutes: 12
+    steps:
+      - name: Checkout offline test sources
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Install isolated offline dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $venv = Join-Path $env:RUNNER_TEMP 'review-v2-venv'
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw 'venv creation failed' }
+          $py = Join-Path $venv 'Scripts/python.exe'
+          & $py -B -m pip --isolated --disable-pip-version-check install --only-binary=:all: --index-url https://pypi.org/simple -r .github/ai-review/production/requirements-test.txt
+          if ($LASTEXITCODE -ne 0) { throw 'dependencies failed' }
+      - name: Run v2 offline suites without real network
+        shell: pwsh
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          $py = Join-Path (Join-Path $env:RUNNER_TEMP 'review-v2-venv') 'Scripts/python.exe'
+          & $py -B .github/ai-review/production/test_planning_v2.py
+          if ($LASTEXITCODE -ne 0) { throw 'planning v2 failed' }
+          & $py -B .github/ai-review/production/test_production_v2.py
+          if ($LASTEXITCODE -ne 0) { throw 'production v2 failed' }
