@@ -247,6 +247,11 @@ def build_plan(github, pinned):
         "base": pinned.base_sha, "head": pinned.head_sha,
         "paths": paths,
         "anchors": sorted(registry.values()),
+        # Bind ALL diff text, including deletion/context rows without anchors.
+        "fragment_sha256": [
+            hashlib.sha256((part.path + "\0" + part.patch).encode("utf-8")).hexdigest()
+            for part in parts
+        ],
     }, ensure_ascii=True, sort_keys=True)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     runner.ensure_current(github, pinned)

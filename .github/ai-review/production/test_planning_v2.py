@@ -102,6 +102,19 @@ class PlanningV2Tests(unittest.TestCase):
         plan = v2.build_plan(GH([entry]), pinned(1))
         self.assertEqual(list(plan.anchors.values())[0][2], None)
 
+    def test_manifest_hash_binds_unanchored_context_and_deletions(self):
+        original = {
+            "filename": "src/sample.py", "status": "modified",
+            "patch": "@@ -1,2 +1,2 @@\n keep\n-old\n+new_value = 10",
+            "additions": 1, "deletions": 1,
+        }
+        alternate = dict(original)
+        alternate["patch"] = original["patch"].replace(" keep", " changed_keep")
+        p1 = v2.build_plan(GH([original]), pinned(1))
+        p2 = v2.build_plan(GH([alternate]), pinned(1))
+        self.assertEqual(list(p1.anchors.values()), list(p2.anchors.values()))
+        self.assertNotEqual(p1.digest, p2.digest)
+
     def test_only_added_lines_receive_line_anchors(self):
         entry = {
             "filename": "src/with_context.py", "status": "modified",

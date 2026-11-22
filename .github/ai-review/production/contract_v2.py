@@ -165,7 +165,9 @@ def require_semantic_completion(result):
 
 def worst_case_usd(payloads, *, reserve_refutation=True):
     """Preflight of token PRICE ceilings, using UTF-8 bytes as token upper bound."""
-    if not 1 <= len(payloads) <= 8:
+    # Eight discovery calls, plus the optional ninth refutation call.
+    limit = 8 if reserve_refutation else 9
+    if not 1 <= len(payloads) <= limit:
         raise Problem("v2_call_limit")
     input_bytes = sum(wire_bytes(p) for p in payloads)
     completion = len(payloads) * MAX_COMPLETION_TOKENS

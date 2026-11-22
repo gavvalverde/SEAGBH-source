@@ -192,6 +192,17 @@ class V2Offline(unittest.TestCase):
         self.assertEqual(payload["reasoning"], {"enabled": False})
         self.assertIs(payload["response_format"]["json_schema"]["strict"], False)
 
+    def test_budget_supports_eight_chunks_plus_one_refutation(self):
+        # The ninth request is permitted only after the original eight
+        # discovery chunks; aggregate costs remain independently enforced.
+        small = {"messages": [], "model": runner.PRODUCTION_MODEL}
+        result = contract.worst_case_usd(
+            [small] * 9, reserve_refutation=False)
+        self.assertGreater(result, 0)
+        with self.assertRaises(Exception) as err:
+            contract.worst_case_usd([small] * 9, reserve_refutation=True)
+        self.assertEqual(getattr(err.exception, "code", None), "v2_call_limit")
+
     def test_preflight_bounded_output_and_remote_schema_is_detached(self):
         pinned = runner.event_snapshot(event(), "true")
         payload = contract.make_payload(pinned, self.plan, self.plan.chunks[0])
