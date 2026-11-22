@@ -40,7 +40,10 @@ fazer o quality gate parecer verde.
    confirmação. pull_request_target executa exclusivamente scripts do
    workflow SHA trusted; nenhum código de PR é executado.
 6. Logs mostram status, cobertura, uso e códigos fixos, nunca a saída
-   bruta do modelo, segredos ou conteúdo dos patches.
+   bruta do modelo, segredos ou conteúdo dos patches. Falhas de schema
+   são classificadas usando SOMENTE palavras-chave e nomes de campos do
+   schema confiável (required/type/enum/const/minLength/etc.), nunca dados
+   da resposta ou campos inventados pelo LLM.
 
 ## Provas e limites
 
