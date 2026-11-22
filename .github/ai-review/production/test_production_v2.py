@@ -32,12 +32,18 @@ def one_finding(anchor):
 def refutation(findings, decisions=None, **overrides):
     """A refutation carries IDs/verdicts ONLY, never rewritten causal findings."""
     decisions = decisions or ["retain"] * len(findings)
+    states = {
+        "retain": "reachable_regression",
+        "refute": "fixed_by_patch",
+        "uncertain": "insufficient_context",
+    }
     value = {
         "schema_version": 2, "analysis_status": "complete",
         "confidence_overall": "medium",
         "verdicts": [
             {"candidate_id": contract.candidate_id(finding, index),
-             "decision": decision,
+             "decision": decision, "current_state": states[decision],
+             "behavior_path": "A operacao passa pelo ramo alterado e chega a guarda",
              "countercheck": "Guarda e testes do trecho foram confrontados"}
             for index, (finding, decision) in enumerate(zip(findings, decisions))
         ],
@@ -202,8 +208,10 @@ class V2Offline(unittest.TestCase):
             (dict(good, verdicts=[forged]), "v2_refutation_unknown_candidate"),
             (dict(good, verdicts=[valid_row, valid_row]),
              "v2_refutation_duplicate_candidate"),
-            (dict(good, verdicts=[{**valid_row, "decision": "uncertain"}]),
-             "v2_refutation_uncertain"),
+            (dict(good, verdicts=[{
+                **valid_row, "decision": "uncertain",
+                "current_state": "insufficient_context",
+            }]), "v2_refutation_uncertain"),
             (dict(good, verdicts=[{**valid_row, "countercheck": ""}]),
              "v2_schema_minLength_verdict_countercheck"),
             (dict(good, findings=[finding]), "v2_schema_additionalProperties_root_field"),
@@ -238,6 +246,48 @@ class V2Offline(unittest.TestCase):
         # Finding causality still retains the strict length bound.
         finding = contract.SCHEMA["properties"]["findings"]["items"]["properties"]
         self.assertEqual(finding["mechanism"]["maxLength"], 800)
+
+    def test_refutation_semantic_negative_controls_fail_closed(self):
+        # Reproduces the TWO false-positive patterns from the published v2
+        # review of PR #65. Synthetic model verdicts, never a real LLM call.
+        original = dict(CLEAN, findings=[one_finding(self.anchor)])
+        for decision, current_state, code in (
+            ("retain", "fixed_by_patch", "v2_refutation_inconsistent_verdict"),
+            ("retain", "documented_constraint", "v2_refutation_inconsistent_verdict"),
+            ("retain", "preexisting_unrelated", "v2_refutation_inconsistent_verdict"),
+            ("refute", "reachable_regression", "v2_refutation_inconsistent_verdict"),
+        ):
+            with self.subTest(decision=decision, state=current_state):
+                answer = refutation(original["findings"], [decision])
+                answer["verdicts"][0]["current_state"] = current_state
+                out, gh, ai = self._run([original, answer], github=FakeGitHub())
+                self.assertEqual(out.code, code)
+                self.assertFalse(out.published)
+                self.assertFalse(gh.posts)
+
+    def test_current_regression_survives_and_fixed_by_patch_is_refuted(self):
+        # Positive control: the post-patch guard is genuinely missing.
+        # Negative control: the new assignment repairs the old missing state.
+        original = dict(CLEAN, findings=[one_finding(self.anchor)])
+        for decision, expected_count in (("retain", 1), ("refute", 0)):
+            with self.subTest(decision=decision):
+                answer = refutation(original["findings"], [decision])
+                out, gh, ai = self._run([original, answer], github=FakeGitHub())
+                self.assertEqual(out.code, "published")
+                self.assertTrue(out.published)
+                self.assertIn("Achados ({})".format(expected_count), gh.posts[0][1])
+
+    def test_refutation_requires_post_patch_behavior_path(self):
+        original = dict(CLEAN, findings=[one_finding(self.anchor)])
+        answer = refutation(original["findings"])
+        del answer["verdicts"][0]["behavior_path"]
+        out, gh, ai = self._run([original, answer], github=FakeGitHub())
+        self.assertEqual(out.code, "v2_schema_required_verdict_behavior_path")
+        self.assertFalse(gh.posts)
+        response_schema = ai.payloads[1]["response_format"]["json_schema"]["schema"]
+        item = response_schema["properties"]["verdicts"]["items"]
+        self.assertIn("current_state", item["required"])
+        self.assertIn("behavior_path", item["required"])
 
     def test_refutation_schema_never_rewrites_original_mechanism(self):
         finding = one_finding(self.anchor)

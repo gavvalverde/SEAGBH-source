@@ -41,10 +41,17 @@ REFUTATION_SCHEMA = {
             "type": "array", "maxItems": MAX_CANDIDATES,
             "items": {
                 "type": "object", "additionalProperties": False,
-                "required": ["candidate_id", "decision", "countercheck"],
+                "required": ["candidate_id", "decision", "current_state",
+                             "behavior_path", "countercheck"],
                 "properties": {
                     "candidate_id": {"type": "string", "pattern": "^c[0-9a-f]{16}$"},
                     "decision": {"enum": ["retain", "refute", "uncertain"]},
+                    "current_state": {"enum": [
+                        "reachable_regression", "fixed_by_patch",
+                        "documented_constraint", "preexisting_unrelated",
+                        "insufficient_context",
+                    ]},
+                    "behavior_path": {"type": "string", "minLength": 12},
                     # Supporting text is not published as a finding. Its size is
                     # already bounded by 4096 completion tokens per call and
                     # transport.MAX_RESPONSE (1 MiB). A character ceiling here
@@ -67,8 +74,21 @@ REFUTATION_SYSTEM_PROMPT = (
     "and available tests. Return ONE JSON object with ONLY schema_version=2, "
     "analysis_status, confidence_overall, and verdicts. Provide EXACTLY ONE "
     "verdict for EVERY supplied candidate_id, with decision=retain, refute or "
-    "uncertain and a concrete countercheck identifying the guard, caller or "
-    "test examined. Prefer one concise sentence; do not paste long code. "
+    "uncertain, current_state, behavior_path and countercheck. Classify the "
+    "CURRENT code after the patch: reachable_regression, fixed_by_patch, "
+    "documented_constraint, preexisting_unrelated or insufficient_context. "
+    "For RETAIN require current_state=reachable_regression and a concrete "
+    "reachable post-patch trigger/guard/call path in behavior_path. "
+    "For REFUTE use fixed_by_patch, documented_constraint or "
+    "preexisting_unrelated, with the concrete corrected/expected path. "
+    "For UNCERTAIN use insufficient_context and request human review. "
+    "If an added line FIXES a missing attribute/guard, do not report that "
+    "previous defect as a current regression. A knowingly documented limit "
+    "on noncooperative I/O is not a newly introduced hang without evidence "
+    "of a violated guaranteed invariant. Conversely, a documented caveat "
+    "does NOT excuse an actual reachable regression: retain if reproduced. "
+    "Prefer concise, specific behavior_path and countercheck explanations; "
+    "do not paste long code. "
     "RETAIN if the original causal claim survives scrutiny. REFUTE only if "
     "actual code or test behavior disproves its trigger/mechanism; name the "
     "counterexample in countercheck. If the supplied diff cannot resolve it, "
@@ -112,6 +132,11 @@ SYSTEM_PROMPT = (
     "Each finding MUST select an exact supplied anchor_id, never a path/line guess. "
     "Describe trigger, causal mechanism, impact and attempted refutation. "
     "An anchor proves location, not bug causality. Drop speculative claims. "
+    "Report a present, reachable defect in the POST-PATCH code, not the "
+    "pre-patch bug now fixed by an added line. Compare before/after effects. "
+    "Do not mistake a documented noncooperative-I/O limitation for a new "
+    "regression unless it violates a concrete guarantee; verify real control "
+    "flow before recommending forced shutdown of SQLite worker threads. "
     "DISCOVERY analyzes EXACTLY ONE chunk of the PR; other chunks are "
     "covered in separate requests and candidates refuted over the full diff. "
     "For discovery, analysis_status=complete means you examined ALL code "
@@ -400,6 +425,18 @@ def validate_refutation_reply(content, expected_ids):
         seen.add(cid)
     if seen != expected_ids:
         raise Problem("v2_refutation_missing_decisions")
+    # Fail closed on an internally contradictory verdict. This verifies
+    # the model's stated classification, NOT the truth of its causal story.
+    expected_states = {
+        "retain": frozenset({"reachable_regression"}),
+        "refute": frozenset({
+            "fixed_by_patch", "documented_constraint", "preexisting_unrelated"
+        }),
+        "uncertain": frozenset({"insufficient_context"}),
+    }
+    if any(v["current_state"] not in expected_states[v["decision"]]
+           for v in doc["verdicts"]):
+        raise Problem("v2_refutation_inconsistent_verdict")
     if any(v["decision"] == "uncertain" for v in doc["verdicts"]):
         raise Problem("v2_refutation_uncertain")
     return doc

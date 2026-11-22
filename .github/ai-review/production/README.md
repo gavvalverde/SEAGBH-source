@@ -52,7 +52,11 @@ well as causal trigger, mechanism, impact, refutations considered and original
 `anchor_id` for each candidate. Low overall confidence or any incomplete
 answer is retained, never published as a clean global review. The additional
 adjudication call now returns a separate typed verdict for every opaque
-`candidate_id` (retain, refute or uncertain), with an independent countercheck.
+`candidate_id` (retain, refute or uncertain), a post-patch `current_state`,
+a `behavior_path`, and an independent countercheck. Retain is permitted only
+with a stated reachable regression; patched fixes, intentional documented
+constraints and unrelated old faults must be refuted. Inconsistent verdicts
+fail closed. This cannot independently prove the model's factual claims.
 Missing, duplicate, forged or uncertain decisions hold the entire review.
 Only original discovery finding objects can be published; refutation never
 rewrites trigger/mechanism/impact or invents a new allegation.
