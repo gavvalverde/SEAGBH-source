@@ -29,8 +29,12 @@ fazer o quality gate parecer verde.
    de confiança geral baixa retém publicação em vez de aparentar revisão limpa.
    A refutação agora usa um JSON Schema separado de veredictos e identificadores
    opacos `candidate_id`: para CADA candidato, responde `retain`, `refute`
-   ou `uncertain` com uma contraprova curta. Não reescreve os campos de um
-   finding original. Candidatos ausentes, duplicados, desconhecidos ou incertos
+   ou `uncertain` com uma contraprova causal. Não reescreve os campos de um
+   finding original. O campo auxiliar `countercheck` exige texto com ao menos
+   12 caracteres, mas não impõe limite artificial de caracteres: permanecem
+   o teto de 4096 tokens por resposta e o máximo de 1 MiB no transporte.
+   O texto auxiliar não é publicado, e o schema dos achados originais mantém
+   todos os seus limites de tamanho. Candidatos ausentes, duplicados, desconhecidos ou incertos
    retêm toda a revisão, em vez de fingir resultado limpo.
    Cada chunk tem uma chamada de descoberta. Candidatos existentes exigem
    outra chamada de refutação com o diff completo. Se a refutação não couber

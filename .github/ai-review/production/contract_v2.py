@@ -45,7 +45,11 @@ REFUTATION_SCHEMA = {
                 "properties": {
                     "candidate_id": {"type": "string", "pattern": "^c[0-9a-f]{16}$"},
                     "decision": {"enum": ["retain", "refute", "uncertain"]},
-                    "countercheck": {"type": "string", "minLength": 12, "maxLength": 450},
+                    # Supporting text is not published as a finding. Its size is
+                    # already bounded by 4096 completion tokens per call and
+                    # transport.MAX_RESPONSE (1 MiB). A character ceiling here
+                    # rejected otherwise valid full-diff adjudications.
+                    "countercheck": {"type": "string", "minLength": 12},
                 },
             },
         },
@@ -63,7 +67,8 @@ REFUTATION_SYSTEM_PROMPT = (
     "and available tests. Return ONE JSON object with ONLY schema_version=2, "
     "analysis_status, confidence_overall, and verdicts. Provide EXACTLY ONE "
     "verdict for EVERY supplied candidate_id, with decision=retain, refute or "
-    "uncertain and a concrete short countercheck (under 250 characters). "
+    "uncertain and a concrete countercheck identifying the guard, caller or "
+    "test examined. Prefer one concise sentence; do not paste long code. "
     "RETAIN if the original causal claim survives scrutiny. REFUTE only if "
     "actual code or test behavior disproves its trigger/mechanism; name the "
     "counterexample in countercheck. If the supplied diff cannot resolve it, "

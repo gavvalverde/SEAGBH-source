@@ -214,6 +214,31 @@ class V2Offline(unittest.TestCase):
                 self.assertEqual(out.code, code)
                 self.assertFalse(gh.posts)
 
+    def test_refutation_long_countercheck_does_not_override_real_evidence(self):
+        original_finding = one_finding(self.anchor)
+        original = dict(CLEAN, findings=[original_finding])
+        # Real #65 pilot failed ONLY due to >450-char explanatory text.
+        # Such text is advisory; existing token and HTTP response caps apply.
+        long_evidence = "Guarda concreta e caminho revisados, com resultado causal. " * 26
+        verdict = refutation([original_finding])
+        verdict["verdicts"][0]["countercheck"] = long_evidence
+        out, gh, ai = self._run([original, verdict], github=FakeGitHub())
+        self.assertGreater(len(long_evidence), 450)
+        self.assertEqual((out.code, out.published), ("published", True))
+        self.assertEqual(len(ai.payloads), 2)
+        self.assertIn(original_finding["mechanism"], gh.posts[0][1])
+        self.assertNotIn(long_evidence, gh.posts[0][1])
+        remote = ai.payloads[1]["response_format"]["json_schema"]["schema"]
+        item = remote["properties"]["verdicts"]["items"]["properties"]["countercheck"]
+        self.assertEqual(item, {"type": "string", "minLength": 12})
+        self.assertEqual(
+            contract.REFUTATION_SCHEMA["properties"]["verdicts"]["items"]["properties"]["countercheck"],
+            {"type": "string", "minLength": 12},
+        )
+        # Finding causality still retains the strict length bound.
+        finding = contract.SCHEMA["properties"]["findings"]["items"]["properties"]
+        self.assertEqual(finding["mechanism"]["maxLength"], 800)
+
     def test_refutation_schema_never_rewrites_original_mechanism(self):
         finding = one_finding(self.anchor)
         original = dict(CLEAN, findings=[finding])
