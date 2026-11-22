@@ -47,13 +47,16 @@ class Plan:
     anchors: object
     digest: str
     added_total: int
+    hunks_original: int
 
     @property
     def coverage(self):
         return {
             "files_supplied": len(self.files), "files_omitted": 0,
+            "test_files_supplied": sum(runner._test_path(path) for path in self.files),
             "test_files_omitted": 0, "chunks_planned": len(self.chunks),
-            "chunks_completed": 0, "hunks_supplied": sum(len(c.parts) for c in self.chunks),
+            "chunks_completed": 0, "hunks_supplied": self.hunks_original,
+            "fragments_supplied": sum(len(c.parts) for c in self.chunks),
             "added_lines_supplied": self.added_total,
         }
 
@@ -181,6 +184,7 @@ def build_plan(github, pinned):
     paths = []
     parts = []
     added_total = 0
+    hunks_original = 0
     for item in files:
         if not isinstance(item, dict):
             raise Problem("v2_file_invalid")
@@ -195,6 +199,8 @@ def build_plan(github, pinned):
             raise Problem("v2_path_invalid")
         patch = item.get("patch")
         runner.parse_patch(patch, item.get("additions"), item.get("deletions"))
+        hunks_original += sum(bool(_HUNK.fullmatch(line.removesuffix("\r")))
+                              for line in patch.split("\n"))
         pieces = split_patch(path, patch, status)
         if (sum(p.additions for p in pieces) != item["additions"] or
                 sum(p.deletions for p in pieces) != item["deletions"]):
@@ -256,4 +262,4 @@ def build_plan(github, pinned):
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     runner.ensure_current(github, pinned)
     return Plan(pinned.base_sha, pinned.head_sha, tuple(paths), tuple(chunks),
-                MappingProxyType(registry), digest, added_total)
+                MappingProxyType(registry), digest, added_total, hunks_original)

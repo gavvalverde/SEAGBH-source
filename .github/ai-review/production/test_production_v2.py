@@ -69,6 +69,8 @@ class V2Offline(unittest.TestCase):
         self.assertEqual(len(ai.payloads), 1)
         self.assertEqual(len(gh.posts), 1)
         self.assertEqual(out.coverage["files_omitted"], 0)
+        self.assertEqual(out.coverage["hunks_supplied"], 1)
+        self.assertEqual(out.coverage["fragments_supplied"], 1)
         self.assertEqual(out.coverage["chunks_completed"], 1)
         self.assertEqual(out.usage["cost_micro_usd"], 240)
         self.assertIn(self.plan.digest, gh.posts[0][1])

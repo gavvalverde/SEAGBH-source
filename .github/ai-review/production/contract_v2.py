@@ -250,8 +250,12 @@ def render(findings, plan, pinned, bot_id, version):
         "**Escopo:** todos os fragmentos planejados do diff foram enviados. "
         "Cobertura textual não garante ausência de defeitos.",
         "",
-        f"**Cobertura:** {len(plan.files)} arquivos, {len(plan.chunks)} chunks, "
-        f"{plan.added_total} linhas adicionadas, 0 arquivos omitidos.",
+        f"**Cobertura:** {len(plan.files)} arquivos "
+        f"({sum(runner._test_path(p) for p in plan.files)} testes), "
+        f"{plan.hunks_original} hunks originais em "
+        f"{sum(len(c.parts) for c in plan.chunks)} fragmentos, "
+        f"{len(plan.chunks)} chunks, {plan.added_total} linhas adicionadas, "
+        f"0 arquivos omitidos.",
         "**Manifesto SHA256:** " + plan.digest,
         "",
         f"### Achados ({len(findings)})",

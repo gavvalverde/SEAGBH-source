@@ -139,6 +139,10 @@ class PlanningV2Tests(unittest.TestCase):
         plan = v2.build_plan(GH(files), snap)
         self.assertEqual(len(plan.files), 15)
         self.assertEqual(plan.added_total, 1241)
+        self.assertEqual(plan.hunks_original, 57)
+        self.assertEqual(plan.coverage["hunks_supplied"], 57)
+        self.assertGreater(plan.coverage["fragments_supplied"], 57)
+        self.assertEqual(plan.coverage["test_files_supplied"], 1)
         self.assertEqual(len(plan.anchors), 1241)
         self.assertLessEqual(len(plan.chunks), v2.MAX_CHUNKS)
         refutation = v2.Chunk(
