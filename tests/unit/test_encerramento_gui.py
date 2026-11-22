@@ -234,7 +234,7 @@ class EncerramentoGUI(unittest.TestCase):
         self._aguardar(lambda: janela.encerramento_confirmado)
         self.assertEqual(self.eventos[-1], ("fechou", self.gui))
 
-    def test_close_protegido_falho_retem_worker_e_concessao_ate_repetir_na_thread_dona(self):
+    def test_dashboard_pendente_antes_da_saida_reexecuta_no_primeiro_pedido(self):
         # Somente o worker abre SQLite neste caso, para que a sonda
         # identifique a concessão dele independentemente da janela.
         fabricar = main_window.Database
@@ -270,9 +270,8 @@ class EncerramentoGUI(unittest.TestCase):
         worker = janela.tab_dashboard._carregador
         self.assertTrue(worker.isRunning())
         self.assertEqual(self._sondar_manutencao(), "ocupado")
-        janela.close()
-        self.assertFalse(janela.encerramento_confirmado)
-        self.assertEqual(self._sondar_manutencao(), "ocupado")
+        # First close failure happened BEFORE the initial exit request.
+        # A single exit must wake the pending owner thread automatically.
         self._aguardar(lambda: "Solicite a saída" in janela.statusBar().currentMessage())
         permitir_close.set()
         janela.close()
@@ -280,6 +279,81 @@ class EncerramentoGUI(unittest.TestCase):
         self.assertEqual(len(donos), 1)
         self.assertNotEqual(donos[0], self.gui)
         self.assertEqual(fechamentos, donos * 2)
+        self.assertEqual(self._sondar_manutencao(), "livre")
+
+    def test_atrasos_pendente_antes_da_saida_reexecuta_no_primeiro_pedido(self):
+        janela = self._janela(real=True)
+        abrir = protegido.sqlite3.connect
+        permitir = Event()
+        tentou = Event()
+        donos, fechamentos = [], []
+        self.liberacoes.append(permitir)
+
+        class Observada(sqlite3.Connection):
+            def close(self):
+                fechamentos.append(get_ident())
+                tentou.set()
+                if not permitir.is_set():
+                    raise sqlite3.OperationalError("falha sintética de close")
+                super().close()
+
+        def conectar(*args, **kwargs):
+            donos.append(get_ident())
+            return abrir(*args, factory=Observada, **kwargs)
+
+        with patch.object(protegido.sqlite3, "connect", side_effect=conectar):
+            janela._checar_atrasos()
+            self._aguardar(tentou.is_set)
+        worker = janela._atrasos_thread
+        self.assertIsNotNone(worker)
+        self.assertTrue(worker.isRunning())
+        self._aguardar(lambda: "Solicite a saída" in janela.statusBar().currentMessage())
+        self.assertEqual(self._sondar_manutencao(), "ocupado")
+        permitir.set()
+        janela.close()
+        self._aguardar(lambda: janela.encerramento_confirmado)
+        self.assertEqual(len(donos), 1)
+        self.assertNotEqual(donos[0], self.gui)
+        self.assertEqual(fechamentos, donos * 2)
+        self.assertEqual(self._sondar_manutencao(), "livre")
+
+    def test_falha_de_close_apos_primeira_saida_exige_novo_pedido(self):
+        janela = self._janela(real=True)
+        abrir = protegido.sqlite3.connect
+        tentando = Event()
+        liberar_falha = Event()
+        fechamentos = []
+        self.liberacoes.append(liberar_falha)
+
+        class Observada(sqlite3.Connection):
+            def close(self):
+                fechamentos.append(get_ident())
+                if len(fechamentos) == 1:
+                    tentando.set()
+                    if not liberar_falha.wait(8):
+                        raise TimeoutError("Falha sintética: sincronização do teste")
+                    raise sqlite3.OperationalError("falha sintética de close")
+                super().close()
+
+        def conectar(*args, **kwargs):
+            return abrir(*args, factory=Observada, **kwargs)
+
+        with patch.object(protegido.sqlite3, "connect", side_effect=conectar):
+            janela.tab_dashboard.atualizar()
+            self._aguardar(tentando.is_set)
+        # At this instant the close is still in progress; no failure is
+        # pending yet. The initial exit must NOT authorize an unseen retry.
+        worker = janela.tab_dashboard._carregador
+        self.assertFalse(worker._fechamento_pendente.is_set())
+        janela.close()
+        liberar_falha.set()
+        self._aguardar(lambda: "Solicite a saída" in janela.statusBar().currentMessage())
+        self.assertFalse(janela.encerramento_confirmado)
+        self.assertTrue(worker.isRunning())
+        self.assertEqual(len(fechamentos), 1)
+        janela.close()
+        self._aguardar(lambda: janela.encerramento_confirmado)
+        self.assertEqual(len(fechamentos), 2)
         self.assertEqual(self._sondar_manutencao(), "livre")
 
     def test_close_falho_na_janela_bloqueia_quit_ate_novo_pedido(self):
