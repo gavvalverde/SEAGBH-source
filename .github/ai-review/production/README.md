@@ -36,20 +36,20 @@ kill-switch.
 
 ## Current v2 contract (issue #68)
 
-The trusted \`runner.py\` CLI delegates to \`production_v2.main()\`. The v1
-\`run_review\` API and historical tests remain available for regression tests.
+The trusted `runner.py` CLI delegates to `production_v2.main()`. The v1
+`run_review` API and historical tests remain available for regression tests.
 The model remains Kimi K2.6 via Baidu/OpenRouter, non-thinking, at most 4,096
 completion tokens per request with explicit routing price ceilings.
 
-\`planning_v2.py\` validates every patch from a fixed-SHA compare and partitions
+`planning_v2.py` validates every patch from a fixed-SHA compare and partitions
 large hunks without silently dropping source. Only added NEW lines receive
 numbered anchors; deletion-only fragments receive file-level anchors. All
 context remains in the patch, and the SHA256 manifest commits to the complete
 patch bytes, including unchanged context and deletions.
 
-\`review-schema-v2.json\` requires an explicit \`analysis_status=complete\` as
+`review-schema-v2.json` requires an explicit `analysis_status=complete` as
 well as causal trigger, mechanism, impact, refutations considered and original
-\`anchor_id\` for each candidate. Low overall confidence or any incomplete
+`anchor_id` for each candidate. Low overall confidence or any incomplete
 answer is retained, never published as a clean global review. The additional
 adjudication call may retain or drop original claims, not rewrite causes.
 
@@ -59,9 +59,9 @@ before any paid inference. All requests receive an aggregate US$0.20 preflight
 cap; no retry is permitted. The external OpenRouter key spending limit remains
 the independent financial backstop. PR code is never executed.
 
-The offline CI executes \`test_planning_v2.py\` and
-\`test_production_v2.py\` alongside the legacy suites in Python 3.12 on
-Linux and Windows. See \`docs/ai-reviewer-v2-architecture.md\`.
+The offline CI executes `test_planning_v2.py` and
+`test_production_v2.py` alongside the legacy suites in Python 3.12 on
+Linux and Windows. See `docs/ai-reviewer-v2-architecture.md`.
 
 ## Historical v1 notes
 
