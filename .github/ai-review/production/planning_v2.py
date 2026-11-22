@@ -17,7 +17,7 @@ from transport import Problem
 
 _HUNK = re.compile(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@.*")
 MAX_FRAGMENT_BYTES = 9000
-MAX_CHUNK_BYTES = 32000
+MAX_CHUNK_BYTES = 42000
 MAX_CHUNKS = 8
 MAX_ANCHORS = 6000
 
@@ -202,7 +202,11 @@ def build_plan(github, pinned):
         source_bytes = len(("# File " + json.dumps(part.path) + "\n" + part.patch).encode("utf-8"))
         anchors = _anchors_for(part)
         # Reserve bytes for the model-facing anchor registry and JSON envelope.
-        estimate = source_bytes + sum(72 + len(a[1].encode("utf-8")) for a in anchors)
+        # Registry is grouped by path: each compact [anchor_id, line] pair is
+        # transmitted once; original hashes remain in the trusted manifest.
+        estimate = source_bytes + 100 + len(part.path.encode("utf-8")) + sum(
+            35 + len(str(a[2])) for a in anchors
+        )
         if estimate > MAX_CHUNK_BYTES:
             raise Problem("v2_fragment_budget")
         if pending and size + estimate > MAX_CHUNK_BYTES:

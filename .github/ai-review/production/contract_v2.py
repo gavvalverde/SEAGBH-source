@@ -78,11 +78,13 @@ def make_payload(pinned, plan, chunk, *, candidates=None):
             "# File " + json.dumps(p.path, ensure_ascii=True) + "\n" + p.patch
             for p in chunk.parts
         ),
-        "anchors": [{
-            "anchor_id": a[0], "path": a[1], "line_new": a[2],
-            "sha256": a[3], "chunk_id": a[4]
-        } for a in chunk.anchors],
+        # Compact transport view: IDs already commit to path, line, source and chunk.
+        # Full hashes/paths remain verified by the trusted local registry.
+        "anchors": {},
+
     }
+    for a in chunk.anchors:
+        supplied["anchors"].setdefault(a[1], []).append([a[0], a[2]])
     if candidates is not None:
         supplied["candidates_to_refute"] = candidates
     instruction = (
