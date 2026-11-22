@@ -128,14 +128,13 @@ def split_patch(path, patch, status):
 
 def _anchors_for(part):
     lines = evidence.new_file_lines(part.patch)
-    if not lines and part.status == "removed":
-        lines = {None: ""}
     if not lines:
-        raise Problem("v2_hunk_unanchorable")
-    result = []
+        # Trechos com somente remocoes nao possuem coordenada NEW.
+        lines = {None: ""}
+        result = []
     for line, source in sorted(lines.items(), key=lambda pair: -1 if pair[0] is None else pair[0]):
         digest = hashlib.sha256(json.dumps(
-            [part.path, line, source], ensure_ascii=True
+            [part.path, line, part.patch if line is None else source], ensure_ascii=True
         ).encode("utf-8")).hexdigest()
         result.append(("a" + digest[:16], part.path, line, digest))
     return result

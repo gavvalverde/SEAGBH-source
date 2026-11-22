@@ -63,10 +63,10 @@ class PlanningV2Tests(unittest.TestCase):
             plan.anchors["forged"] = first
 
     def test_15_files_over_80kib_are_all_included_in_multiple_chunks(self):
-        files = [fixture(f"src/feature_{i:02}.py", new_lines=35, width=75)
+        files = [fixture(f"src/feature_{i:02}.py", new_lines=35, width=160)
                  for i in range(14)]
         files.append(fixture("tests/unit/test_encerramento_gui.py",
-                             new_lines=35, width=75))
+                             new_lines=35, width=160))
         size = sum(len(x["patch"].encode("utf-8")) for x in files)
         self.assertGreater(size, 81920)
         plan = v2.build_plan(GH(files), pinned(15))
