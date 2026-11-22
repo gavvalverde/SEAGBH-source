@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import planning_v2 as v2
+import contract_v2 as contract
 import runner
 from transport import Problem
 
@@ -78,6 +79,77 @@ class PlanningV2Tests(unittest.TestCase):
         self.assertLessEqual(len(plan.chunks), v2.MAX_CHUNKS)
         self.assertEqual(set(plan.files),
                          set(p.path for c in plan.chunks for p in c.parts))
+
+    def test_pr65_scale_57_hunks_full_refutation_preflight(self):
+        # Offline geometric fixture based on measured PR #65: 15 files,
+        # 57 hunks, 1241 added lines, 259 deleted lines, 511 context lines.
+        files = []
+        hunk_num = 0
+        for index in range(14):
+            old_pos = 1
+            new_pos = 1
+            hunks = []
+            file_additions = file_deletions = 0
+            for _ in range(4):
+                changed = 16 + (hunk_num < 25)
+                removed = 4 + (hunk_num < 35)
+                context = 9 + (hunk_num < 7)
+                old_count = removed + context
+                new_count = changed + context
+                rows = (
+                    [" keep_context_{}_{}_{}".format(index, hunk_num, i)
+                     for i in range(context)] +
+                    ["-previous_value_{}_{}".format(hunk_num, i)
+                     for i in range(removed)] +
+                    ["+value_{}_{} = {}".format(hunk_num, i, "x" * 35)
+                     for i in range(changed)]
+                )
+                hunks.append(
+                    "@@ -{},{} +{},{} @@\n{}".format(
+                        old_pos, old_count, new_pos, new_count,
+                        "\n".join(rows)))
+                old_pos += old_count + 4
+                new_pos += new_count + 4
+                file_additions += changed
+                file_deletions += removed
+                hunk_num += 1
+            files.append({
+                "filename": "src/feature_{:02}.py".format(index),
+                "status": "modified", "patch": "\n".join(hunks),
+                "additions": file_additions, "deletions": file_deletions,
+            })
+        big = {
+            "filename": "tests/unit/test_encerramento_gui.py",
+            "status": "added",
+            "patch": "@@ -0,0 +1,320 @@\n" +
+                     "\n".join("+test_worker_path_{} = {}".format(i, "x"*55)
+                               for i in range(320)),
+            "additions": 320, "deletions": 0,
+        }
+        files.append(big)
+        self.assertEqual(hunk_num + 1, 57)
+        self.assertEqual(sum(f["additions"] for f in files), 1241)
+        self.assertEqual(sum(f["deletions"] for f in files), 259)
+        self.assertGreater(len(big["patch"].encode("utf-8")), 20_000)
+        diff_bytes = sum(len(f["patch"].encode("utf-8")) for f in files)
+        self.assertGreater(diff_bytes, 81920)
+        self.assertLess(diff_bytes, 125000)
+        snap = runner.Snapshot(77, BASE, HEAD, "Real-scale SQLite review",
+                               "Technical description " * 100, len(files))
+        plan = v2.build_plan(GH(files), snap)
+        self.assertEqual(len(plan.files), 15)
+        self.assertEqual(plan.added_total, 1241)
+        self.assertEqual(len(plan.anchors), 1241)
+        self.assertLessEqual(len(plan.chunks), v2.MAX_CHUNKS)
+        refutation = v2.Chunk(
+            0,
+            tuple(p for chunk in plan.chunks for p in chunk.parts),
+            tuple(a for chunk in plan.chunks for a in chunk.anchors),
+        )
+        self.assertGreater(contract.refutation_preflight(snap, plan, refutation), 0)
+        discovery = [contract.make_payload(snap, plan, c) for c in plan.chunks]
+        self.assertLessEqual(contract.worst_case_usd(discovery),
+                             contract.MAX_TOTAL_USD)
 
     def test_one_large_hunk_is_partitioned_with_original_new_coordinates(self):
         entry = fixture("src/huge.py", new_lines=180, width=100)
