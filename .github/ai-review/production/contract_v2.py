@@ -35,6 +35,12 @@ SYSTEM_PROMPT = (
     "summary, reviewed_scope, confidence_overall and findings. Each finding MUST "
     "have anchor_id, severity, category, confidence, title, trigger, mechanism, "
     "impact, counterevidence and suggested_fix, with nonempty causal prose. "
+    "Be VERY concise: mechanism MAX 450 characters (schema hard limit 800), "
+    "trigger MAX 250 (hard 600), impact MAX 250 (hard 600), "
+    "counterevidence MAX 350 (hard 800), suggested_fix MAX 200 (hard 500), "
+    "title MAX 100 (hard 160), summary MAX 400 (hard 800), "
+    "reviewed_scope MAX 400 (hard 900). Use one or two precise sentences "
+    "per causal field. Never repeat the patch or lengthy quotations in prose. "
     "Use only the enumerations from the supplied schema and NO additional keys. "
     "Each finding MUST select an exact supplied anchor_id, never a path/line guess. "
     "Describe trigger, causal mechanism, impact and attempted refutation. "
@@ -65,6 +71,16 @@ def remote_schema():
     obj.pop("$schema", None)
     obj.pop("$id", None)
     obj["properties"]["schema_version"] = {"enum": [2]}
+    # Strengthen provider-facing hints without weakening the local constraints.
+    finding = obj["properties"]["findings"]["items"]["properties"]
+    for field, target in {
+        "mechanism": 450, "trigger": 250, "impact": 250,
+        "counterevidence": 350, "suggested_fix": 200, "title": 100,
+    }.items():
+        finding[field]["description"] = (
+            "Keep this field UNDER {} characters. Explain the causal chain "
+            "precisely and concisely. Local schema maximum still applies."
+        ).format(target)
     return obj
 
 
