@@ -65,6 +65,13 @@ fazer o quality gate parecer verde.
 
 ## Provas e limites
 
+O contrato remoto de descoberta também limita `summary` a 240 caracteres e
+`reviewed_scope` a 360 caracteres, com instruções para NÃO repetir a lista
+de arquivos, já incluída na cobertura determinística. Os máximos locais
+continuam 800/900 e são validados sem truncamento automático. Esse ajuste
+responde ao diagnóstico real `v2_schema_maxLength_root_summary` no primeiro
+chunk do PR #65 após a integração do PR #77.
+
 CI offline Python 3.12 executa os testes originais e os novos em
 Ubuntu/Windows. O planejador cobre 15 arquivos e mais de 80 KiB sintéticos,
 incluindo tests/unit/test_encerramento_gui.py. Há provas de falta de patch,
