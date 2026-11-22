@@ -156,13 +156,15 @@ class TabDashboard(QWidget):
     def consultando(self):
         return self._carregador is not None
 
-    def solicitar_encerramento(self, *, repetir=False):
+    def solicitar_encerramento(self, *, repetir=False, repetir_pendente=False):
         self._encerrando = True
         self._timer_inicial.stop()
         if self._carregador is not None:
             self._carregador.requestInterruption()
             if repetir:
                 self._carregador.repetir_fechamento()
+            elif repetir_pendente:
+                self._carregador.repetir_fechamento_se_pendente()
 
     @pyqtSlot()
     def _consulta_finalizada(self):

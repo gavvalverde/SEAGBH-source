@@ -745,9 +745,12 @@ class MainWindow(QMainWindow):
         self.menuBar().setEnabled(False)
         self._btn_alerta_atrasos.setEnabled(False)
         if self.tab_dashboard is not None:
-            self.tab_dashboard.solicitar_encerramento()
+            # A worker may have failed to close its SQLite connection BEFORE
+            # the first exit request; wake ONLY that pending retry.
+            self.tab_dashboard.solicitar_encerramento(repetir_pendente=True)
         if self._atrasos_thread is not None:
             self._atrasos_thread.requestInterruption()
+            self._atrasos_thread.repetir_fechamento_se_pendente()
         if self._dl_thread is not None:
             self._dl_thread.cancelar()
         if self._backup_dialog is not None:

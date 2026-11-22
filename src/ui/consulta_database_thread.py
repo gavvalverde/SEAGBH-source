@@ -17,6 +17,15 @@ class ConsultaDatabaseThread(QThread):
         super().__init__(parent)
         self._abrir_banco = abrir_banco
         self._repetir_fechamento = Event()
+        # Signal set ONLY while this worker is blocked after a close failure.
+        # A first exit request should retry an ALREADY pending close, but
+        # must not preauthorize a retry for a future failure.
+        self._fechamento_pendente = Event()
+
+    def repetir_fechamento_se_pendente(self):
+        """Retry only when the owner thread is already awaiting a close retry."""
+        if self._fechamento_pendente.is_set():
+            self.repetir_fechamento()
 
     def repetir_fechamento(self):
         self._repetir_fechamento.set()
@@ -62,8 +71,14 @@ class ConsultaDatabaseThread(QThread):
             except BaseException:
                 falhou = True
                 logging.getLogger(__name__).error("Fechamento de banco em background pendente")
-                self.fechamento_falhou.emit()
-                # Uma nova solicitação da UI pode repetir o close. Cancelar
-                # a consulta nunca autoriza abandonar a conexão ou a thread.
-                self._repetir_fechamento.wait()
-                self._repetir_fechamento.clear()
+                # Expose the pending state BEFORE the Qt signal, because a
+                # closeEvent may run while that signal is still queued.
+                self._fechamento_pendente.set()
+                try:
+                    self.fechamento_falhou.emit()
+                    # The DB must only be retried by the owning worker thread.
+                    # Cancellation never authorizes abandoning this connection.
+                    self._repetir_fechamento.wait()
+                    self._repetir_fechamento.clear()
+                finally:
+                    self._fechamento_pendente.clear()
