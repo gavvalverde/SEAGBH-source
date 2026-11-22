@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 
 from jsonschema import Draft7Validator
@@ -165,7 +166,7 @@ def make_payload(pinned, plan, chunk, *, candidates=None):
                 raise Problem("v2_candidate_invalid")
             cid = row["candidate_id"]
             if (not isinstance(cid, str) or
-                    not __import__("re").fullmatch(r"c[0-9a-f]{16}", cid) or
+                    not re.fullmatch(r"c[0-9a-f]{16}", cid) or
                     cid in ids or not isinstance(row["finding"], dict)):
                 raise Problem("v2_candidate_invalid")
             ids.add(cid)

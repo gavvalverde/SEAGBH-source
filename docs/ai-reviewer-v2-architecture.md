@@ -27,7 +27,11 @@ fazer o quality gate parecer verde.
    `v2_model_low_confidence`, sem persistir resposta bruta.
    O JSON exige analysis_status=complete; qualquer resposta inconclusiva ou
    de confiança geral baixa retém publicação em vez de aparentar revisão limpa.
-   A refutação apenas retém/remove achados originais, sem reescrever causas.
+   A refutação agora usa um JSON Schema separado de veredictos e identificadores
+   opacos `candidate_id`: para CADA candidato, responde `retain`, `refute`
+   ou `uncertain` com uma contraprova curta. Não reescreve os campos de um
+   finding original. Candidatos ausentes, duplicados, desconhecidos ou incertos
+   retêm toda a revisão, em vez de fingir resultado limpo.
    Cada chunk tem uma chamada de descoberta. Candidatos existentes exigem
    outra chamada de refutação com o diff completo. Se a refutação não couber
    ou falhar, não ocorre publicação ou transformação em findings vazios.
