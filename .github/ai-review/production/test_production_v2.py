@@ -147,7 +147,12 @@ class V2Offline(unittest.TestCase):
         ):
             with self.subTest(result=result):
                 out, gh, ai = self._run([result], github=FakeGitHub())
-                self.assertEqual(out.code, "v2_semantic_incomplete")
+                expected = (
+                    "v2_model_declared_incomplete"
+                    if result["analysis_status"] == "incomplete"
+                    else "v2_model_low_confidence"
+                )
+                self.assertEqual(out.code, expected)
                 self.assertFalse(gh.posts)
                 self.assertEqual(len(ai.payloads), 1)
 
@@ -155,7 +160,7 @@ class V2Offline(unittest.TestCase):
         original = dict(CLEAN, findings=[one_finding(self.anchor)])
         out, gh, ai = self._run(
             [original, dict(CLEAN, analysis_status="incomplete", findings=[])])
-        self.assertEqual(out.code, "v2_semantic_incomplete")
+        self.assertEqual(out.code, "v2_model_declared_incomplete")
         self.assertFalse(gh.posts)
         self.assertEqual(len(ai.payloads), 2)
 
@@ -188,6 +193,10 @@ class V2Offline(unittest.TestCase):
         pl = planning.build_plan(self.gh, pinned)
         payload = contract.make_payload(pinned, pl, pl.chunks[0])
         self.assertIn("UNTRUSTED DATA", payload["messages"][0]["content"])
+        self.assertIn("THIS CHUNK", payload["messages"][0]["content"])
+        data = json.loads(payload["messages"][1]["content"])
+        self.assertEqual(data["completion_scope"], "this_chunk_only")
+        self.assertTrue(data["other_chunks_analyzed_separately"])
         self.assertNotIn("IGNORE ALL", payload["messages"][0]["content"])
         self.assertIn("IGNORE ALL", payload["messages"][1]["content"])
         self.assertEqual(payload["provider"]["only"], ["baidu"])

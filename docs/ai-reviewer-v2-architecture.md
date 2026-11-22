@@ -20,7 +20,12 @@ fazer o quality gate parecer verde.
    somente IDs fornecidos. contract_v2.py verifica o schema Draft 7 e
    recupera a linha literal da fonte trusted. A âncora localiza o código,
    mas não comprova a causalidade.
-3. O JSON exige analysis_status=complete; qualquer resposta inconclusiva ou
+3. No estágio de descoberta, analysis_status=complete significa análise
+   integral do CHUNK fornecido, não do PR todo. Os demais chunks são
+   analisados em chamadas independentes e refutados com o diff completo.
+   O diagnóstico operacional separa `v2_model_declared_incomplete` de
+   `v2_model_low_confidence`, sem persistir resposta bruta.
+   O JSON exige analysis_status=complete; qualquer resposta inconclusiva ou
    de confiança geral baixa retém publicação em vez de aparentar revisão limpa.
    A refutação apenas retém/remove achados originais, sem reescrever causas.
    Cada chunk tem uma chamada de descoberta. Candidatos existentes exigem
