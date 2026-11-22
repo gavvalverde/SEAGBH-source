@@ -126,7 +126,7 @@ def split_patch(path, patch, status):
     return result
 
 
-def _anchors_for(part):
+def _anchors_for(part, chunk_id=0):
     lines = evidence.new_file_lines(part.patch)
     if not lines:
         # Trechos com somente remocoes nao possuem coordenada NEW.
@@ -134,7 +134,7 @@ def _anchors_for(part):
         result = []
     for line, source in sorted(lines.items(), key=lambda pair: -1 if pair[0] is None else pair[0]):
         digest = hashlib.sha256(json.dumps(
-            [part.path, line, part.patch if line is None else source], ensure_ascii=True
+            [part.path, line, part.patch if line is None else source, chunk_id], ensure_ascii=True
         ).encode("utf-8")).hexdigest()
         result.append(("a" + digest[:16], part.path, line, digest))
     return result
@@ -189,7 +189,7 @@ def build_plan(github, pinned):
             raise Problem("v2_chunk_limit")
         values = []
         for p in pending:
-            for anchor in _anchors_for(p):
+            for anchor in _anchors_for(p, len(chunks) + 1):
                 if anchor[0] in registry:
                     raise Problem("v2_anchor_collision")
                 registry[anchor[0]] = anchor
