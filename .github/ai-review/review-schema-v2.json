@@ -7,6 +7,7 @@
     "schema_version",
     "summary",
     "reviewed_scope",
+    "analysis_status",
     "confidence_overall",
     "findings"
   ],
@@ -115,6 +116,14 @@
           }
         }
       }
+    },
+    "analysis_status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete"
+      ],
+      "description": "complete somente quando todos os trechos fornecidos foram analisados com contexto suficiente; incomplete caso contrario. O runner nao publica parecer limpo para incomplete."
     }
   }
 }

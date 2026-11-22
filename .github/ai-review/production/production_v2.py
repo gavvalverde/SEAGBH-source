@@ -69,7 +69,11 @@ def run_review_v2(event, enabled, github, model, *, version):
         plan = planning.build_plan(github, pinned)
         coverage = plan.coverage
         payloads = [contract.make_payload(pinned, plan, chunk) for chunk in plan.chunks]
-        # Reserve enough for ONE adversarial refutation before any paid request.
+        # Reject a provably impossible full-diff refutation before ANY paid
+        # discovery request, including when all model replies might be clean.
+        refutation_scope = _adjudication_chunk(plan)
+        contract.refutation_preflight(pinned, plan, refutation_scope)
+        # Price ceiling includes the entire maximum refutation request.
         contract.worst_case_usd(payloads, reserve_refutation=True)
 
         candidates = []
@@ -84,6 +88,7 @@ def run_review_v2(event, enabled, github, model, *, version):
             result = contract.validate_reply(
                 content, frozenset(a[0] for a in chunk.anchors)
             )
+            contract.require_semantic_completion(result)
             candidates.extend(result["findings"])
             coverage["chunks_completed"] += 1
             if len(candidates) > contract.MAX_CANDIDATES:
@@ -93,7 +98,7 @@ def run_review_v2(event, enabled, github, model, *, version):
             stage = "refutation"
             # If the full diff plus candidates exceeds the per-request ceiling,
             # no claim is published and none is silently discarded.
-            refute_chunk = _adjudication_chunk(plan)
+            refute_chunk = refutation_scope
             refute_payload = contract.make_payload(
                 pinned, plan, refute_chunk, candidates=candidates
             )
@@ -108,9 +113,12 @@ def run_review_v2(event, enabled, github, model, *, version):
             stage = "validation"
             allowed = frozenset(c["anchor_id"] for c in candidates)
             verdict = contract.validate_reply(content, allowed)
-            original = {(x["anchor_id"], x["category"], x["title"]) for x in candidates}
-            if any((x["anchor_id"], x["category"], x["title"]) not in original
+            contract.require_semantic_completion(verdict)
+            original = {json.dumps(x, sort_keys=True, ensure_ascii=True)
+                        for x in candidates}
+            if any(json.dumps(x, sort_keys=True, ensure_ascii=True) not in original
                    for x in verdict["findings"]):
+                # Refutation may retain or drop claims, NEVER rewrite causes.
                 raise Problem("v2_refutation_changed_claim")
             candidates = verdict["findings"]
 

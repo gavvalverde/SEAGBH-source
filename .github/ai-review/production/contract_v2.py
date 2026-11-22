@@ -17,6 +17,10 @@ Draft7Validator.check_schema(SCHEMA)
 VALIDATOR = Draft7Validator(SCHEMA)
 
 MAX_REQUEST_BYTES = 90000
+# Discovery stays small. Complete cross-file refutation can be larger, bounded
+# independently and evaluated BEFORE any paid discovery call.
+MAX_REFUTATION_BYTES = 200000
+MAX_REFUTATION_CANDIDATE_RESERVE_BYTES = 50000
 MAX_COMPLETION_TOKENS = 4096
 MAX_TOTAL_USD = 0.20
 MAX_CANDIDATES = 12
@@ -31,6 +35,11 @@ SYSTEM_PROMPT = (
     "Each finding MUST select an exact supplied anchor_id, never a path/line guess. "
     "Describe trigger, causal mechanism, impact and attempted refutation. "
     "An anchor proves location, not bug causality. Drop speculative claims. "
+    "Use analysis_status=complete ONLY if the entire provided scope was "
+    "actually examined and the answer is sufficiently supported. If scope, "
+    "context, budget or reasoning is insufficient, use analysis_status=incomplete. "
+    "During refutation, only retain or remove EXACT original candidate objects: "
+    "do not rewrite trigger, mechanism, impact or any causal fields. "
     "Do not infer missing tests or absent callers if they were not supplied."
 )
 
@@ -116,9 +125,42 @@ def make_payload(pinned, plan, chunk, *, candidates=None):
             },
         },
     }
-    if wire_bytes(payload) > MAX_REQUEST_BYTES:
-        raise Problem("v2_request_limit")
+    bound = MAX_REFUTATION_BYTES if candidates is not None else MAX_REQUEST_BYTES
+    if wire_bytes(payload) > bound:
+        raise Problem("v2_refutation_request_limit" if candidates is not None
+                      else "v2_request_limit")
     return payload
+
+
+def refutation_preflight(pinned, plan, chunk):
+    """Prove entire diff and reserved candidate context fit BEFORE model spend.
+
+    A failed preflight never turns into a clean/partial review. We reserve
+    enough space for up to 50 KiB of candidate JSON. Actual refutation is
+    separately checked after discovery; malformed/oversized candidates fail
+    closed rather than being silently clipped.
+    """
+    try:
+        empty_payload = make_payload(pinned, plan, chunk, candidates=[])
+    except Problem as error:
+        if error.code == "v2_refutation_request_limit":
+            raise Problem("v2_refutation_preflight_limit") from None
+        raise
+    if (wire_bytes(empty_payload) + MAX_REFUTATION_CANDIDATE_RESERVE_BYTES
+            > MAX_REFUTATION_BYTES):
+        raise Problem("v2_refutation_preflight_limit")
+    return wire_bytes(empty_payload)
+
+
+def require_semantic_completion(result):
+    """Only a complete, non-low-confidence review can claim no defects.
+
+    The structured field is authoritative; prose is never silently
+    reclassified as complete. Low overall confidence requires human review.
+    """
+    if (result["analysis_status"] != "complete" or
+            result["confidence_overall"] == "low"):
+        raise Problem("v2_semantic_incomplete")
 
 
 def worst_case_usd(payloads, *, reserve_refutation=True):
@@ -128,7 +170,7 @@ def worst_case_usd(payloads, *, reserve_refutation=True):
     input_bytes = sum(wire_bytes(p) for p in payloads)
     completion = len(payloads) * MAX_COMPLETION_TOKENS
     if reserve_refutation:
-        input_bytes += MAX_REQUEST_BYTES
+        input_bytes += MAX_REFUTATION_BYTES
         completion += MAX_COMPLETION_TOKENS
     estimate = (
         input_bytes * runner.PRODUCTION_INPUT_USD_M_CEILING +

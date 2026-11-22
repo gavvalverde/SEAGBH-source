@@ -13,7 +13,7 @@ from test_runner import FakeGitHub, event, file
 CLEAN = {
     "schema_version": 2, "summary": "Revisão sintética concluída",
     "reviewed_scope": "Arquivo synthetic totalmente avaliado",
-    "confidence_overall": "medium", "findings": [],
+    "confidence_overall": "medium", "analysis_status": "complete", "findings": [],
 }
 
 
@@ -123,11 +123,53 @@ class V2Offline(unittest.TestCase):
 
     def test_refutation_cannot_introduce_new_claim(self):
         original = dict(CLEAN, findings=[one_finding(self.anchor)])
-        changed = dict(CLEAN, findings=[
-            dict(one_finding(self.anchor), title="Outro defeito sem justificativa")
-        ])
-        out, gh, ai = self._run([original, changed])
-        self.assertEqual(out.code, "v2_refutation_changed_claim")
+        for changed_claim in (
+            dict(one_finding(self.anchor), title="Outro defeito sem justificativa"),
+            dict(one_finding(self.anchor), mechanism="Uma outra causa completamente nova"),
+            dict(one_finding(self.anchor), trigger="Uma entrada diferente nao revisada"),
+            dict(one_finding(self.anchor), impact="Um impacto causal totalmente diferente"),
+        ):
+            with self.subTest(changed_claim=changed_claim):
+                out, gh, ai = self._run(
+                    [original, dict(CLEAN, findings=[changed_claim])],
+                    github=FakeGitHub(),
+                )
+                self.assertEqual(out.code, "v2_refutation_changed_claim")
+                self.assertFalse(gh.posts)
+
+    def test_semantically_incomplete_discovery_never_publishes_clean(self):
+        for result in (
+            dict(CLEAN, analysis_status="incomplete"),
+            dict(CLEAN, confidence_overall="low"),
+            dict(CLEAN, analysis_status="incomplete", findings=[one_finding(self.anchor)]),
+        ):
+            with self.subTest(result=result):
+                out, gh, ai = self._run([result], github=FakeGitHub())
+                self.assertEqual(out.code, "v2_semantic_incomplete")
+                self.assertFalse(gh.posts)
+                self.assertEqual(len(ai.payloads), 1)
+
+    def test_semantically_incomplete_refutation_never_publishes(self):
+        original = dict(CLEAN, findings=[one_finding(self.anchor)])
+        out, gh, ai = self._run(
+            [original, dict(CLEAN, analysis_status="incomplete", findings=[])])
+        self.assertEqual(out.code, "v2_semantic_incomplete")
+        self.assertFalse(gh.posts)
+        self.assertEqual(len(ai.payloads), 2)
+
+    def test_impossible_full_diff_refutation_rejected_before_paid_call(self):
+        # All chunks fit individually, but full refutation exceeds the upper
+        # bound. Older code spent discovery calls before noticing the defect.
+        gh = FakeGitHub()
+        n = 900
+        patch_text = ("@@ -1,{0} +1,{0} @@\n".format(n) +
+                      "\n".join("-old_line_{}".format(i) for i in range(n)) +
+                      "\n" +
+                      "\n".join("+new_line_{}_{}".format(i, "x"*210) for i in range(n)))
+        gh.files = [file("src/large.py", patch_text, n, n)]
+        out, gh, ai = self._run([CLEAN], github=gh)
+        self.assertEqual(out.code, "v2_refutation_preflight_limit")
+        self.assertEqual(len(ai.payloads), 0)
         self.assertFalse(gh.posts)
 
     def test_never_suppress_schema_error_as_no_findings(self):
@@ -159,6 +201,9 @@ class V2Offline(unittest.TestCase):
         schema = payload["response_format"]["json_schema"]["schema"]
         self.assertEqual(schema["properties"]["schema_version"], {"enum": [2]})
         self.assertEqual(contract.SCHEMA["properties"]["schema_version"], {"const": 2})
+        self.assertIn("analysis_status", contract.SCHEMA["required"])
+        self.assertEqual(contract.MAX_REFUTATION_BYTES, 200000)
+        self.assertGreater(contract.MAX_REFUTATION_CANDIDATE_RESERVE_BYTES, 0)
         schema["properties"]["schema_version"]["enum"].append(3)
         self.assertEqual(contract.remote_schema()["properties"]["schema_version"]["enum"], [2])
 
