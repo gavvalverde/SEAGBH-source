@@ -102,6 +102,27 @@ class PlanningV2Tests(unittest.TestCase):
         plan = v2.build_plan(GH([entry]), pinned(1))
         self.assertEqual(list(plan.anchors.values())[0][2], None)
 
+    def test_only_added_lines_receive_line_anchors(self):
+        entry = {
+            "filename": "src/with_context.py", "status": "modified",
+            "patch": "@@ -1,3 +1,3 @@\n keep_before\n-old\n+new_value = True\n keep_after",
+            "additions": 1, "deletions": 1,
+        }
+        plan = v2.build_plan(GH([entry]), pinned(1))
+        self.assertEqual(len(plan.anchors), 1)
+        self.assertEqual(next(iter(plan.anchors.values()))[2], 2)
+        self.assertIn(" keep_after", plan.chunks[0].parts[0].patch)
+
+    def test_deletion_only_with_context_has_file_anchor(self):
+        entry = {
+            "filename": "src/deletion.py", "status": "modified",
+            "patch": "@@ -1,2 +1,1 @@\n keep_context\n-delete_me",
+            "additions": 0, "deletions": 1,
+        }
+        plan = v2.build_plan(GH([entry]), pinned(1))
+        self.assertEqual(len(plan.anchors), 1)
+        self.assertIsNone(next(iter(plan.anchors.values()))[2])
+
     def test_no_newline_markers_remain_attached_to_original_line(self):
         entry = {
             "filename": "src/eof.py", "status": "modified",
