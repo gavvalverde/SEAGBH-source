@@ -6,52 +6,42 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout,
     QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 
 from core.database import Database
+from ui.consulta_database_thread import ConsultaDatabaseThread
 
 
-class _CarregarDadosThread(QThread):
+class _CarregarDadosThread(ConsultaDatabaseThread):
     """Thread para carregar dados do dashboard em background."""
-    dados_prontos = pyqtSignal(dict)  # Emite os dados carregados
-
-    def run(self):
-        """Carrega os dados sem bloquear a UI."""
-        try:
-            # ⚠️ IMPORTANTE: Criar nova instância de Database nesta thread!
-            # SQLite não permite usar a mesma conexão em threads diferentes
-            db = Database()
-            
-            dados = {
-                'total_equip': len(db.todos_equipamentos_completos()),
-                'eventos_ativos': db.eventos_em_andamento(),
-                'em_manut': db.equipamentos_em_manutencao(),
-                'atrasos': db.eventos_atrasados(),
-            }
-            self.dados_prontos.emit(dados)
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Erro ao carregar dados do dashboard: {e}")
-            # Emite dados vazios em caso de erro
-            self.dados_prontos.emit({
-                'total_equip': 0,
-                'eventos_ativos': [],
-                'em_manut': [],
-                'atrasos': [],
-            })
+    def consultar(self, db):
+        return {
+            'total_equip': len(db.todos_equipamentos_completos()),
+            'eventos_ativos': db.eventos_em_andamento(),
+            'em_manut': db.equipamentos_em_manutencao(),
+            'atrasos': db.eventos_atrasados(),
+        }
 
 
 class TabDashboard(QWidget):
     """Painel inicial com estatísticas do sistema."""
 
-    def __init__(self, db: Database, parent=None):
+    consulta_finalizada = pyqtSignal()
+    fechamento_falhou = pyqtSignal()
+
+    def __init__(self, db: Database, parent=None, *, abrir_banco=Database):
         super().__init__(parent)
         self.db = db
+        self._abrir_banco = abrir_banco
         self._carregador = None
+        self._encerrando = False
         self._build_ui()
-        # Agenda o carregamento de dados em background thread
-        QTimer.singleShot(100, self._carregar_dados_async)
+        self._timer_inicial = QTimer(self)
+        self._timer_inicial.setSingleShot(True)
+        self._timer_inicial.timeout.connect(self._carregar_dados_async)
+
+    def agendar_carregamento_inicial(self):
+        self._timer_inicial.start(100)
 
     def _build_ui(self):
         root = QVBoxLayout(self)
@@ -62,6 +52,8 @@ class TabDashboard(QWidget):
         titulo = QLabel("Painel Geral")
         titulo.setProperty("role", "title")
         root.addWidget(titulo)
+        self._status_consulta = QLabel("Carregando dados…")
+        root.addWidget(self._status_consulta)
 
         # ── Cards de estatísticas ─────────────────────────────────────────
         cards_layout = QHBoxLayout()
@@ -149,12 +141,58 @@ class TabDashboard(QWidget):
 
     def _carregar_dados_async(self):
         """Inicia o carregamento de dados em background thread."""
-        if self._carregador is not None and self._carregador.isRunning():
-            return  # Já está carregando
-        
-        self._carregador = _CarregarDadosThread()
-        self._carregador.dados_prontos.connect(self._atualizar_com_dados)
-        self._carregador.start()
+        if self._encerrando or self._carregador is not None:
+            return
+        self._timer_inicial.stop()
+        worker = _CarregarDadosThread(self._abrir_banco, self)
+        self._carregador = worker
+        worker.pronto.connect(self._receber_dados)
+        worker.falha.connect(self._mostrar_falha)
+        worker.fechamento_falhou.connect(self._mostrar_falha_fechamento)
+        worker.finished.connect(self._consulta_finalizada)
+        worker.start()
+
+    @property
+    def consultando(self):
+        return self._carregador is not None
+
+    def solicitar_encerramento(self, *, repetir=False, repetir_pendente=False):
+        self._encerrando = True
+        self._timer_inicial.stop()
+        if self._carregador is not None:
+            self._carregador.requestInterruption()
+            if repetir:
+                self._carregador.repetir_fechamento()
+            elif repetir_pendente:
+                self._carregador.repetir_fechamento_se_pendente()
+
+    @pyqtSlot()
+    def _consulta_finalizada(self):
+        worker = self._carregador
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._consulta_finalizada)
+            return
+        self._carregador = None
+        worker.deleteLater()
+        self.consulta_finalizada.emit()
+
+    @pyqtSlot(object)
+    def _receber_dados(self, dados):
+        if self.sender() is self._carregador and not self._encerrando:
+            self._status_consulta.hide()
+            self._atualizar_com_dados(dados)
+
+    @pyqtSlot()
+    def _mostrar_falha(self):
+        if self.sender() is self._carregador and not self._encerrando:
+            self._status_consulta.setText("Não foi possível atualizar o painel.")
+            self._status_consulta.show()
+
+    @pyqtSlot()
+    def _mostrar_falha_fechamento(self):
+        self._status_consulta.setText("Conexão pendente de fechamento. Solicite a saída para tentar novamente.")
+        self._status_consulta.show()
+        self.fechamento_falhou.emit()
 
     def _atualizar_com_dados(self, dados: dict):
         """Atualiza a UI com os dados carregados."""
