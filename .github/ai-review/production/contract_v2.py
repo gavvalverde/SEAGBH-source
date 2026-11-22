@@ -51,10 +51,18 @@ def remote_schema():
 
 def make_payload(pinned, plan, chunk, *, candidates=None):
     mode = "refute" if candidates is not None else "discover"
-    if chunk not in plan.chunks:
-        raise Problem("v2_unknown_chunk")
-    if candidates is not None and (not isinstance(candidates, list) or len(candidates) > MAX_CANDIDATES):
-        raise Problem("v2_candidate_limit")
+    original_parts = {part for original in plan.chunks for part in original.parts}
+    original_anchors = set(plan.anchors)
+    if candidates is None:
+        if chunk not in plan.chunks:
+            raise Problem("v2_unknown_chunk")
+    else:
+        if (chunk.index != 0 or not chunk.parts or
+                not set(chunk.parts).issubset(original_parts) or
+                not all(row[0] in original_anchors for row in chunk.anchors)):
+            raise Problem("v2_untrusted_refutation_chunk")
+        if not isinstance(candidates, list) or len(candidates) > MAX_CANDIDATES:
+            raise Problem("v2_candidate_limit")
     supplied = {
         "base_sha": pinned.base_sha,
         "head_sha": pinned.head_sha,
