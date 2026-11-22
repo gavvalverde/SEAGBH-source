@@ -39,7 +39,11 @@ fazer o quality gate parecer verde.
 5. Publicação única após releitura do HEAD, marker de deduplicação e
    confirmação. pull_request_target executa exclusivamente scripts do
    workflow SHA trusted; nenhum código de PR é executado.
-6. Logs mostram status, cobertura, uso e códigos fixos, nunca a saída
+6. Instruções do provedor incentivam limites bem abaixo do hard max do schema
+   para campos de explicação causal (mechanism <= 450 caracteres, hard max 800).
+   O schema local não é relaxado nem as respostas são truncadas/corrigidas
+   automaticamente. Um excesso continua interrompendo a publicação.
+   Logs mostram status, cobertura, uso e códigos fixos, nunca a saída
    bruta do modelo, segredos ou conteúdo dos patches. Falhas de schema
    são classificadas usando SOMENTE palavras-chave e nomes de campos do
    schema confiável (required/type/enum/const/minLength/etc.), nunca dados

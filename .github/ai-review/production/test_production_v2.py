@@ -109,6 +109,32 @@ class V2Offline(unittest.TestCase):
                 self.assertEqual(out.exit_code, 1)
                 self.assertFalse(gh.posts)
 
+    def test_model_length_diagnostics_remain_fail_closed(self):
+        long_mechanism = "This model text must never appear in a log. " * 30
+        doc = dict(CLEAN, findings=[
+            dict(one_finding(self.anchor), mechanism=long_mechanism)
+        ])
+        out, gh, ai = self._run([doc], github=FakeGitHub())
+        self.assertEqual(out.code, "v2_schema_maxLength_finding_mechanism")
+        self.assertFalse(out.published)
+        self.assertFalse(gh.posts)
+        self.assertNotIn("This model text", out.code)
+
+    def test_v2_prompt_uses_short_causal_targets_without_schema_relaxation(self):
+        pinned = runner.event_snapshot(event(), "true")
+        payload = contract.make_payload(pinned, self.plan, self.plan.chunks[0])
+        prompt = payload["messages"][0]["content"]
+        self.assertIn("mechanism MAX 450 characters", prompt)
+        self.assertIn("counterevidence MAX 350", prompt)
+        remote = payload["response_format"]["json_schema"]["schema"]
+        field = remote["properties"]["findings"]["items"]["properties"]["mechanism"]
+        self.assertEqual(field["maxLength"], 800)
+        self.assertIn("UNDER 450 characters", field["description"])
+        self.assertEqual(
+            contract.SCHEMA["properties"]["findings"]["items"]["properties"]["mechanism"]["maxLength"],
+            800,
+        )
+
     def test_schema_failure_codes_never_contain_untrusted_response(self):
         cases = [
             (dict(CLEAN, findings=[
