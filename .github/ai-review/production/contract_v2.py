@@ -224,7 +224,7 @@ def trusted_line(plan, anchor_id):
                 continue
             if line is None:
                 raw = part.patch
-                if not evidence.new_file_lines(raw):
+                if part.additions == 0:
                     value = raw
                 else:
                     continue
