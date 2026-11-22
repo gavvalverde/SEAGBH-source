@@ -1,0 +1,24 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "licenses": {
+      "$id": {
+        ".read": true,
+        ".write": "auth != null && auth.token.admin === true && auth.token.exp * 1000 > now && $id !== 'bloqueio-licenca'"
+      }
+    },
+    "revoked": {
+      "$id": {
+        ".read": "auth != null && auth.token.admin === true && auth.token.exp * 1000 > now",
+        ".write": "auth != null && auth.token.admin === true && auth.token.exp * 1000 > now && $id !== 'bloqueio-revogacao'"
+      }
+    },
+    "updates": {
+      "latest": {
+        ".read": true,
+        ".write": "auth != null && auth.token.admin === true && auth.token.exp * 1000 > now"
+      }
+    }
+  }
+}
