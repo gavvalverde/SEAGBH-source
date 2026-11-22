@@ -7,13 +7,15 @@ Executar:  python tools/gerador_chaves.py
 
 import sys
 import os
-import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import json
 import hashlib
+import logging
 from datetime import datetime, timedelta
+from http.client import HTTPException
+from pathlib import Path
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
@@ -43,172 +45,19 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, QDate, QThread, pyqtSignal
 from PyQt6.QtGui import QGuiApplication, QColor, QIcon
 
+from core.firebase_auth import (
+    FalhaAuth,
+    api_key_firebase as _firebase_api_key,
+    carregar_api_key,
+    login_firebase as _login_firebase,
+    logout_firebase as _logout,
+    sessao_firebase_ativa,
+    token_firebase as _get_id_token,
+)
 from core.licenca import gerar_chave, validar_chave, PLANOS, FIREBASE_URL, DIAS_ALERTA
 
 _HISTORICO_PATH = os.path.join(os.path.dirname(__file__), "historico_chaves.json")
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Autenticação Firebase (email/senha) — sessão apenas em memória
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _load_env_file() -> None:
-    """Carrega variáveis do .env da raiz (sem sobrescrever env já definido)."""
-    env_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".env"
-    )
-    try:
-        with open(env_path, "r", encoding="utf-8") as f:
-            for linha in f:
-                linha = linha.strip()
-                if not linha or linha.startswith("#") or "=" not in linha:
-                    continue
-                key, value = linha.split("=", 1)
-                key = key.strip()
-                value = value.strip().strip('"').strip("'")
-                if key and key not in os.environ:
-                    os.environ[key] = value
-    except OSError:
-        pass  # Sem .env o fluxo segue (API key pode vir do ambiente do SO)
-
-
-_load_env_file()
-
-# API key pública do Firebase (não é segredo), carregada do ambiente.
-# NUNCA colocar a chave diretamente no código-fonte.
-def _firebase_api_key() -> str:
-    """Retorna o valor atual da API key pública do Firebase a partir do ambiente."""
-    return os.environ.get("SEAGBH_FIREBASE_API_KEY", "")
-
-_FIREBASE_AUTH_URL = (
-    "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
-)
-_FIREBASE_TOKEN_URL = "https://securetoken.googleapis.com/v1/token"
-
-# Sessão de autenticação — SOMENTE em memória. NUNCA persistir em disco.
-_AUTH_SESSION: dict = {
-    "id_token": None,
-    "refresh_token": None,
-    "uid": None,
-    "expira_em": 0.0,  # timestamp unix (time.time())
-}
-
-
-def _login_firebase(email: str, senha: str) -> bool:
-    """Autentica no Firebase Authentication (REST) e preenche a sessão.
-
-    A senha é usada apenas na requisição HTTP e descartada em seguida.
-    Nunca é logada, salva em arquivo nem incluída em histórico.
-    """
-    import logging
-    logger = logging.getLogger(__name__)
-
-    if not _firebase_api_key():
-        logger.error("SEAGBH_FIREBASE_API_KEY não configurada.")
-        return False
-
-    _logout()
-    body = json.dumps({
-        "email": email,
-        "password": senha,
-        "returnSecureToken": True,
-    }).encode("utf-8")
-
-    try:
-        req = Request(
-            f"{_FIREBASE_AUTH_URL}?key={_firebase_api_key()}",
-            data=body,
-            method="POST",
-        )
-        req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=20) as resp:
-            dados = json.loads(resp.read().decode())
-
-        id_token = dados.get("idToken", "")
-        if not id_token:
-            logger.error("Resposta do login sem idToken.")
-            return False
-
-        _AUTH_SESSION["id_token"] = id_token
-        _AUTH_SESSION["refresh_token"] = dados.get("refreshToken", "")
-        _AUTH_SESSION["uid"] = dados.get("localId", "")
-        expires_in = int(dados.get("expiresIn", "3600") or 3600)
-        _AUTH_SESSION["expira_em"] = time.time() + expires_in
-        return True
-    except HTTPError as e:
-        # 400 = credenciais inválidas. Não loga corpo da resposta (pode conter dados sensíveis).
-        logger.warning(f"Login recusado pelo Firebase (HTTP {e.code}).")
-        return False
-    except (URLError, OSError, json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Falha de rede ao autenticar no Firebase: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Erro inesperado no login Firebase: {e}")
-        return False
-
-
-def _refresh_token() -> bool:
-    """Renova o id_token usando o refresh_token (mantidos em memória)."""
-    import logging
-    logger = logging.getLogger(__name__)
-
-    if not _AUTH_SESSION["refresh_token"] or not _firebase_api_key():
-        return False
-
-    body = urlencode({
-        "grant_type": "refresh_token",
-        "refresh_token": _AUTH_SESSION["refresh_token"],
-    }).encode("utf-8")
-
-    try:
-        req = Request(
-            f"{_FIREBASE_TOKEN_URL}?key={_firebase_api_key()}",
-            data=body,
-            method="POST",
-        )
-        req.add_header("Content-Type", "application/x-www-form-urlencoded")
-        with urlopen(req, timeout=20) as resp:
-            dados = json.loads(resp.read().decode())
-
-        novo_token = dados.get("id_token") or dados.get("idToken")
-        if not novo_token:
-            return False
-
-        _AUTH_SESSION["id_token"] = novo_token
-        if dados.get("refresh_token"):
-            _AUTH_SESSION["refresh_token"] = dados["refresh_token"]
-        expires_in = int(dados.get("expires_in", "3600") or 3600)
-        _AUTH_SESSION["expira_em"] = time.time() + expires_in
-        return True
-    except HTTPError as e:
-        logger.warning(f"Falha ao renovar token (HTTP {e.code}). Sessão invalidada.")
-        _logout()
-        return False
-    except (URLError, OSError, json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Falha de rede ao renovar token: {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Erro inesperado ao renovar token: {e}")
-        return False
-
-
-
-def _get_id_token() -> str | None:
-    """Retorna id_token válido, renovando automaticamente ~60s antes do vencimento."""
-    if not _AUTH_SESSION["id_token"]:
-        return None
-    if time.time() >= _AUTH_SESSION["expira_em"] - 60:
-        if not _refresh_token():
-            return None
-    return _AUTH_SESSION["id_token"]
-
-
-def _logout():
-    """Descarta a sessão de autenticação. O token nunca é persistido."""
-    _AUTH_SESSION["id_token"] = None
-    _AUTH_SESSION["refresh_token"] = None
-    _AUTH_SESSION["uid"] = None
-    _AUTH_SESSION["expira_em"] = 0.0
+_LOGGER = logging.getLogger(__name__)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -273,121 +122,58 @@ def _calcular_sha256_arquivo(caminho_arquivo: str) -> str:
         return ""
 
 
+def _firebase_request(method: str, path: str, payload: bytes | None = None) -> tuple[bool, object]:
+    """Executa uma operação autenticada; distingue leitura de null de falha."""
+    if "SEU-PROJETO" in FIREBASE_URL:
+        _LOGGER.error("Realtime Database não configurado.")
+        return False, None
+    try:
+        token = _get_id_token()
+        if not token:
+            _LOGGER.warning("Sessão de autenticação expirada ou inválida.")
+            return False, None
+        base_url = f"{FIREBASE_URL}/{path}.json"
+        sep = "&" if "?" in base_url else "?"
+        url = f"{base_url}{sep}{urlencode({'auth': token})}"
+        req = Request(url, data=payload, method=method)
+        if payload is not None:
+            req.add_header("Content-Type", "application/json")
+        if method == "GET":
+            req.add_header("Accept", "application/json")
+        with urlopen(req, timeout=10 if method == "GET" else 15) as resp:
+            if resp.status == 200:
+                return True, json.load(resp) if method == "GET" else None
+            _LOGGER.warning("Realtime Database: %s recusado | HTTP: %s", method, resp.status)
+    except HTTPError as erro:
+        with erro:
+            if erro.code in (401, 403):
+                _logout()
+            _LOGGER.warning("Realtime Database: %s recusado | HTTP: %s", method, erro.code)
+    except TimeoutError:
+        _LOGGER.warning("Realtime Database: %s excedeu o tempo limite.", method)
+    except (URLError, OSError, HTTPException):
+        _LOGGER.warning("Realtime Database: falha de conexão em %s.", method)
+    except (ValueError, RecursionError):
+        _LOGGER.warning("Realtime Database: requisição ou resposta inválida em %s.", method)
+    return False, None
+
+
 def _firebase_put(path: str, data) -> bool:
-    """Envia dados para Firebase com validação de tamanho e logging."""
-    import socket
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    # Validar tamanho dos dados (Firebase tem limites)
-    data_str = json.dumps(data)
-    if len(data_str) > 1000000:  # 1MB limite
-        logger.error(f"Dados muito grandes para Firebase: {len(data_str)} bytes")
+    payload = json.dumps(data).encode("utf-8")
+    if len(payload) > 1_000_000:
+        _LOGGER.error("Dados muito grandes para Firebase: %s bytes", len(payload))
         return False
-    
-    if "SEU-PROJETO" in FIREBASE_URL:
-        return True
-    try:
-        token = _get_id_token()
-        if not token:
-            logger.error("Sessão de autenticação expirada ou inválida. Reinicie o Gerenciador de Clientes.")
-            return False
-        base_url = f"{FIREBASE_URL}/{path}.json"
-        sep = "&" if "?" in base_url else "?"
-        url = f"{base_url}{sep}{urlencode({'auth': token})}"
-        payload = data_str.encode()
-        req = Request(url, data=payload, method="PUT")
-        req.add_header("Content-Type", "application/json")
-        with urlopen(req, timeout=15) as resp:  # Aumentado para 15s
-            return resp.status == 200
-    except HTTPError as e:
-        logger.error(f"HTTP {e.code} ao enviar para Firebase: {path}")
-        if e.code in (401, 403):
-            _logout()
-        return False
-    except socket.timeout:
-        logger.warning(f"Timeout ao enviar para Firebase: {path}")
-        return False
-    except URLError as e:
-        logger.error(f"Erro de rede ao enviar para Firebase: {path} - {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Erro ao enviar para Firebase {path}: {e}")
-        return False
+    ok, _ = _firebase_request("PUT", path, payload)
+    return ok
 
 
-def _firebase_get(path: str):
-    """Busca dados do Firebase com tratamento diferenciado de erros."""
-    import socket
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    if "SEU-PROJETO" in FIREBASE_URL:
-        return None
-    try:
-        token = _get_id_token()
-        if not token:
-            logger.error("Sess?o de autentica??o expirada ou inv?lida. Reinicie o Gerenciador de Clientes.")
-            return None
-        base_url = f"{FIREBASE_URL}/{path}.json"
-        sep = "&" if "?" in base_url else "?"
-        url = f"{base_url}{sep}{urlencode({'auth': token})}"
-        req = Request(url, method="GET")
-        req.add_header("Accept", "application/json")
-        with urlopen(req, timeout=10) as resp:
-            return json.loads(resp.read().decode())
-    except HTTPError as e:
-        logger.error(f"HTTP {e.code} ao acessar Firebase: {path}")
-        if e.code in (401, 403):
-            _logout()
-        return None
-    except socket.timeout:
-        logger.warning(f"Timeout ao acessar Firebase: {path}")
-        return None
-    except URLError as e:
-        logger.error(f"Erro de rede ao acessar Firebase: {path} - {e}")
-        return None
-    except json.JSONDecodeError:
-        logger.error(f"Resposta JSON inválida do Firebase: {path}")
-        return None
-    except Exception as e:
-        logger.error(f"Erro desconhecido ao acessar Firebase {path}: {e}")
-        return None
+def _firebase_get(path: str) -> tuple[bool, object]:
+    return _firebase_request("GET", path)
 
 
 def _firebase_delete(path: str) -> bool:
-    """Deleta dados do Firebase com logging diferenciado."""
-    import socket
-    import logging
-    logger = logging.getLogger(__name__)
-    
-    if "SEU-PROJETO" in FIREBASE_URL:
-        return True
-    try:
-        token = _get_id_token()
-        if not token:
-            logger.error("Sess?o de autentica??o expirada ou inv?lida. Reinicie o Gerenciador de Clientes.")
-            return False
-        base_url = f"{FIREBASE_URL}/{path}.json"
-        sep = "&" if "?" in base_url else "?"
-        url = f"{base_url}{sep}{urlencode({'auth': token})}"
-        req = Request(url, method="DELETE")
-        with urlopen(req, timeout=15) as resp:  # Aumentado para 15s
-            return resp.status == 200
-    except HTTPError as e:
-        logger.error(f"HTTP {e.code} ao deletar do Firebase: {path}")
-        if e.code in (401, 403):
-            _logout()
-        return False
-    except socket.timeout:
-        logger.warning(f"Timeout ao deletar do Firebase: {path}")
-        return False
-    except URLError as e:
-        logger.error(f"Erro de rede ao deletar do Firebase: {path} - {e}")
-        return False
-    except Exception as e:
-        logger.error(f"Erro ao deletar do Firebase {path}: {e}")
-        return False
+    ok, _ = _firebase_request("DELETE", path)
+    return ok
 
 
 def _calcular_expiry_efetivo(base_expiry: str, plano: str, auto_renew: bool,
@@ -480,6 +266,23 @@ def _mostrar_toast(parent, titulo: str, corpo: str, cor_borda: str = "#4ADE80"):
 #  Login administrativo (Firebase Auth) — executa em thread para não travar a UI
 # ══════════════════════════════════════════════════════════════════════════════
 
+_MENSAGEM_CREDENCIAIS = "Não foi possível entrar. Confira o e-mail e a senha."
+_MENSAGEM_RESPOSTA = "O Firebase retornou uma resposta inesperada. Consulte o código no terminal."
+_MENSAGENS_AUTH = {
+    FalhaAuth.CREDENCIAIS_INVALIDAS: _MENSAGEM_CREDENCIAIS,
+    FalhaAuth.USUARIO_DESABILITADO: _MENSAGEM_CREDENCIAIS,
+    FalhaAuth.API_KEY_AUSENTE: "Configure SEAGBH_FIREBASE_API_KEY antes de entrar.",
+    FalhaAuth.API_KEY_INVALIDA: "A chave de API foi recusada. Confira a chave Web do projeto Firebase.",
+    FalhaAuth.API_KEY_RESTRITA: "O Firebase bloqueou esta solicitação pelas restrições da chave de API.",
+    FalhaAuth.PROJETO_INDISPONIVEL: "Confira o projeto Firebase e a configuração do Firebase Authentication.",
+    FalhaAuth.PROVEDOR_DESATIVADO: "O login por e-mail e senha está desativado no projeto Firebase.",
+    FalhaAuth.LIMITE_TENTATIVAS: "O Firebase limitou as tentativas. Aguarde antes de tentar novamente.",
+    FalhaAuth.PROVEDOR_INDISPONIVEL: "O serviço de autenticação está indisponível. Tente novamente mais tarde.",
+    FalhaAuth.TIMEOUT: "O Firebase demorou a responder. Confira sua conexão e tente novamente.",
+    FalhaAuth.REDE_INDISPONIVEL: "Não foi possível conectar ao Firebase. Confira sua conexão.",
+}
+
+
 class _LoginWorker(QThread):
     """Executa o login Firebase em thread separada (não congela a interface)."""
 
@@ -489,21 +292,23 @@ class _LoginWorker(QThread):
         super().__init__(parent)
         self._email = email
         self._senha = senha
+        self._falha: FalhaAuth | None = FalhaAuth.RESPOSTA_INVALIDA
+        self.finished.connect(self._emitir_resultado)
 
     def run(self):
         try:
-            ok = _login_firebase(self._email, self._senha)
+            self._falha = _login_firebase(self._email, self._senha)
         except Exception:
-            ok = False
-        self._senha = ""  # descartar senha da memória da thread
-        if ok:
+            _logout()
+            _LOGGER.error("Firebase Auth: login recusado | Código: ERRO_INTERNO")
+        finally:
+            self._senha = ""
+
+    def _emitir_resultado(self):
+        if self._falha is None:
             self.concluido.emit(True, "")
         else:
-            self.concluido.emit(
-                False,
-                "Falha na autenticação.\n"
-                "Verifique e-mail/senha e sua conexão com a internet.",
-            )
+            self.concluido.emit(False, _MENSAGENS_AUTH.get(self._falha, _MENSAGEM_RESPOSTA))
 
 
 class LoginDialog(QDialog):
@@ -522,14 +327,11 @@ class LoginDialog(QDialog):
         lay.setContentsMargins(32, 28, 32, 28)
         lay.setSpacing(12)
 
-        titulo = QLabel("Autenticação Administrativa")
+        titulo = QLabel("Entrar no Gerenciamento de Clientes")
         titulo.setObjectName("titulo")
         lay.addWidget(titulo)
 
-        sub = QLabel(
-            "Acesso exclusivo do desenvolvedor.\n"
-            "A senha é usada apenas nesta sessão e nunca é armazenada."
-        )
+        sub = QLabel("Use a conta do projeto Firebase. A senha é usada apenas para este login.")
         sub.setObjectName("subtitle")
         sub.setWordWrap(True)
         lay.addWidget(sub)
@@ -572,7 +374,7 @@ class LoginDialog(QDialog):
         self.btn_entrar.setText("Autenticando..." if ativo else "Entrar")
 
     def _on_entrar(self):
-        if self._worker is not None and self._worker.isRunning():
+        if self._worker is not None:
             return
         email = self.entry_email.text().strip()
         senha = self.entry_senha.text()
@@ -582,27 +384,25 @@ class LoginDialog(QDialog):
         self.lbl_erro.setText("")
         self._set_autenticando(True)
         self._worker = _LoginWorker(email, senha, parent=self)
+        self.entry_senha.setText("")
         self._worker.concluido.connect(self._on_login_concluido)
         self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
 
     def _on_login_concluido(self, ok: bool, msg: str):
-        self.entry_senha.clear()  # descartar a senha digitada
         self._set_autenticando(False)
         self._worker = None
-        if ok:
+        if ok and sessao_firebase_ativa():
             self.accept()
         else:
-            self.lbl_erro.setText(msg)
+            self.lbl_erro.setText(msg or _MENSAGEM_RESPOSTA)
 
-    def closeEvent(self, event):
-        if self._worker is not None and self._worker.isRunning():
-            # Autenticação em andamento: não fechar o diálogo à força.
-            # A thread encerra sozinha (urlopen tem timeout) e emite _on_login_concluido.
-            event.ignore()
+    def reject(self):
+        if self._worker is not None:
             self.lbl_erro.setText("Autenticação em andamento. Aguarde...")
             return
-        event.accept()
+        self.entry_senha.setText("")
+        super().reject()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -611,6 +411,8 @@ class LoginDialog(QDialog):
 
 class GerenciamentoClientes(QWidget):
     def __init__(self):
+        if not sessao_firebase_ativa():
+            raise RuntimeError("O Gerenciamento de Clientes exige uma sessão autenticada.")
         super().__init__()
         self.setWindowTitle("Gerenciamento de Clientes — SEAGBH")
         self.setMinimumSize(1020, 750)
@@ -618,6 +420,15 @@ class GerenciamentoClientes(QWidget):
         self._build_ui()
         self._carregar_firebase_dados()
         self._carregar_tabela()
+
+    def _exigir_sessao(self) -> bool:
+        if sessao_firebase_ativa():
+            return True
+        QMessageBox.warning(
+            self, "Sessão encerrada",
+            "Entre novamente no Gerenciamento de Clientes para realizar esta ação.",
+        )
+        return False
 
     # ══════════════════════════════════════════════════════════════════════
     #  UI
@@ -789,8 +600,9 @@ class GerenciamentoClientes(QWidget):
             lid = reg.get("id", "")
             if not lid:
                 continue
-            data = _firebase_get(f"licenses/{lid}")
-            self._firebase_cache[lid] = data if isinstance(data, dict) else {}
+            ok, data = _firebase_get(f"licenses/{lid}")
+            if ok:
+                self._firebase_cache[lid] = data if isinstance(data, dict) else {}
 
     def _get_fb(self, license_id: str) -> dict:
         return self._firebase_cache.get(license_id, {})
@@ -964,6 +776,8 @@ class GerenciamentoClientes(QWidget):
         self.entry_cliente.clear()
 
     def _on_copiar(self):
+        if not self._exigir_sessao():
+            return
         reg = self._linha_selecionada()
         if not reg:
             QMessageBox.warning(self, "Aviso", "Selecione uma licença na tabela!")
@@ -1086,8 +900,12 @@ class GerenciamentoClientes(QWidget):
 
         # ── Sincronizar com Firebase: remover a licença ─────────────────────
         # Deletar do Firebase tanto a licença quanto sua revogação
-        _firebase_delete(f"licenses/{lid}")
-        _firebase_delete(f"revoked/{lid}")
+        if not _firebase_delete(f"licenses/{lid}") or not _firebase_delete(f"revoked/{lid}"):
+            QMessageBox.critical(
+                self, "Erro de sincronização",
+                "A exclusão no Firebase não foi concluída. O registro local foi preservado.",
+            )
+            return
         # Remover do cache local
         if lid in self._firebase_cache:
             del self._firebase_cache[lid]
@@ -1115,6 +933,8 @@ class GerenciamentoClientes(QWidget):
         )
 
     def _on_restaurar(self):
+        if not self._exigir_sessao():
+            return
         morto = _carregar_arquivo_morto()
         if not morto:
             QMessageBox.information(self, "Info", "Não há licenças excluídas para restaurar.")
@@ -1191,26 +1011,26 @@ class GerenciamentoClientes(QWidget):
                     QMessageBox.information(dlg, "Info", "Esta licença já existe no histórico.")
                     return
 
-            # Restaurar
-            historico.append(registro)
-            _salvar_historico(historico)
-            _salvar_arquivo_morto(novo_morto)
-
             # ── Sincronizar com Firebase: recriar a licença ─────────────────
-            # Se a licença foi deletada do Firebase, recriá-la
-            fb_data = _firebase_get(f"licenses/{lid}")
+            caminho = f"licenses/{lid}"
+            ok, fb_data = _firebase_get(caminho)
+            if not ok:
+                QMessageBox.critical(dlg, "Erro", "Falha ao consultar a licença no Firebase.")
+                return
             if fb_data is None:
-                # Licença foi deletada — recriar com dados básicos
-                default_data = {
+                fb_data = {
                     "auto_renew": False,
                     "alerts_muted_until": None,
                     "expiry_override": None
                 }
-                _firebase_put(f"licenses/{lid}", default_data)
-                self._firebase_cache[lid] = default_data
-            else:
-                self._firebase_cache[lid] = fb_data if isinstance(fb_data, dict) else {}
+                if not _firebase_put(caminho, fb_data):
+                    QMessageBox.critical(dlg, "Erro", "Falha ao restaurar a licença no Firebase.")
+                    return
 
+            historico.append(registro)
+            _salvar_historico(historico)
+            _salvar_arquivo_morto(novo_morto)
+            self._firebase_cache[lid] = fb_data if isinstance(fb_data, dict) else {}
             self._carregar_tabela()
             dlg.accept()
 
@@ -1232,6 +1052,8 @@ class GerenciamentoClientes(QWidget):
         dlg.exec()
 
     def _on_exportar_pdf(self):
+        if not self._exigir_sessao():
+            return
         from reportlab.lib.pagesizes import A4, landscape
         from reportlab.lib import colors
         from reportlab.lib.units import mm
@@ -1242,7 +1064,7 @@ class GerenciamentoClientes(QWidget):
             self, "Exportar Licenças", "licencas_seagbh.pdf",
             "PDF (*.pdf)"
         )
-        if not caminho:
+        if not caminho or not self._exigir_sessao():
             return
 
         historico = _carregar_historico()
@@ -1850,30 +1672,36 @@ _STYLE = """
 """
 
 
-if __name__ == "__main__":
+def _main() -> int:
+    carregar_api_key(Path(__file__).resolve().parents[1] / ".env")
     app = QApplication(sys.argv)
     app.setStyleSheet(_STYLE)
 
     icon_path = os.path.join(os.path.dirname(__file__), "..", "src", "seaghb_icon.ico")
     app.setWindowIcon(QIcon(icon_path))
 
-    # Garante que a API key do Firebase esteja disponível (via .env ou ambiente do SO).
-    _load_env_file()
-    if not _firebase_api_key():
-        QMessageBox.critical(
-            None,
-            "Configuração ausente",
-            "Variável de ambiente SEAGBH_FIREBASE_API_KEY não configurada.\n\n"
-            "Defina-a no arquivo .env da raiz do projeto ou no sistema antes\n"
-            "de executar o Gerenciamento de Clientes.",
-        )
-        sys.exit(1)
+    try:
+        if not _firebase_api_key():
+            _LOGGER.warning("Firebase Auth: login indisponível | Código: %s", FalhaAuth.API_KEY_AUSENTE)
+            QMessageBox.critical(
+                None,
+                "Configuração ausente",
+                "Variável de ambiente SEAGBH_FIREBASE_API_KEY não configurada.\n\n"
+                "Defina-a no arquivo .env da raiz do projeto ou no sistema antes\n"
+                "de executar o Gerenciamento de Clientes.",
+            )
+            return 1
 
-    # Autenticação administrativa ANTES de abrir a janela principal.
-    login = LoginDialog()
-    if login.exec() != QDialog.DialogCode.Accepted:
-        sys.exit(0)
+        login = LoginDialog()
+        if login.exec() != QDialog.DialogCode.Accepted or not sessao_firebase_ativa():
+            return 0
 
-    w = GerenciamentoClientes()
-    w.show()
-    sys.exit(app.exec())
+        w = GerenciamentoClientes()
+        w.show()
+        return app.exec()
+    finally:
+        _logout()
+
+
+if __name__ == "__main__":
+    sys.exit(_main())
