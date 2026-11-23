@@ -16,6 +16,7 @@ import hashlib
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from functools import wraps
 from http.client import HTTPException
 from pathlib import Path
 from urllib.request import urlopen, Request
@@ -50,11 +51,12 @@ from PyQt6.QtGui import QGuiApplication, QColor, QIcon
 from core.firebase_auth import (
     FalhaAuth,
     api_key_firebase as _firebase_api_key,
-    carregar_api_key,
+    carregar_configuracao,
+    configuracao_admin_valida,
     login_firebase as _login_firebase,
     logout_firebase as _logout,
-    sessao_firebase_ativa,
-    sessao_firebase_renovavel,
+    sessao_administrativa_ativa,
+    sessao_administrativa_renovavel,
     token_firebase as _get_id_token,
 )
 from core.licenca import gerar_chave, validar_chave, PLANOS, FIREBASE_URL, DIAS_ALERTA
@@ -63,11 +65,28 @@ _HISTORICO_PATH = os.path.join(os.path.dirname(__file__), "historico_chaves.json
 _LOGGER = logging.getLogger(__name__)
 
 
+class _SessaoAdminEncerrada(RuntimeError):
+    """A interface perdeu a autorização antes de acessar um recurso local."""
+
+
+def _exigir_sessao_admin() -> None:
+    if not sessao_administrativa_ativa():
+        raise _SessaoAdminEncerrada("O Gerenciamento de Clientes exige uma sessão administrativa.")
+
+
+def _acao_administrativa(acao):
+    @wraps(acao)
+    def executar(janela):
+        janela._com_sessao(lambda: acao(janela))
+    return executar
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 #  Persistência do histórico
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _carregar_historico() -> list[dict]:
+    _exigir_sessao_admin()
     try:
         with open(_HISTORICO_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -77,26 +96,26 @@ def _carregar_historico() -> list[dict]:
 
 def _salvar_historico(historico: list[dict]):
     """Salva histórico com validação de permissões."""
-    import logging
-    logger = logging.getLogger(__name__)
+    _exigir_sessao_admin()
     
     try:
         # Validar permissões antes de tentar gravar
         dir_path = os.path.dirname(_HISTORICO_PATH)
         if not os.access(dir_path, os.W_OK):
-            raise PermissionError(f"Sem permissão de escrita em {dir_path}")
+            raise PermissionError("histórico sem permissão de escrita")
         
         with open(_HISTORICO_PATH, "w", encoding="utf-8") as f:
             json.dump(historico, f, ensure_ascii=False, indent=2)
-    except (OSError, PermissionError) as e:
-        logger.error(f"Falha ao salvar histórico: {e}")
-        raise  # Permitir que o chamador saiba que falhou
+    except OSError:
+        _LOGGER.error("Falha ao salvar histórico de licenças.")
+        raise
 
 
 _ARQUIVO_MORTO_PATH = os.path.join(os.path.dirname(__file__), "historico_excluidos.json")
 
 
 def _carregar_arquivo_morto() -> list[dict]:
+    _exigir_sessao_admin()
     try:
         with open(_ARQUIVO_MORTO_PATH, "r", encoding="utf-8") as f:
             return json.load(f)
@@ -105,6 +124,7 @@ def _carregar_arquivo_morto() -> list[dict]:
 
 
 def _salvar_arquivo_morto(morto: list[dict]):
+    _exigir_sessao_admin()
     with open(_ARQUIVO_MORTO_PATH, "w", encoding="utf-8") as f:
         json.dump(morto, f, ensure_ascii=False, indent=2)
 
@@ -186,7 +206,7 @@ def _excluir_licenca_remota_atomicamente(lid: str) -> bool:
     Se as regras recusarem qualquer caminho, nenhum dos dois deve ser alterado.
     O resultado HTTP não comprova o estado remoto quando a resposta se perde.
     """
-    if not isinstance(lid, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", lid):
+    if not isinstance(lid, str) or not re.fullmatch(r"[0-9a-f]{12}", lid):
         _LOGGER.warning("Realtime Database: exclusão recusada | Código: ID_INVALIDO")
         return False
 
@@ -290,10 +310,13 @@ def _mostrar_toast(parent, titulo: str, corpo: str, cor_borda: str = "#4ADE80"):
 
 _MENSAGEM_CREDENCIAIS = "Não foi possível entrar. Confira o e-mail e a senha."
 _MENSAGEM_RESPOSTA = "O Firebase retornou uma resposta inesperada. Consulte o código no terminal."
+_MENSAGEM_ADMIN_UID = "Configure uma UID administrativa válida em SEAGBH_FIREBASE_ADMIN_UID."
 _MENSAGENS_AUTH = {
     FalhaAuth.CREDENCIAIS_INVALIDAS: _MENSAGEM_CREDENCIAIS,
     FalhaAuth.USUARIO_DESABILITADO: _MENSAGEM_CREDENCIAIS,
     FalhaAuth.API_KEY_AUSENTE: "Configure SEAGBH_FIREBASE_API_KEY antes de entrar.",
+    FalhaAuth.ADMIN_UID_INVALIDA: _MENSAGEM_ADMIN_UID,
+    FalhaAuth.ACESSO_ADMIN_NEGADO: _MENSAGEM_CREDENCIAIS,
     FalhaAuth.API_KEY_INVALIDA: "A chave de API foi recusada. Confira a chave Web do projeto Firebase.",
     FalhaAuth.API_KEY_RESTRITA: "O Firebase bloqueou esta solicitação pelas restrições da chave de API.",
     FalhaAuth.PROJETO_INDISPONIVEL: "Confira o projeto Firebase e a configuração do Firebase Authentication.",
@@ -414,7 +437,7 @@ class LoginDialog(QDialog):
     def _on_login_concluido(self, ok: bool, msg: str):
         self._set_autenticando(False)
         self._worker = None
-        if ok and sessao_firebase_ativa():
+        if ok and sessao_administrativa_ativa():
             self.accept()
         else:
             self.lbl_erro.setText(msg or _MENSAGEM_RESPOSTA)
@@ -442,8 +465,7 @@ class _RenovacaoWorker(QThread):
 
 class GerenciamentoClientes(QWidget):
     def __init__(self):
-        if not sessao_firebase_ativa():
-            raise RuntimeError("O Gerenciamento de Clientes exige uma sessão autenticada.")
+        _exigir_sessao_admin()
         super().__init__()
         self.setWindowTitle("Gerenciamento de Clientes — SEAGBH")
         self.setMinimumSize(1020, 750)
@@ -458,9 +480,9 @@ class GerenciamentoClientes(QWidget):
     def _com_sessao(self, acao: Callable[[], None]) -> None:
         if self._renovacao is not None:
             return
-        if sessao_firebase_ativa():
-            acao()
-        elif sessao_firebase_renovavel():
+        if sessao_administrativa_ativa():
+            self._executar_acao_autorizada(acao)
+        elif sessao_administrativa_renovavel():
             self._acao_apos_renovacao = acao
             self._renovacao = _RenovacaoWorker(self)
             self._renovacao.finished.connect(self._concluir_renovacao)
@@ -479,8 +501,8 @@ class GerenciamentoClientes(QWidget):
         self.unsetCursor()
         if self._fechar_apos_renovacao:
             self.close()
-        elif acao is not None and sessao_firebase_ativa():
-            acao()
+        elif acao is not None and sessao_administrativa_ativa():
+            self._executar_acao_autorizada(acao)
         else:
             self._avisar_sessao_encerrada()
 
@@ -489,9 +511,21 @@ class GerenciamentoClientes(QWidget):
             self._fechar_apos_renovacao = True
             event.ignore()
             return
+        _logout()
         super().closeEvent(event)
 
+    def _executar_acao_autorizada(self, acao: Callable[[], None], *, dialogo: QDialog | None = None) -> None:
+        try:
+            _exigir_sessao_admin()
+            acao()
+        except _SessaoAdminEncerrada:
+            if dialogo is not None:
+                dialogo.reject()
+            self._avisar_sessao_encerrada()
+
     def _avisar_sessao_encerrada(self) -> None:
+        self._firebase_cache.clear()
+        self.tabela.setRowCount(0)
         QMessageBox.warning(
             self, "Sessão encerrada",
             "Entre novamente no Gerenciamento de Clientes para realizar esta ação.",
@@ -771,6 +805,7 @@ class GerenciamentoClientes(QWidget):
         if historico:
             self.tabela.scrollToBottom()
 
+    @_acao_administrativa
     def _filtrar_tabela(self):
         """Recarrega a tabela aplicando o filtro de busca."""
         self._carregar_tabela()
@@ -793,6 +828,7 @@ class GerenciamentoClientes(QWidget):
     #  Ações — Gerar / Copiar / Revogar / Reativar
     # ══════════════════════════════════════════════════════════════════════
 
+    @_acao_administrativa
     def _on_gerar(self):
         cliente = self.entry_cliente.text().strip()
         if not cliente:
@@ -858,6 +894,7 @@ class GerenciamentoClientes(QWidget):
             cor_borda="#6BD1FF",
         )
 
+    @_acao_administrativa
     def _on_revogar(self):
         reg = self._linha_selecionada()
         if not reg:
@@ -880,6 +917,7 @@ class GerenciamentoClientes(QWidget):
         )
         if confirma != QMessageBox.StandardButton.Yes:
             return
+        _exigir_sessao_admin()
 
         # ── Armazenar timestamp de revogação (grace period de 24h) ────────────
         revoked_at = datetime.now().isoformat()
@@ -907,6 +945,7 @@ class GerenciamentoClientes(QWidget):
             cor_borda="#F87171",
         )
 
+    @_acao_administrativa
     def _on_reativar(self):
         reg = self._linha_selecionada()
         if not reg:
@@ -945,6 +984,7 @@ class GerenciamentoClientes(QWidget):
     #  Ações — Excluir / Renovar / Exportar CSV
     # ══════════════════════════════════════════════════════════════════════
 
+    @_acao_administrativa
     def _on_excluir(self):
         reg = self._linha_selecionada()
         if not reg:
@@ -963,6 +1003,7 @@ class GerenciamentoClientes(QWidget):
         )
         if confirma != QMessageBox.StandardButton.Yes:
             return
+        _exigir_sessao_admin()
 
         lid = reg["id"]
 
@@ -1118,7 +1159,7 @@ class GerenciamentoClientes(QWidget):
                 cor_borda="#4ADE80",
             )
 
-        btn.clicked.connect(_restaurar)
+        btn.clicked.connect(lambda: self._executar_acao_autorizada(_restaurar, dialogo=dlg))
         dlg.exec()
 
     def _on_exportar_pdf(self):
@@ -1242,6 +1283,7 @@ class GerenciamentoClientes(QWidget):
     #  Ações — Auto-Renovação / Silenciar Alertas / Editar Vencimento
     # ══════════════════════════════════════════════════════════════════════
 
+    @_acao_administrativa
     def _on_toggle_auto_renew(self):
         reg = self._linha_selecionada()
         if not reg:
@@ -1280,6 +1322,7 @@ class GerenciamentoClientes(QWidget):
             cor_borda="#4ADE80" if new_val else "#FBBF24",
         )
 
+    @_acao_administrativa
     def _on_mute_alerts(self):
         reg = self._linha_selecionada()
         if not reg:
@@ -1316,6 +1359,7 @@ class GerenciamentoClientes(QWidget):
             cor_borda="#94A3B8",
         )
 
+    @_acao_administrativa
     def _on_edit_expiry(self):
         reg = self._linha_selecionada()
         if not reg:
@@ -1367,6 +1411,7 @@ class GerenciamentoClientes(QWidget):
 
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
+        _exigir_sessao_admin()
 
         new_date = date_edit.date().toString("yyyy-MM-dd")
 
@@ -1398,6 +1443,7 @@ class GerenciamentoClientes(QWidget):
     #  Publicar Atualização (Firebase /updates/latest)
     # ══════════════════════════════════════════════════════════════════════
 
+    @_acao_administrativa
     def _on_publicar_atualizacao(self):
         """Publica metadados de nova versão no Firebase /updates/latest."""
         dlg = QDialog(self)
@@ -1534,7 +1580,7 @@ class GerenciamentoClientes(QWidget):
                 info_label.setStyleSheet("color: #F87171; background: transparent;")
 
         btn_calc_sha256.clicked.connect(_calcular_sha)
-        btn_pub.clicked.connect(_publicar)
+        btn_pub.clicked.connect(lambda: self._executar_acao_autorizada(_publicar, dialogo=dlg))
         dlg.exec()
 
 
@@ -1745,7 +1791,7 @@ _STYLE = """
 
 
 def _main() -> int:
-    carregar_api_key(Path(__file__).resolve().parents[1] / ".env")
+    carregar_configuracao(Path(__file__).resolve().parents[1] / ".env")
     app = QApplication(sys.argv)
     app.setStyleSheet(_STYLE)
 
@@ -1764,13 +1810,21 @@ def _main() -> int:
             )
             return 1
 
+        if not configuracao_admin_valida():
+            _LOGGER.warning("Firebase Auth: login indisponível | Código: %s", FalhaAuth.ADMIN_UID_INVALIDA)
+            QMessageBox.critical(None, "Configuração administrativa", _MENSAGEM_ADMIN_UID)
+            return 1
+
         login = LoginDialog()
-        if login.exec() != QDialog.DialogCode.Accepted or not sessao_firebase_ativa():
+        if login.exec() != QDialog.DialogCode.Accepted or not sessao_administrativa_ativa():
             return 0
 
         w = GerenciamentoClientes()
         w.show()
         return app.exec()
+    except _SessaoAdminEncerrada:
+        QMessageBox.warning(None, "Sessão encerrada", "Entre novamente no Gerenciamento de Clientes.")
+        return 1
     finally:
         _logout()
 

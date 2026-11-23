@@ -19,6 +19,7 @@ from src.core.firebase_auth import FalhaAuth
 
 
 ENV = "SEAGBH_FIREBASE_API_KEY"
+ADMIN_ENV = "SEAGBH_FIREBASE_ADMIN_UID"
 API_KEY = "chave+simulada"
 EMAIL = "admin@example.invalid"
 SENHA = "senha-ficticia"
@@ -45,15 +46,17 @@ def _erro_http(dados, status=400):
 
 
 class ConfiguracaoFirebaseTests(unittest.TestCase):
-    def test_dotenv_bom_aspas_comentario_e_apenas_chave_firebase(self):
+    def test_dotenv_bom_aspas_comentario_e_apenas_configuracao_firebase(self):
         with tempfile.TemporaryDirectory() as pasta, patch.dict(os.environ, clear=True):
             arquivo = Path(pasta) / ".env"
             arquivo.write_text(
-                f'export {ENV} = "{API_KEY}" # comentário\nOUTRA_CONFIG_FICTICIA=ignorada\n',
+                f'export {ENV} = "{API_KEY}" # comentário\n'
+                f'{ADMIN_ENV}="{LOGIN_OK["localId"]}"\nOUTRA_CONFIG_FICTICIA=ignorada\n',
                 encoding="utf-8-sig",
             )
-            auth.carregar_api_key(arquivo)
+            auth.carregar_configuracao(arquivo)
             self.assertEqual(auth.api_key_firebase(), API_KEY)
+            self.assertTrue(auth.configuracao_admin_valida())
             self.assertNotIn("OUTRA_CONFIG_FICTICIA", os.environ)
 
     def test_variavel_do_processo_tem_precedencia_mesmo_vazia(self):
@@ -62,25 +65,33 @@ class ConfiguracaoFirebaseTests(unittest.TestCase):
             arquivo.write_text(f"{ENV}={API_KEY}", encoding="utf-8")
             for valor in ("  chave-herdada  ", "  "):
                 with self.subTest(valor=valor), patch.dict(os.environ, {ENV: valor}):
-                    auth.carregar_api_key(arquivo)
+                    auth.carregar_configuracao(arquivo)
                     self.assertEqual(auth.api_key_firebase(), valor.strip())
 
     def test_dotenv_invalido_e_ausente(self):
         with tempfile.TemporaryDirectory() as pasta, patch.dict(os.environ, clear=True):
             arquivo = Path(pasta) / ".env"
-            auth.carregar_api_key(arquivo)
+            auth.carregar_configuracao(arquivo)
             self.assertEqual(auth.api_key_firebase(), "")
             arquivo.write_text(f'{ENV}="{API_KEY}', encoding="utf-8")
             with self.assertLogs(auth.__name__, "WARNING") as logs:
-                auth.carregar_api_key(arquivo)
+                auth.carregar_configuracao(arquivo)
             self.assertEqual(auth.api_key_firebase(), "")
             self.assertIn("ENV_INVALIDO", logs.output[0])
             self.assertNotIn(API_KEY, logs.output[0])
 
+    def test_uid_vazia_do_processo_nao_pode_ser_substituida_pelo_dotenv(self):
+        with tempfile.TemporaryDirectory() as pasta, patch.dict(os.environ, {ADMIN_ENV: ""}, clear=True):
+            arquivo = Path(pasta) / ".env"
+            arquivo.write_text(f'{ADMIN_ENV}="{LOGIN_OK["localId"]}"\n{ENV}="{API_KEY}"', encoding="utf-8")
+            auth.carregar_configuracao(arquivo)
+            self.assertFalse(auth.configuracao_admin_valida())
+            self.assertEqual(auth.api_key_firebase(), API_KEY)
+
 
 class FirebaseAuthTests(unittest.TestCase):
     def setUp(self):
-        self.enterContext(patch.dict(os.environ, {ENV: API_KEY}))
+        self.enterContext(patch.dict(os.environ, {ENV: API_KEY, ADMIN_ENV: LOGIN_OK["localId"]}))
         self.urlopen = self.enterContext(patch.object(auth, "_abrir_auth"))
         self.relogio = self.enterContext(patch.object(auth.time, "monotonic", return_value=100.0))
         auth.logout_firebase()
@@ -96,12 +107,32 @@ class FirebaseAuthTests(unittest.TestCase):
         with self.assertLogs(auth.__name__, "WARNING") as logs:
             self.assertEqual(auth.login_firebase(EMAIL, SENHA), codigo)
         self.assertIn(f"Código: {codigo}", logs.output[0])
-        self.assertFalse(auth.sessao_firebase_ativa())
+        self.assertFalse(auth.sessao_administrativa_ativa())
         self.assertIsNone(auth.token_firebase())
         self.assertIsNone(auth._AUTH_SESSION)
-        for privado in (EMAIL, SENHA, API_KEY, LOGIN_OK["idToken"], LOGIN_OK["refreshToken"]):
+        for privado in (EMAIL, SENHA, API_KEY, LOGIN_OK["idToken"], LOGIN_OK["refreshToken"], LOGIN_OK["localId"]):
             self.assertNotIn(privado, "\n".join(logs.output))
         return logs.output[0]
+
+    def test_uid_ausente_ou_invalida_fecha_sessao_sem_requisicao(self):
+        for uid in (None, "", "uid com espaço", "uid\tcontrole", "x" * 129):
+            with self.subTest(tipo=type(uid)):
+                self._login_ok()
+                self.urlopen.reset_mock()
+                with patch.dict(os.environ):
+                    if uid is None:
+                        os.environ.pop(ADMIN_ENV)
+                    else:
+                        os.environ[ADMIN_ENV] = uid
+                    self._assert_falha_login(FalhaAuth.ADMIN_UID_INVALIDA)
+                self.urlopen.assert_not_called()
+
+    def test_login_autenticado_com_outra_uid_nao_publica_sessao_nem_uid_no_log(self):
+        self._login_ok()
+        uid_comum = "conta-comum-sintetica"
+        self.urlopen.return_value = _resposta(dict(LOGIN_OK, localId=uid_comum))
+        log = self._assert_falha_login(FalhaAuth.ACESSO_ADMIN_NEGADO)
+        self.assertNotIn(uid_comum, log)
 
     def test_login_usa_contrato_rest_e_logout_descarta_sessao(self):
         self._login_ok()
@@ -117,7 +148,7 @@ class FirebaseAuthTests(unittest.TestCase):
         self.assertEqual(json.loads(req.data), {
             "email": EMAIL, "password": SENHA, "returnSecureToken": True,
         })
-        self.assertTrue(auth.sessao_firebase_ativa())
+        self.assertTrue(auth.sessao_administrativa_ativa())
         self.assertEqual(auth.token_firebase(), LOGIN_OK["idToken"])
         auth.logout_firebase()
         self.assertIsNone(auth.token_firebase())
@@ -289,22 +320,24 @@ class FirebaseAuthTests(unittest.TestCase):
         self.assertEqual(auth._AUTH_SESSION.refresh_token, "novo-refresh-token")
 
     def test_renovacao_recusada_limpa_sessao_sem_expor_tokens(self):
-        for falha in ("revogação", "rede", "resposta", "uid"):
+        for falha in ("revogação", "rede", "resposta", "uid", "uid_ausente"):
             with self.subTest(falha=falha):
                 self.urlopen.side_effect = None
                 self._login_ok()
                 self.relogio.return_value += 3600
-                self.assertFalse(auth.sessao_firebase_ativa())
+                self.assertFalse(auth.sessao_administrativa_ativa())
                 if falha == "revogação":
                     self.urlopen.side_effect, _ = _erro_http({"error": {"message": "TOKEN_EXPIRED"}})
                 elif falha == "rede":
                     self.urlopen.side_effect = URLError(LOGIN_OK["refreshToken"])
                 elif falha == "resposta":
                     self.urlopen.return_value = _resposta({"id_token": "novo", "expires_in": None})
-                else:
+                elif falha == "uid":
                     self.urlopen.return_value = _resposta({
                         "id_token": "novo", "user_id": "outro-uid", "expires_in": "3600",
                     })
+                else:
+                    self.urlopen.return_value = _resposta({"id_token": "novo", "expires_in": "3600"})
                 with self.assertLogs(auth.__name__, "WARNING") as logs:
                     self.assertIsNone(auth.token_firebase())
                 self.assertNotIn(LOGIN_OK["refreshToken"], logs.output[0])
@@ -313,17 +346,46 @@ class FirebaseAuthTests(unittest.TestCase):
                 self.assertIsNone(auth.token_firebase())
                 self.assertEqual(self.urlopen.call_count, chamadas)
 
+    def test_uid_reconfigurada_antes_da_renovacao_invalida_sessao(self):
+        self._login_ok()
+        self.relogio.return_value = 3700.0
+        with patch.dict(os.environ, {ADMIN_ENV: "outra-uid-sintetica"}):
+            self.assertIsNone(auth.token_firebase())
+        self.assertFalse(auth.sessao_administrativa_renovavel())
+        self.urlopen.assert_called_once()
+
+    def test_uid_reconfigurada_durante_renovacao_nao_publica_token(self):
+        self._login_ok()
+        self.relogio.return_value = 3700.0
+
+        def responder(*args, **kwargs):
+            os.environ[ADMIN_ENV] = "outra-uid-sintetica"
+            return _resposta({"id_token": "novo", "expires_in": "3600", "user_id": LOGIN_OK["localId"]})
+
+        self.urlopen.side_effect = responder
+        with self.assertLogs(auth.__name__, "WARNING"):
+            self.assertIsNone(auth.token_firebase())
+        self.assertFalse(auth.sessao_administrativa_renovavel())
+
+    def test_resposta_de_login_em_andamento_nao_restaura_logout(self):
+        def responder(*args, **kwargs):
+            auth.logout_firebase()
+            return _resposta(LOGIN_OK)
+
+        self.urlopen.side_effect = responder
+        self._assert_falha_login(FalhaAuth.SESSAO_INVALIDA)
+
     def test_resposta_de_renovacao_em_andamento_nao_restaura_logout(self):
         self._login_ok()
         self.relogio.return_value = 3700.0
 
         def responder_apos_logout(*args, **kwargs):
             auth.logout_firebase()
-            return _resposta({"id_token": "novo-id-token", "expires_in": "3600"})
+            return _resposta({"id_token": "novo-id-token", "expires_in": "3600", "user_id": LOGIN_OK["localId"]})
 
         self.urlopen.side_effect = responder_apos_logout
         self.assertIsNone(auth.token_firebase())
-        self.assertFalse(auth.sessao_firebase_renovavel())
+        self.assertFalse(auth.sessao_administrativa_renovavel())
 
 
 try:
@@ -347,7 +409,8 @@ class FirebaseAuthQtTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.enterContext(patch.dict(os.environ, {ENV: API_KEY}))
+        self.enterContext(patch.dict(os.environ, {ENV: API_KEY, ADMIN_ENV: LOGIN_OK["localId"]}))
+        self.ler_historico_real = self.ui._carregar_historico
         self.historico = self.enterContext(patch.object(
             self.ui, "_carregar_historico", side_effect=AssertionError
         ))
@@ -390,7 +453,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
             self.assertEqual(dialogo.entry_senha.text(), "")
             self.assertTrue(sinal.wait(3000))
         self.assertEqual(dialogo.result(), QDialog.DialogCode.Accepted)
-        self.assertTrue(self.auth.sessao_firebase_ativa())
+        self.assertTrue(self.auth.sessao_administrativa_ativa())
         enviar.assert_called_once()
 
     def test_dialogo_recusa_sem_enumerar_contas_e_ignora_escape_ate_thread_encerrar(self):
@@ -431,7 +494,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
 
     def test_entrada_exige_dialogo_aceito_e_sessao_valida_e_limpa_ao_sair(self):
         with (
-            patch.object(self.ui, "carregar_api_key"),
+            patch.object(self.ui, "carregar_configuracao"),
             patch.object(self.ui, "QApplication") as app,
             patch.object(self.ui, "LoginDialog") as login,
             patch.object(self.ui, "GerenciamentoClientes") as janela,
@@ -455,7 +518,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
     def test_entrada_sem_chave_exibe_erro_sem_instanciar_dialogo_ou_janela(self):
         with (
             patch.dict(os.environ, {ENV: ""}),
-            patch.object(self.ui, "carregar_api_key"),
+            patch.object(self.ui, "carregar_configuracao"),
             patch.object(self.ui, "QApplication"),
             patch.object(self.ui.QMessageBox, "critical") as aviso,
             patch.object(self.ui, "LoginDialog") as login,
@@ -469,18 +532,104 @@ class FirebaseAuthQtTests(unittest.TestCase):
             janela.assert_not_called()
 
     def test_constructor_sem_sessao_bloqueia_leitura_do_historico(self):
-        with self.assertRaisesRegex(RuntimeError, "exige uma sessão autenticada"):
+        with self.assertRaisesRegex(RuntimeError, "exige uma sessão administrativa"):
             self.ui.GerenciamentoClientes()
         self.historico.assert_not_called()
         self.transporte_database.assert_not_called()
+
+    def test_dialogo_com_conta_comum_nao_abre_sessao_nem_le_historicos(self):
+        dialogo = self.ui.LoginDialog()
+        dialogo.entry_email.setText(EMAIL)
+        dialogo.entry_senha.setText(SENHA)
+        self.transporte_auth.side_effect = None
+        self.transporte_auth.return_value = _resposta(dict(LOGIN_OK, localId="uid-comum-sintetica"))
+        with self.assertLogs(self.auth.__name__, "WARNING"):
+            dialogo._on_entrar()
+            sinal = QSignalSpy(dialogo._worker.concluido)
+            self.assertTrue(sinal.wait(3000))
+        self.assertEqual(sinal[0], [False, self.ui._MENSAGEM_CREDENCIAIS])
+        self.assertEqual(dialogo.result(), QDialog.DialogCode.Rejected)
+        self.assertEqual(dialogo.entry_senha.text(), "")
+        with self.assertRaises(self.ui._SessaoAdminEncerrada):
+            self.ui.GerenciamentoClientes()
+        self.historico.assert_not_called()
+        self.transporte_database.assert_not_called()
+
+    def test_entrada_sem_uid_valida_nao_abre_login_ou_historico(self):
+        with (
+            patch.dict(os.environ, {ADMIN_ENV: ""}),
+            patch.object(self.ui, "carregar_configuracao"),
+            patch.object(self.ui, "QApplication"),
+            patch.object(self.ui.QMessageBox, "critical"),
+            patch.object(self.ui, "LoginDialog") as login,
+            patch.object(self.ui, "GerenciamentoClientes") as janela,
+            self.assertLogs(self.ui.__name__, "WARNING") as logs,
+        ):
+            self.assertEqual(self.ui._main(), 1)
+        self.assertIn(FalhaAuth.ADMIN_UID_INVALIDA, logs.output[0])
+        login.assert_not_called()
+        janela.assert_not_called()
+        self.historico.assert_not_called()
+
+    def test_historicos_nao_abrem_arquivo_apos_perda_da_uid(self):
+        self._login_ok()
+        with (
+            patch.dict(os.environ, {ADMIN_ENV: "outra-uid-sintetica"}),
+            patch.object(self.ui, "open", create=True) as abrir,
+        ):
+            for ler in (self.ler_historico_real, self.ui._carregar_arquivo_morto):
+                with self.assertRaises(self.ui._SessaoAdminEncerrada):
+                    ler()
+        abrir.assert_not_called()
+
+    def test_perda_de_uid_bloqueia_todos_os_pontos_de_entrada(self):
+        janela = self._janela_autenticada()
+        self.historico.reset_mock()
+        acoes = (
+            "_filtrar_tabela", "_on_gerar", "_on_revogar", "_on_reativar", "_on_excluir",
+            "_on_copiar", "_on_restaurar", "_on_exportar_pdf", "_on_toggle_auto_renew",
+            "_on_mute_alerts", "_on_edit_expiry", "_on_publicar_atualizacao",
+        )
+        with (
+            patch.dict(os.environ, {ADMIN_ENV: "outra-uid-sintetica"}),
+            patch.object(self.ui, "_carregar_arquivo_morto") as ler_morto,
+            patch.object(self.ui, "gerar_chave") as gerar,
+            patch.object(self.ui.QMessageBox, "warning") as avisar,
+        ):
+            for nome in acoes:
+                getattr(janela, nome)()
+        self.assertEqual(avisar.call_count, len(acoes))
+        ler_morto.assert_not_called()
+        gerar.assert_not_called()
+        self.historico.assert_not_called()
+        self.transporte_database.assert_not_called()
+
+    def test_uid_invalidada_durante_confirmacao_impede_patch(self):
+        janela = self._janela_autenticada()
+        registro = {"cliente": "Cliente Teste", "id": "0012abcd34ef"}
+
+        def confirmar(_janela, titulo, *_args):
+            if titulo == "Confirmar Exclusão":
+                self.auth.logout_firebase()
+            return self.ui.QMessageBox.StandardButton.Yes
+
+        with (
+            patch.object(janela, "_linha_selecionada", return_value=registro),
+            patch.object(self.ui.QMessageBox, "warning", side_effect=confirmar),
+            patch.object(self.ui, "_carregar_arquivo_morto") as ler_morto,
+        ):
+            janela._on_excluir()
+        self.transporte_database.assert_not_called()
+        ler_morto.assert_not_called()
+        self.salvar_historico.assert_not_called()
 
     def test_database_sem_sessao_ou_configuracao_falha_sem_requisicao(self):
         for url in ("https://database.example.invalid", "https://SEU-PROJETO.example.invalid"):
             with self.subTest(url=url), patch.object(self.ui, "FIREBASE_URL", url):
                 with self.assertLogs(self.ui.__name__, "WARNING"):
-                    self.assertEqual(self.ui._firebase_get("licenca-ficticia"), (False, None))
-                    self.assertFalse(self.ui._firebase_put("licenca-ficticia", True))
-                    self.assertFalse(self.ui._firebase_delete("licenca-ficticia"))
+                    self.assertEqual(self.ui._firebase_get("0012abcd34ef"), (False, None))
+                    self.assertFalse(self.ui._firebase_put("0012abcd34ef", True))
+                    self.assertFalse(self.ui._firebase_delete("0012abcd34ef"))
         self.transporte_database.assert_not_called()
 
     def test_database_fecha_403_limpa_sessao_e_preserva_privacidade_dos_logs(self):
@@ -501,7 +650,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
         id_token = LOGIN_OK["idToken"]
         self.transporte_database.side_effect = URLError(f"https://example.invalid/?auth={id_token}")
         with self.assertLogs(self.ui.__name__, "WARNING") as logs:
-            self.assertEqual(self.ui._firebase_get("licenca-ficticia"), (False, None))
+            self.assertEqual(self.ui._firebase_get("0012abcd34ef"), (False, None))
         self.assertNotIn(id_token, logs.output[0])
 
     def test_perda_de_sessao_impede_copia_e_exportacao(self):
@@ -535,7 +684,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
                 def responder(*args, **kwargs):
                     threads_renovacao.append(get_ident())
                     liberar.wait(3)
-                    return _resposta({"id_token": "novo-id-token", "expires_in": "3600"})
+                    return _resposta({"id_token": "novo-id-token", "expires_in": "3600", "user_id": LOGIN_OK["localId"]})
 
                 self.transporte_auth.side_effect = responder
                 with (
@@ -571,7 +720,25 @@ class FirebaseAuthQtTests(unittest.TestCase):
             self.assertTrue(sinal.wait(3000))
         copiar.assert_not_called()
         aviso.assert_called_once()
-        self.assertFalse(self.auth.sessao_firebase_renovavel())
+        self.assertFalse(self.auth.sessao_administrativa_renovavel())
+
+    def test_renovacao_com_uid_diferente_nao_executa_acao_pendente(self):
+        janela = self._janela_autenticada()
+        self.transporte_auth.return_value = _resposta({
+            "id_token": "novo", "expires_in": "3600", "user_id": "outra-uid-sintetica",
+        })
+        with (
+            patch.object(self.auth.time, "monotonic", return_value=self.auth._AUTH_SESSION.expira_em),
+            patch.object(janela, "_copiar_chave") as copiar,
+            patch.object(self.ui.QMessageBox, "warning") as aviso,
+            self.assertLogs(self.auth.__name__, "WARNING"),
+        ):
+            janela._on_copiar()
+            sinal = QSignalSpy(janela._renovacao.finished)
+            self.assertTrue(sinal.wait(3000))
+        copiar.assert_not_called()
+        aviso.assert_called_once()
+        self.assertFalse(self.auth.sessao_administrativa_renovavel())
 
     def test_fechar_durante_renovacao_descarta_acao_pendente(self):
         janela = self._janela_autenticada()
@@ -580,7 +747,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
 
         def responder(*args, **kwargs):
             liberar.wait(3)
-            return _resposta({"id_token": "novo-id-token", "expires_in": "3600"})
+            return _resposta({"id_token": "novo-id-token", "expires_in": "3600", "user_id": LOGIN_OK["localId"]})
 
         self.transporte_auth.side_effect = responder
         with (
@@ -600,7 +767,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
 
     def test_exclusao_recusada_preserva_registros_locais(self):
         janela = self._janela_autenticada()
-        registro = {"cliente": "Cliente Teste", "id": "licenca-ficticia"}
+        registro = {"cliente": "Cliente Teste", "id": "0012abcd34ef"}
         erro, _ = _erro_http({"error": "Permission denied"}, 403)
         self.transporte_database.side_effect = erro
         with (
@@ -619,7 +786,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
 
     def test_exclusao_atomica_envia_patch_multilocal_e_so_entao_atualiza_historico(self):
         janela = self._janela_autenticada()
-        registro = {"cliente": "Cliente Teste", "id": "licenca-ficticia"}
+        registro = {"cliente": "Cliente Teste", "id": "0012abcd34ef"}
         self.historico.return_value = [registro]
         self.salvar_historico.side_effect = None
         self.salvar_morto.side_effect = None
@@ -640,7 +807,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
         self.assertEqual(urlsplit(req.full_url).path, "/.json")
         self.assertEqual(
             json.loads(req.data),
-            {"licenses/licenca-ficticia": None, "revoked/licenca-ficticia": None},
+            {"licenses/0012abcd34ef": None, "revoked/0012abcd34ef": None},
         )
         self.salvar_morto.assert_called_once_with([registro])
         self.salvar_historico.assert_called_once_with([])
@@ -663,7 +830,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
         self.assertNotIn("../updates/latest", "\n".join(logs.output))
 
     def test_restauracao_recusada_preserva_registros_locais(self):
-        registro = {"cliente": "Cliente Teste", "id": "licenca-ficticia"}
+        registro = {"cliente": "Cliente Teste", "id": "0012abcd34ef"}
 
         def selecionar(dialogo):
             dialogo.findChild(QListWidget).setCurrentRow(0)

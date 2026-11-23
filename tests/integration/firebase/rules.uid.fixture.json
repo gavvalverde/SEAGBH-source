@@ -1,0 +1,24 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "licenses": {
+      "$id": {
+        ".read": "$id.matches(/^[0-9a-f]{12}$/)",
+        ".write": "auth != null && auth.uid === 'uid-admin-sintetica' && $id.matches(/^[0-9a-f]{12}$/)"
+      }
+    },
+    "revoked": {
+      "$id": {
+        ".read": false,
+        ".write": "auth != null && auth.uid === 'uid-admin-sintetica'"
+      }
+    },
+    "updates": {
+      "$id": {
+        ".read": true,
+        ".write": "auth != null && auth.uid === 'uid-admin-sintetica'"
+      }
+    }
+  }
+}

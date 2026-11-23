@@ -17,6 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 _LOGGER = logging.getLogger(__name__)
 _API_KEY_ENV = "SEAGBH_FIREBASE_API_KEY"
+_ADMIN_UID_ENV = "SEAGBH_FIREBASE_ADMIN_UID"
 _LOGIN_URL = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
 _TOKEN_URL = "https://securetoken.googleapis.com/v1/token"
 _LIMITE_ERRO = 16 * 1024
@@ -33,6 +34,8 @@ class FalhaAuth(StrEnum):
     CREDENCIAIS_INVALIDAS = "CREDENCIAIS_INVALIDAS"
     USUARIO_DESABILITADO = "USUARIO_DESABILITADO"
     LIMITE_TENTATIVAS = "LIMITE_TENTATIVAS"
+    ADMIN_UID_INVALIDA = "ADMIN_UID_INVALIDA"
+    ACESSO_ADMIN_NEGADO = "ACESSO_ADMIN_NEGADO"
     PROVEDOR_INDISPONIVEL = "PROVEDOR_INDISPONIVEL"
     TIMEOUT = "TIMEOUT"
     REDE_INDISPONIVEL = "REDE_INDISPONIVEL"
@@ -86,6 +89,7 @@ class _SessaoFirebase:
 
 _AUTH_SESSION: _SessaoFirebase | None = None
 _SESSAO_LOCK = Lock()
+_GERACAO_LOGIN = 0
 
 
 class _SemRedirecionamento(HTTPRedirectHandler):
@@ -96,21 +100,29 @@ class _SemRedirecionamento(HTTPRedirectHandler):
 _abrir_auth = build_opener(_SemRedirecionamento()).open
 
 
-def carregar_api_key(env_path: Path) -> None:
-    """Usa o .env como fallback quando a variável do processo está ausente."""
-    if _API_KEY_ENV in os.environ:
+def carregar_configuracao(env_path: Path) -> None:
+    """Usa o .env como fallback apenas para as duas configurações da ferramenta."""
+    faltantes = {_API_KEY_ENV, _ADMIN_UID_ENV} - os.environ.keys()
+    if not faltantes:
         return
 
     try:
         with env_path.open(encoding="utf-8-sig") as arquivo:
             for linha in arquivo:
                 nome, separador, valor = linha.strip().removeprefix("export ").partition("=")
-                if separador and nome.strip() == _API_KEY_ENV:
-                    partes = shlex.split(valor, comments=True)
-                    if len(partes) > 1:
-                        raise ValueError
-                    os.environ.setdefault(_API_KEY_ENV, partes[0] if partes else "")
-                    return
+                nome = nome.strip()
+                if separador and nome in faltantes:
+                    try:
+                        partes = shlex.split(valor, comments=True)
+                        if len(partes) > 1:
+                            raise ValueError
+                    except ValueError:
+                        _LOGGER.warning("Firebase Auth: falha ao carregar a configuração | Código: ENV_INVALIDO")
+                        partes = []
+                    os.environ.setdefault(nome, partes[0] if partes else "")
+                    faltantes.remove(nome)
+                    if not faltantes:
+                        return
     except FileNotFoundError:
         return
     except (OSError, ValueError):
@@ -119,6 +131,19 @@ def carregar_api_key(env_path: Path) -> None:
 
 def api_key_firebase() -> str:
     return os.environ.get(_API_KEY_ENV, "").strip()
+
+
+def _uid_admin_configurada() -> str | None:
+    uid = os.environ.get(_ADMIN_UID_ENV, "")
+    # O Firebase admite UIDs de 1 a 128 caracteres. Este operador usa um único
+    # identificador sem espaços ou controles, comparado literalmente.
+    if 1 <= len(uid) <= 128 and uid.isprintable() and not any(c.isspace() for c in uid):
+        return uid
+    return None
+
+
+def configuracao_admin_valida() -> bool:
+    return _uid_admin_configurada() is not None
 
 
 def _ler_objeto_json(resposta, limite: int) -> dict:
@@ -242,15 +267,18 @@ def _registrar_falha(operacao: str, erro: _ErroAuth) -> None:
 
 
 def login_firebase(email: str, senha: str) -> FalhaAuth | None:
-    """Autentica e publica a sessão validada. Retorna o código interno em caso de falha."""
+    """Autentica e só publica uma sessão para a UID administrativa configurada."""
     global _AUTH_SESSION
-    logout_firebase()
-    corpo = json.dumps({
-        "email": email,
-        "password": senha,
-        "returnSecureToken": True,
-    }).encode("utf-8")
+    geracao = _invalidar_sessao()
     try:
+        uid_admin = _uid_admin_configurada()
+        if uid_admin is None:
+            raise _ErroAuth(FalhaAuth.ADMIN_UID_INVALIDA)
+        corpo = json.dumps({
+            "email": email,
+            "password": senha,
+            "returnSecureToken": True,
+        }).encode("utf-8")
         dados = _post(_LOGIN_URL, corpo, "application/json")
         sessao = _SessaoFirebase(
             id_token=_texto_sessao(dados.get("idToken"), FalhaAuth.TOKEN_AUSENTE),
@@ -258,11 +286,15 @@ def login_firebase(email: str, senha: str) -> FalhaAuth | None:
             uid=_texto_sessao(dados.get("localId"), FalhaAuth.RESPOSTA_INVALIDA),
             expira_em=_expiracao(dados.get("expiresIn")),
         )
+        with _SESSAO_LOCK:
+            if geracao != _GERACAO_LOGIN:
+                raise _ErroAuth(FalhaAuth.SESSAO_INVALIDA)
+            if sessao.uid != uid_admin or sessao.uid != _uid_admin_configurada():
+                raise _ErroAuth(FalhaAuth.ACESSO_ADMIN_NEGADO)
+            _AUTH_SESSION = sessao
     except _ErroAuth as erro:
         _registrar_falha("login recusado", erro)
         return erro.codigo
-    with _SESSAO_LOCK:
-        _AUTH_SESSION = sessao
     return None
 
 
@@ -275,14 +307,14 @@ def _substituir_sessao(anterior: _SessaoFirebase, nova: _SessaoFirebase | None) 
         return True
 
 
-def _refresh_token(sessao: _SessaoFirebase) -> bool:
+def _refresh_token(sessao: _SessaoFirebase) -> _SessaoFirebase | None:
     corpo = urlencode({
         "grant_type": "refresh_token",
         "refresh_token": sessao.refresh_token,
     }).encode("utf-8")
     try:
         dados = _post(_TOKEN_URL, corpo, "application/x-www-form-urlencoded")
-        if dados.get("user_id", sessao.uid) != sessao.uid:
+        if dados.get("user_id") != sessao.uid or sessao.uid != _uid_admin_configurada():
             raise _ErroAuth(FalhaAuth.SESSAO_INVALIDA)
         id_token = dados.get("id_token") or dados.get("idToken")
         refresh_token = dados.get("refresh_token", sessao.refresh_token)
@@ -295,29 +327,43 @@ def _refresh_token(sessao: _SessaoFirebase) -> bool:
     except _ErroAuth as erro:
         _substituir_sessao(sessao, None)
         _registrar_falha("renovação recusada", erro)
-        return False
-    return _substituir_sessao(sessao, nova)
+        return None
+    return nova if _substituir_sessao(sessao, nova) else None
 
 
-def sessao_firebase_ativa() -> bool:
-    sessao = _AUTH_SESSION
+def _sessao_administrativa() -> _SessaoFirebase | None:
+    global _AUTH_SESSION
+    with _SESSAO_LOCK:
+        if _AUTH_SESSION is not None and _AUTH_SESSION.uid != _uid_admin_configurada():
+            _AUTH_SESSION = None
+        return _AUTH_SESSION
+
+
+def sessao_administrativa_ativa() -> bool:
+    sessao = _sessao_administrativa()
     return sessao is not None and time.monotonic() < sessao.expira_em
 
 
-def sessao_firebase_renovavel() -> bool:
-    return _AUTH_SESSION is not None
+def sessao_administrativa_renovavel() -> bool:
+    return _sessao_administrativa() is not None
 
 
 def token_firebase() -> str | None:
-    sessao = _AUTH_SESSION
+    sessao = _sessao_administrativa()
     if sessao is not None and time.monotonic() >= sessao.expira_em - 60:
-        if not _refresh_token(sessao):
-            return None
-        sessao = _AUTH_SESSION
-    return sessao.id_token if sessao is not None and time.monotonic() < sessao.expira_em else None
+        sessao = _refresh_token(sessao)
+    if sessao is not None and _sessao_administrativa() is sessao and time.monotonic() < sessao.expira_em:
+        return sessao.id_token
+    return None
+
+
+def _invalidar_sessao() -> int:
+    global _AUTH_SESSION, _GERACAO_LOGIN
+    with _SESSAO_LOCK:
+        _AUTH_SESSION = None
+        _GERACAO_LOGIN += 1
+        return _GERACAO_LOGIN
 
 
 def logout_firebase() -> None:
-    global _AUTH_SESSION
-    with _SESSAO_LOCK:
-        _AUTH_SESSION = None
+    _invalidar_sessao()

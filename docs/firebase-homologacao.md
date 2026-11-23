@@ -1,8 +1,8 @@
 # Auditoria e homologação das regras Firebase
 
-Continuação da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70) e da [matriz técnica do PR #79](https://github.com/gavvalverde/SEAGBH-source/blob/6c86629296fc0c4d549bf7f67c98098eb7ae65c2/docs/firebase-autorizacao.md). A `main` remota estava em `bcd08aa`. O [PR #69](https://github.com/gavvalverde/SEAGBH-source/pull/69) estava aberto em `fba5dc2` e o [PR #79](https://github.com/gavvalverde/SEAGBH-source/pull/79) estava aberto em `6c86629`. A ferramenta desta etapa fica em uma branch separada, baseada na `main`, e usa um snapshot do #79 como entrada de teste.
+Continuação da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70). O [PR #69](https://github.com/gavvalverde/SEAGBH-source/pull/69) usa a infraestrutura dos PRs #79 e #80 incorporada à `main`.
 
-**Auditoria implantada pendente.** Nenhuma cópia das regras foi fornecida. A coleta abaixo cabe a um operador já autorizado. Os resultados locais desta etapa só se aplicam à política sintética executada.
+O operador informou uma política de administrador único baseada em `auth.uid`. A fixture representa esse contrato com uma UID fictícia. A conferência direta da revisão implantada e dos campos reais dos nós públicos cabe ao operador autorizado, pelo procedimento de leitura abaixo.
 
 ## Coleta em modo leitura
 
@@ -11,65 +11,52 @@ Continuação da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues
 3. Registre quais claims ou listas conferem acesso administrativo, quem pode atribuí-las e por qual componente. Use documentação de identidade e evidência de configuração autorizada. Para as leituras legadas, use o esquema e os campos consumidos pelo código para registrar categorias de exposição. Verifique se o nó também contém chaves, identificadores pessoais ou metadados internos. Se não houver inventário confiável do conteúdo implantado, marque exposição pendente. [Referência das regras](https://firebase.google.com/docs/reference/security/database/)
 4. Preencha a matriz com **permitido**, **negado**, **condicional** ou **pendente** para cada perfil. Indique a origem da concessão como raiz, ancestral, caminho exato ou backend. Guarde a regra completa e a identificação da instância apenas no armazenamento restrito do operador. Para compartilhar, use a matriz sanitizada e, quando autorizado, uma cópia de teste que preserve estrutura, precedência, predicados e tipos. Substitua valores privados por fixtures equivalentes. Se uma condição não puder ser reproduzida com dados sintéticos equivalentes, registre a limitação e mantenha o caso pendente.
 
-### Matriz a preencher
+### Matriz da política por UID
 
-As colunas dos três perfis dizem respeito à política implantada. Os critérios da última coluna são os contratos esperados para a liberação.
+As permissões abaixo correspondem ao contrato informado e à fixture. A coluna de anônimo cobre requisições sem token e uma conta emitida pelo provedor anônimo do Auth Emulator. A conta administrativa possui exatamente a UID configurada na fixture.
 
-| Operação | Anônimo | Comum | Administrador | Critério e evidência a coletar |
+| Operação | Anônimo | Comum | Administrador | Condição observada |
 | --- | --- | --- | --- | --- |
-| GET `/`, `/licenses`, `/revoked` e `/updates` | Pendente | Pendente | Pendente | Origem de qualquer concessão ancestral. Anônimo e comum sem listagem no escopo auditado |
-| GET `/licenses/{id}` | Pendente | Pendente | Pendente | Leitura legada individual permite `auto_renew`, `expiry_override`, `revoked_at`, `alerts_muted_until` conforme aplicáveis, e `200 null` se ausente. Investigar campos adicionais |
-| PUT/PATCH/DELETE `/licenses/{id}` e filhos | Pendente | Pendente | Pendente | Conta comum sem escrita, inclusive em renovação, revogação e vencimento. Validar criação, alteração e exclusão separadamente |
-| GET de `/revoked/{id}` | Pendente | Pendente | Pendente | Registrar leitores e consumidores. A fixture restringe leitura a administrador |
-| Escrita e exclusão em `/revoked/{id}` | Pendente | Pendente | Pendente | Conta comum sem escrita. Permitir ao administrador a remoção exigida pelo PATCH, mesmo com nó ausente |
-| GET `/updates/latest` | Pendente | Pendente | Pendente | Leitura legada sem papel administrativo e com metadados no formato do atualizador. Verificar se a URL e o manifesto expõem somente informações previstas para distribuição |
-| PUT/PATCH/DELETE `/updates/latest` | Pendente | Pendente | Pendente | Conta comum sem publicação ou remoção. Atribuição do papel de publicação controlada |
-| PATCH `/.json` com os dois caminhos de exclusão | Pendente | Pendente | Pendente | Administrador remove os alvos e preserva vizinhos. Verificar permissões separadas de cada caminho e ausência de escrita genérica pela raiz |
+| Listar raiz ou coleção | Negado | Negado | Negado | Sem concessão ancestral |
+| GET `/licenses/{id}` | Permitido | Permitido | Permitido | ID com 12 hexadecimais minúsculos. Ausente retorna HTTP 200 com `null` |
+| Escrita em `/licenses/{id}` e filhos | Negado | Negado | Permitido | ID no formato esperado. Revogar e reativar gravam ou removem `revoked_at` |
+| GET `/revoked/{id}` | Negado | Negado | Negado | Inclui nó ausente |
+| Escrita e exclusão em `/revoked/{id}` | Negado | Negado | Permitido | O PATCH pode remover um nó auxiliar ausente |
+| GET `/updates/{id}` | Permitido | Permitido | Permitido | Inclui `latest` e leitura individual de outras versões |
+| Escrita em `/updates/{id}` | Negado | Negado | Permitido | Publicação individual |
+| PATCH `/.json` com os dois caminhos de exclusão | Negado | Negado | Permitido | A recusa preserva ambos os alvos. O sucesso preserva os vizinhos |
+| Escrita genérica na raiz, coleção ou caminho externo | Negado | Negado | Negado | A autorização por filho vale somente nos caminhos permitidos |
 
 ## Executar a homologação
 
 Use Python 3.12, Java 21 e Firebase CLI. O script monta um projeto demo temporário, usa o transporte REST e as contas sintéticas do #79 e imprime apenas o nome e o estado de cada contrato. Reserve as portas locais 19199, 19200, 19440 e 19450. O Firebase CLI pode baixar o emulador oficial na primeira execução. Nunca use uma instância operacional como destino. [Configuração do Local Emulator Suite](https://firebase.google.com/docs/emulator-suite/install_and_configure)
 
-Enquanto o #79 estiver aberto, extraia a referência confirmada sem mudar de branch. Exemplo em PowerShell a partir da raiz:
+Execute a suíte por UID a partir da raiz:
 
-```powershell
-$ref = '6c86629296fc0c4d549bf7f67c98098eb7ae65c2'
-git fetch --no-tags origin refs/pull/79/head
-if ($LASTEXITCODE -ne 0 -or (git rev-parse FETCH_HEAD) -ne $ref) {
-    throw 'Confira o SHA do PR #79 antes de usar uma referência diferente.'
-}
-$pasta = Join-Path ([IO.Path]::GetTempPath()) ('seagbh-ref-' + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $pasta | Out-Null
-$zip = Join-Path $pasta 'referencia.zip'
-git archive --format=zip -o $zip $ref -- tests/integration/firebase
-if ($LASTEXITCODE -ne 0) { throw 'Falha ao extrair a referência.' }
-Expand-Archive -LiteralPath $zip -DestinationPath $pasta
-$infra = Join-Path $pasta 'tests/integration/firebase'
-python -B tests/integration/firebase_homologacao.py --referencia $infra --fixture-referencia
+```sh
+python -B tests/integration/firebase/run.py --politica-uid
 ```
 
-Quando houver JSON explicitamente fornecido e sanitizado para este teste, hospede-o fora do checkout e use o mesmo script com `--regras-sanitizadas CAMINHO` no lugar de `--fixture-referencia`. O arquivo deve ter o objeto `rules` do RTDB. O modelo atual usa a claim booleana `admin` e contas com as características da fixture. Se a regra implantada depender de outro formato de claim, lista de UIDs, dados ou contexto de consulta, adapte as fixtures para reproduzir essa condição com valores sintéticos antes de usar o resultado como evidência. Preserve o significado das condições ao trocar os valores.
+A fixture mantém a regra por UID sem validações de conteúdo adicionais. Os testes distinguem HTTP 200 com `null`, recusa de autorização e HTTP 400 para uma chave incompatível com a sintaxe do RTDB. O contrato informado não inclui um esquema `.validate` por campo. A fixture original por claim continua disponível via `run.py` sem a opção `--politica-uid` e pelos modos do `firebase_homologacao.py`. Ela testa uma política diferente, inclusive controles negativos de atomicidade. [Contrato REST e códigos HTTP](https://firebase.google.com/docs/reference/rest/database/)
 
-**Evidência da execução local.** Python 3.12.10, Firebase CLI 15.35.0, Temurin 21.0.13.1 e RTDB Emulator 4.11.2. Os oito contratos passaram na fixture de referência. A suíte reprovou os seis controles negativos esperados, envolvendo concessões de leitura e escrita na raiz, escrita herdada de `/licenses`, exclusão de atualização por conta comum, recusa do lado `/revoked` do PATCH administrativo e recusa do GET individual. JSON inválido foi recusado sem ecoar o conteúdo. O teste de ausência exige `200 null`, e a recusa de leitura exige o HTTP de falha de autorização. O #79 já demonstrou a atomicidade do PATCH em caso de recusa. Nesta etapa a pergunta é se a política aceita ou recusa cada operação esperada, inclusive com o nó auxiliar ausente. [Contrato REST e códigos HTTP](https://firebase.google.com/docs/reference/rest/database/)
+### Limites de tokens e expiração
 
-As regressões offline em Python 3.12.10 passaram com 98 testes de licenciamento e 24 subtestes na base da missão, e 33 testes de Auth na revisão `fba5dc2` do #69 em checkout temporário com PyQt6 offscreen. As duas suítes registraram zero tentativas de conexão.
-
-Os tokens dos emuladores são sintéticos e sem assinatura. A suíte testa autorização do RTDB sob as regras fornecidas e recusa de token inválido no ambiente demo. O #79 observou que um token emulado vencido podia passar quando a regra só checava o papel. Antes da liberação, verifique em homologação separada com tokens assinados a expiração, a revogação e o efeito de remover a claim após renovação. Preserve a distinção entre licença ausente, recusa de acesso e falha de rede. [Tokens do Auth Emulator](https://firebase.google.com/docs/emulator-suite/connect_auth#id_tokens) · [Gerenciamento de sessões](https://firebase.google.com/docs/auth/admin/manage-sessions)
+O Auth Emulator emite ID tokens sem assinatura e os emuladores os aceitam para testes locais. A suíte por UID verifica rejeição de tokens inválidos e a identidade retornada em renovações reais do Auth Emulator. As regressões Qt verificam a expiração local pelo relógio monotônico, inclusive a recusa de continuar após renovação inválida ou com UID divergente. O teste anterior do #79 observou aceitação de um token sem assinatura vencido quando a regra checava só o papel. A fixture por UID preserva a regra informada sem acrescentar checagem de expiração. A validade criptográfica, a expiração no RTDB real e a revogação imediata exigem evidência separada com tokens assinados em homologação. [Tokens do Auth Emulator](https://firebase.google.com/docs/emulator-suite/connect_auth#id_tokens) · [Gerenciamento de sessões](https://firebase.google.com/docs/auth/admin/manage-sessions)
 
 ## Autorização, implantação e rollback
 
-- **Identidade autenticada.** O login Firebase estabelece a identidade. Uma conta válida pode abrir a ferramenta no #69. A presença do token e a visibilidade de botões são condições de interface.
-- **Autorização administrativa.** Atribua a claim somente por componente confiável com Firebase Admin SDK, identidade própria e trilha de auditoria. O RTDB ou backend verifica a claim em cada escrita. Quando a revogação imediata for exigida, teste um mecanismo explícito do servidor para negar a sessão revogada. Previna concessões amplas em ancestrais. [Custom claims](https://firebase.google.com/docs/auth/admin/custom-claims)
-- **Histórico local e chaves.** Aplique permissões do sistema operacional ao diretório e aos backups do operador. Controle acesso a cópia e exportação em máquinas compartilhadas. O armazenamento e o HMAC legado exigem uma avaliação ou migração separada.
+- O login estabelece a identidade pelo Firebase. A ferramenta exige correspondência exata com `SEAGBH_FIREBASE_ADMIN_UID` para abrir a janela, acessar o histórico e prosseguir após renovar. O RTDB aplica a autorização definitiva de escrita em cada caminho a partir do ID token. [Condições do RTDB](https://firebase.google.com/docs/database/security/rules-conditions)
+- `tools/historico_chaves.json` e `tools/historico_excluidos.json` são lidos sob demanda e gravados em JSON durante operações administrativas. Ambos estão rastreados no Git. Neste checkout, as ACLs são herdadas e incluem uma concessão de leitura a um grupo amplo. A inspeção desta etapa se limitou à existência, ao rastreamento e às ACLs dos arquivos. O conteúdo e o acesso efetivo por outros usuários ainda precisam de auditoria autorizada.
+- Para proteger os históricos, reserve uma conta operacional individual, restrinja as ACLs do diretório e dos backups a essa conta e às identidades de manutenção necessárias, e teste o acesso com outra conta. Audite cópias e revisões do Git em ambiente restrito. Se houver chaves reais disponíveis a terceiros, avalie exposição e trate reemissão e remoção do histórico do repositório em uma missão de correção separada. A interface controla o acesso da aplicação. A proteção contra leitura pelo sistema operacional depende das ACLs e da remoção de cópias acessíveis.
 
 Antes de qualquer implantação aprovada, registre a revisão das regras em armazenamento restrito e ensaie a mudança e o rollback numa instância de homologação separada. Compare códigos HTTP, formato dos dois GETs anônimos e comportamento em um exemplar de cada versão distribuída. Em especial, um GET de licença recusado entra no caminho offline, com limite de 72 h. Um `200 null` significa exclusão e pode apagar a licença local. Interrompa diante de qualquer regressão, escrita indevida ou PATCH administrativo recusado. Restaure a revisão aprovada de regras em janela controlada, confirme novamente os GETs e a recusa de escrita e verifique que o rollback preserva o papel administrativo. Se a última revisão reabrir uma permissão indevida, mantenha a operação administrativa suspensa até decisão humana.
 
 ### Condições para liberar o PR #69
 
-1. Operador aprova a matriz efetiva, incluindo os ancestrais e o esquema dos nós lidos anonimamente.
-2. A política derivada, com dados sanitizados, aprova os oito contratos locais. Testes adicionais cobrem condições específicas da política ausentes na fixture.
+1. Operador aprova a matriz efetiva, incluindo os ancestrais e o esquema dos nós lidos anonimamente, e configura a chave Web do mesmo projeto da instância RTDB e a UID administrativa no perfil autorizado.
+2. A fixture por UID aprova os contratos locais, inclusive as duas variantes do PATCH, os GETs legados, a rejeição de IDs inválidos e a preservação de papéis na renovação.
 3. Em homologação separada, uma conta comum recebe recusa em licenças, revogações e atualizações. Um administrador consegue executar o PATCH. Os clientes distribuídos consultam a licença individual e o manifesto de atualização sem login administrativo.
 4. Há evidência sobre tokens assinados, expiração e revogação conforme o nível de acesso desejado. O responsável aprova a estratégia de proteção do histórico e o rollback de compatibilidade.
 5. CI e revisões apontam para o HEAD candidato à integração. Se houver atualização da base ou dos arquivos do PR, revalide os contratos afetados na revisão final.
 
-As regras implantadas, a exposição de campos reais e a compatibilidade com todo o parque instalado permanecem pendentes. Nenhum acesso ao ambiente Firebase de produção, alteração de contas ou atribuição de claims reais fez parte desta etapa.
+A leitura direta da revisão implantada, a exposição de campos reais e a compatibilidade com todo o parque instalado permanecem pendentes. Se houver falha da ferramenta após a atualização, suspenda o uso administrativo e mantenha a política RTDB. Uma reversão não deve recolocar uma versão da ferramenta que permita à conta comum ler os históricos locais.
