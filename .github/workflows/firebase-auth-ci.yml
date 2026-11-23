@@ -5,18 +5,26 @@ on:
     branches: [main]
     paths:
       - "src/core/firebase_auth.py"
+      - "src/core/historico_licencas.py"
+      - "src/core/_pasta_historico.py"
+      - "src/core/_acl_historico_windows.py"
       - "src/core/licenca.py"
       - "tools/gerador_chaves.py"
       - "tests/unit/test_firebase_auth.py"
+      - "tests/unit/test_historico_licencas.py"
       - "tests/requirements-backup-ui.txt"
       - ".github/workflows/firebase-auth-ci.yml"
   push:
     branches: [main]
     paths:
       - "src/core/firebase_auth.py"
+      - "src/core/historico_licencas.py"
+      - "src/core/_pasta_historico.py"
+      - "src/core/_acl_historico_windows.py"
       - "src/core/licenca.py"
       - "tools/gerador_chaves.py"
       - "tests/unit/test_firebase_auth.py"
+      - "tests/unit/test_historico_licencas.py"
       - "tests/requirements-backup-ui.txt"
       - ".github/workflows/firebase-auth-ci.yml"
 
@@ -80,7 +88,7 @@ jobs:
           & $py -B -m pip check
           if ($LASTEXITCODE -ne 0) { throw "pip dependency check failed" }
 
-      - name: Run real offscreen Qt and Firebase Auth regression tests
+      - name: Run offscreen Qt, Firebase Auth and private history regressions
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -88,5 +96,5 @@ jobs:
           $py = if ($IsWindows) { Join-Path $venv "Scripts/python.exe" } else { Join-Path $venv "bin/python" }
           & $py -B -c "import sys; from PyQt6.QtWidgets import QApplication; assert sys.version_info[:2] == (3, 12); app = QApplication([]); assert app.platformName() == 'offscreen'; print('Qt offscreen ready')"
           if ($LASTEXITCODE -ne 0) { throw "Qt initialization failed" }
-          & $py -B -m unittest -v tests.unit.test_firebase_auth
-          if ($LASTEXITCODE -ne 0) { throw "Firebase Auth regression failed" }
+          & $py -B -W error::ResourceWarning -m unittest -v tests.unit.test_firebase_auth tests.unit.test_historico_licencas
+          if ($LASTEXITCODE -ne 0) { throw "Firebase Auth or private history regression failed" }

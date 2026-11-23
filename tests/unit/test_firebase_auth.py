@@ -443,6 +443,156 @@ class FirebaseAuthQtTests(unittest.TestCase):
         self.addCleanup(janela.close)
         return janela
 
+    def _armazenamento_sintetico(self):
+        base = os.environ.get("LOCALAPPDATA") if os.name == "nt" else None
+        raiz = self.enterContext(tempfile.TemporaryDirectory(prefix="seagbh-historico-qt-", dir=base))
+        return self.ui.HistoricoLicencas(Path(raiz) / "privado")
+
+    def _aguardar_gravacao(self, janela):
+        for _ in range(600):
+            if janela._gravacao is None:
+                return
+            QTest.qWait(10)
+        self.fail("O worker do histórico não concluiu")
+
+    def test_janela_privada_sem_sessao_ou_migracao_recusa_e_nao_le_legado(self):
+        historico = self._armazenamento_sintetico()
+        with patch.object(historico, "ler_ativos", wraps=historico.ler_ativos) as ler:
+            with self.assertRaises(self.ui._SessaoAdminEncerrada):
+                self.ui.GerenciamentoClientes(historico=historico)
+            ler.assert_not_called()
+            self._login_ok()
+            with self.assertRaisesRegex(self.ui.ErroHistorico, "^armazenamento_ausente$"):
+                self.ui.GerenciamentoClientes(historico=historico)
+        self.historico.assert_not_called()
+        self.transporte_database.assert_not_called()
+
+    def test_janela_privada_confirma_remoto_antes_de_excluir_e_restaurar(self):
+        from tests.unit.test_historico_licencas import json_bytes, registro
+
+        historico = self._armazenamento_sintetico()
+        reg = registro()
+        historico.migrar_fixtures(ativos=json_bytes([reg]), excluidos=b"[]")
+        self._login_ok()
+        with (
+            patch.object(self.ui, "_carregar_arquivo_morto", side_effect=AssertionError),
+            patch.object(self.ui, "_firebase_get", return_value=(True, None)),
+            patch.object(self.ui, "_mostrar_toast") as sucesso,
+            patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
+        ):
+            janela = self.ui.GerenciamentoClientes(historico=historico)
+            self.addCleanup(janela.close)
+            janela.tabela.selectRow(0)
+
+            def excluir(lid):
+                self.assertEqual(lid, reg["id"])
+                self.assertEqual(historico.ler_ativos(), [reg])
+                self.assertEqual(historico.ler_excluidos(), [])
+                return True
+
+            with patch.object(self.ui, "_excluir_licenca_remota_atomicamente", side_effect=excluir):
+                janela._on_excluir()
+                self._aguardar_gravacao(janela)
+            self.assertEqual(historico.ler_ativos(), [])
+            self.assertEqual(historico.ler_excluidos(), [reg])
+
+            def confirmar(dialogo):
+                dialogo.findChild(QListWidget).setCurrentRow(0)
+                dialogo.findChild(QPushButton).click()
+                return QDialog.DialogCode.Accepted
+
+            def restaurar(_caminho, _dados):
+                self.assertEqual(historico.ler_ativos(), [])
+                self.assertEqual(historico.ler_excluidos(), [reg])
+                return True
+
+            with (
+                patch.object(self.ui.QDialog, "exec", new=confirmar),
+                patch.object(self.ui, "_firebase_put", side_effect=restaurar),
+            ):
+                janela._on_restaurar()
+                self._aguardar_gravacao(janela)
+        self.assertEqual(historico.ler_ativos(), [reg])
+        self.assertEqual(historico.ler_excluidos(), [])
+        self.assertEqual(sucesso.call_count, 2)
+        self.historico.assert_not_called()
+        self.salvar_historico.assert_not_called()
+        self.salvar_morto.assert_not_called()
+
+    def test_janela_privada_recusa_exclusao_em_falha_remota_ou_local(self):
+        from tests.unit.test_historico_licencas import json_bytes, registro
+
+        historico = self._armazenamento_sintetico()
+        reg = registro()
+        historico.migrar_fixtures(ativos=json_bytes([reg]), excluidos=b"[]")
+        self._login_ok()
+        with patch.object(self.ui, "_firebase_get", return_value=(True, {"auto_renew": True})):
+            janela = self.ui.GerenciamentoClientes(historico=historico)
+        self.addCleanup(janela.close)
+        janela.tabela.selectRow(0)
+        for remoto in (False, True):
+            with (
+                self.subTest(remoto=remoto),
+                patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
+                patch.object(self.ui.QMessageBox, "critical") as aviso,
+                patch.object(self.ui, "_mostrar_toast") as sucesso,
+                patch.object(self.ui, "_excluir_licenca_remota_atomicamente", return_value=remoto),
+                patch.object(historico, "mover", side_effect=self.ui.ErroHistorico("falha_armazenamento")) as mover,
+            ):
+                janela._on_excluir()
+                self._aguardar_gravacao(janela)
+                self.assertEqual(mover.call_count, int(remoto))
+                aviso.assert_called_once()
+                sucesso.assert_not_called()
+        self.assertEqual(historico.ler_ativos(), [reg])
+        self.assertEqual(historico.ler_excluidos(), [])
+        self.assertEqual(janela._firebase_cache, {reg["id"]: {"auto_renew": True}})
+
+    def test_gravacao_privada_contendida_mantem_eventos_qt_e_adia_fechamento(self):
+        import sqlite3
+        from contextlib import closing
+        from PyQt6.QtCore import QTimer
+        from tests.unit.test_historico_licencas import json_bytes, registro
+
+        historico = self._armazenamento_sintetico()
+        reg = registro()
+        historico.migrar_fixtures(ativos=json_bytes([reg]), excluidos=b"[]")
+        self._login_ok()
+        with (
+            patch.object(self.ui, "_firebase_get", return_value=(True, None)),
+            patch.object(self.ui, "_excluir_licenca_remota_atomicamente", return_value=True),
+            patch.object(self.ui, "_mostrar_toast") as sucesso,
+            patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
+            patch.object(self.ui.QMessageBox, "critical") as aviso,
+        ):
+            janela = self.ui.GerenciamentoClientes(historico=historico)
+            self.addCleanup(janela.close)
+            janela.show()
+            janela.tabela.selectRow(0)
+            eventos = []
+            try:
+                with closing(sqlite3.connect(historico._pasta / "historico.sqlite3")) as concorrente:
+                    concorrente.execute("BEGIN IMMEDIATE")
+                    janela._on_excluir()
+                    QTimer.singleShot(0, lambda: eventos.append(get_ident()))
+                    for _ in range(50):
+                        if eventos:
+                            break
+                        QTest.qWait(5)
+                    self.assertEqual(eventos, [get_ident()])
+                    self.assertIsNotNone(janela._gravacao)
+                    self.assertTrue(janela._gravacao.isRunning())
+                    self.assertEqual(historico.ler_ativos(), [reg])
+                    self.assertFalse(janela.close())
+                    self.assertTrue(janela.isVisible())
+            finally:
+                self._aguardar_gravacao(janela)
+        self.assertFalse(janela.isVisible())
+        self.assertIsNone(self.auth.token_firebase())
+        self.assertEqual(historico.ler_excluidos(), [reg])
+        sucesso.assert_not_called()
+        aviso.assert_not_called()
+
     def test_dialogo_real_aceita_somente_com_token_e_limpa_campo_de_senha(self):
         dialogo = self.ui.LoginDialog()
         dialogo.entry_email.setText(EMAIL)
