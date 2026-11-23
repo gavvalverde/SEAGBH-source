@@ -1,0 +1,92 @@
+name: Firebase Auth Offline Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/core/firebase_auth.py"
+      - "src/core/licenca.py"
+      - "tools/gerador_chaves.py"
+      - "tests/unit/test_firebase_auth.py"
+      - "tests/requirements-backup-ui.txt"
+      - ".github/workflows/firebase-auth-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/core/firebase_auth.py"
+      - "src/core/licenca.py"
+      - "tools/gerador_chaves.py"
+      - "tests/unit/test_firebase_auth.py"
+      - "tests/requirements-backup-ui.txt"
+      - ".github/workflows/firebase-auth-ci.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firebase-auth-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  firebase-auth:
+    name: Firebase Auth (${{ matrix.os }}, Python 3.12)
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 12
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+    steps:
+      - name: Checkout test sources without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1 libopengl0
+
+      - name: Create isolated Python environment and install Qt
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $venv = Join-Path $env:RUNNER_TEMP "firebase-auth-venv"
+          python -m venv $venv
+          if ($LASTEXITCODE -ne 0) { throw "venv creation failed" }
+          if ($IsWindows) {
+            $py = Join-Path $venv "Scripts/python.exe"
+            & $py -B -m pip --isolated --disable-pip-version-check --no-input install --only-binary=:all: --index-url https://pypi.org/simple "PyQt6==6.10.2" "PyQt6-Qt6==6.10.2" "PyQt6-sip==13.11.1"
+          } else {
+            $py = Join-Path $venv "bin/python"
+            & $py -B -m pip --isolated --disable-pip-version-check --no-input install --only-binary=:all: --require-hashes --index-url https://pypi.org/simple -r tests/requirements-backup-ui.txt
+          }
+          if ($LASTEXITCODE -ne 0) { throw "Qt dependency installation failed" }
+          & $py -B -m pip check
+          if ($LASTEXITCODE -ne 0) { throw "pip dependency check failed" }
+
+      - name: Run real offscreen Qt and Firebase Auth regression tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $venv = Join-Path $env:RUNNER_TEMP "firebase-auth-venv"
+          $py = if ($IsWindows) { Join-Path $venv "Scripts/python.exe" } else { Join-Path $venv "bin/python" }
+          & $py -B -c "import sys; from PyQt6.QtWidgets import QApplication; assert sys.version_info[:2] == (3, 12); app = QApplication([]); assert app.platformName() == 'offscreen'; print('Qt offscreen ready')"
+          if ($LASTEXITCODE -ne 0) { throw "Qt initialization failed" }
+          & $py -B -m unittest -v tests.unit.test_firebase_auth
+          if ($LASTEXITCODE -ne 0) { throw "Firebase Auth regression failed" }

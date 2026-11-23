@@ -14,6 +14,7 @@ from test_rtdb import PROJETO
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--firebase", default="firebase", help="Caminho do Firebase CLI.")
+    parser.add_argument("--politica-uid", action="store_true", help="Executa a homologação da política por UID.")
     args = parser.parse_args()
     firebase = shutil.which(args.firebase)
     if not firebase or not shutil.which("java"):
@@ -25,6 +26,11 @@ def main():
         pasta = Path(temporario)
         for nome in ("firebase.json", "rules.fixture.json", "test_rtdb.py"):
             shutil.copyfile(fonte / nome, pasta / nome)
+        teste = "test_rtdb.py"
+        if args.politica_uid:
+            teste = "test_uid_rtdb.py"
+            shutil.copyfile(fonte / teste, pasta / teste)
+            shutil.copyfile(fonte / "rules.uid.fixture.json", pasta / "rules.fixture.json")
 
         chaves_sistema = ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR")
         env = {chave: os.environ[chave] for chave in chaves_sistema if chave in os.environ}
@@ -40,7 +46,7 @@ def main():
             [
                 str(Path(firebase).resolve()), "--non-interactive", "--project", PROJETO,
                 "--config", "firebase.json", "emulators:exec", "--only", "auth,database",
-                f"{python} -B test_rtdb.py",
+                f"{python} -B {teste}",
             ],
             cwd=pasta, env=env, check=False,
         )
