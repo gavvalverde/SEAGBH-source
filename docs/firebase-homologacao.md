@@ -2,7 +2,7 @@
 
 Continuação da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70). O [PR #69](https://github.com/gavvalverde/SEAGBH-source/pull/69) usa a infraestrutura dos PRs #79 e #80 incorporada à `main`.
 
-O operador informou uma política de administrador único baseada em `auth.uid`. A fixture representa esse contrato com uma UID fictícia. A conferência direta da revisão implantada e dos campos reais dos nós públicos cabe ao operador autorizado, pelo procedimento de leitura abaixo.
+O operador forneceu as regras de administrador único baseadas em `auth.uid`. A fixture reproduz esse JSON com uma UID fictícia. A conferência direta da revisão implantada e dos campos reais dos nós públicos cabe ao operador autorizado, pelo procedimento de leitura abaixo.
 
 ## Coleta em modo leitura
 
@@ -18,13 +18,13 @@ As permissões abaixo correspondem ao contrato informado e à fixture. A coluna 
 | Operação | Anônimo | Comum | Administrador | Condição observada |
 | --- | --- | --- | --- | --- |
 | Listar raiz ou coleção | Negado | Negado | Negado | Sem concessão ancestral |
-| GET `/licenses/{id}` | Permitido | Permitido | Permitido | ID com 12 hexadecimais minúsculos. Ausente retorna HTTP 200 com `null` |
-| Escrita em `/licenses/{id}` e filhos | Negado | Negado | Permitido | ID no formato esperado. Revogar e reativar gravam ou removem `revoked_at` |
+| GET `/licenses/{id}` | Permitido | Permitido | Permitido | Leitura individual vale mesmo para ID fora do padrão. Ausente retorna HTTP 200 com `null` |
+| Gravação de dados em `/licenses/{id}` e filhos | Negado | Negado | Condicional | A UID autoriza a escrita. A validação exige 12 hexadecimais minúsculos no ID e valores compatíveis nos campos definidos |
 | GET `/revoked/{id}` | Negado | Negado | Negado | Inclui nó ausente |
 | Escrita e exclusão em `/revoked/{id}` | Negado | Negado | Permitido | O PATCH pode remover um nó auxiliar ausente |
 | GET `/updates/{id}` | Permitido | Permitido | Permitido | Inclui `latest` e leitura individual de outras versões |
 | Escrita em `/updates/{id}` | Negado | Negado | Permitido | Publicação individual |
-| PATCH `/.json` com os dois caminhos de exclusão | Negado | Negado | Permitido | A recusa preserva ambos os alvos. O sucesso preserva os vizinhos |
+| PATCH `/.json` com os dois caminhos de exclusão | Negado | Negado | Permitido | O RTDB ignora `.validate` ao excluir com `null`. A recusa preserva ambos os alvos. O sucesso preserva os vizinhos |
 | Escrita genérica na raiz, coleção ou caminho externo | Negado | Negado | Negado | A autorização por filho vale somente nos caminhos permitidos |
 
 ## Executar a homologação
@@ -37,7 +37,9 @@ Execute a suíte por UID a partir da raiz:
 python -B tests/integration/firebase/run.py --politica-uid
 ```
 
-A fixture mantém a regra por UID sem validações de conteúdo adicionais. Os testes distinguem HTTP 200 com `null`, recusa de autorização e HTTP 400 para uma chave incompatível com a sintaxe do RTDB. O contrato informado não inclui um esquema `.validate` por campo. A fixture original por claim continua disponível via `run.py` sem a opção `--politica-uid` e pelos modos do `firebase_homologacao.py`. Ela testa uma política diferente, inclusive controles negativos de atomicidade. [Contrato REST e códigos HTTP](https://firebase.google.com/docs/reference/rest/database/)
+A regra valida `auto_renew` como booleano, `revoked_at` e `alerts_muted_until` como texto e `expiry_override` como texto no formato `YYYY-MM-DD`. O padrão confere o formato da data. Os campos podem ser removidos. Os testes distinguem leitura pública, recusa por falta de autorização, gravação administrativa recusada pela validação e exclusão com `null` permitida pela regra. Uma chave incompatível com a sintaxe do RTDB recebe HTTP 400. [Validação nas regras RTDB](https://firebase.google.com/docs/database/security/rules-conditions#validating_data) · [Contrato REST e códigos HTTP](https://firebase.google.com/docs/reference/rest/database/)
+
+O Gerenciamento aceita no comando de exclusão apenas IDs canônicos. A suíte testa a remoção de um registro sintético preexistente com ID fora do padrão por chamada REST direta ao emulador. A fixture histórica por claim continua disponível via `run.py` sem `--politica-uid` e pelos modos do `firebase_homologacao.py`, que exercitam controles independentes de atomicidade.
 
 ### Limites de tokens e expiração
 
@@ -46,7 +48,7 @@ O Auth Emulator emite ID tokens sem assinatura e os emuladores os aceitam para t
 ## Autorização, implantação e rollback
 
 - O login estabelece a identidade pelo Firebase. A ferramenta exige correspondência exata com `SEAGBH_FIREBASE_ADMIN_UID` para abrir a janela, acessar o histórico e prosseguir após renovar. O RTDB aplica a autorização definitiva de escrita em cada caminho a partir do ID token. [Condições do RTDB](https://firebase.google.com/docs/database/security/rules-conditions)
-- `tools/historico_chaves.json` e `tools/historico_excluidos.json` são lidos sob demanda e gravados em JSON durante operações administrativas. Ambos estão rastreados no Git. Neste checkout, as ACLs são herdadas e incluem uma concessão de leitura a um grupo amplo. A inspeção desta etapa se limitou à existência, ao rastreamento e às ACLs dos arquivos. O conteúdo e o acesso efetivo por outros usuários ainda precisam de auditoria autorizada.
+- `tools/historico_chaves.json` e `tools/historico_excluidos.json` são lidos sob demanda e gravados em JSON durante operações administrativas. Ambos estão rastreados no Git. Neste checkout, as ACLs incluem concessões herdadas de leitura a grupos amplos. A inspeção desta etapa se limitou à existência, ao rastreamento e às ACLs dos arquivos. O conteúdo e o acesso efetivo por outros usuários ainda precisam de auditoria autorizada.
 - Para proteger os históricos, reserve uma conta operacional individual, restrinja as ACLs do diretório e dos backups a essa conta e às identidades de manutenção necessárias, e teste o acesso com outra conta. Audite cópias e revisões do Git em ambiente restrito. Se houver chaves reais disponíveis a terceiros, avalie exposição e trate reemissão e remoção do histórico do repositório em uma missão de correção separada. A interface controla o acesso da aplicação. A proteção contra leitura pelo sistema operacional depende das ACLs e da remoção de cópias acessíveis.
 
 Antes de qualquer implantação aprovada, registre a revisão das regras em armazenamento restrito e ensaie a mudança e o rollback numa instância de homologação separada. Compare códigos HTTP, formato dos dois GETs anônimos e comportamento em um exemplar de cada versão distribuída. Em especial, um GET de licença recusado entra no caminho offline, com limite de 72 h. Um `200 null` significa exclusão e pode apagar a licença local. Interrompa diante de qualquer regressão, escrita indevida ou PATCH administrativo recusado. Restaure a revisão aprovada de regras em janela controlada, confirme novamente os GETs e a recusa de escrita e verifique que o rollback preserva o papel administrativo. Se a última revisão reabrir uma permissão indevida, mantenha a operação administrativa suspensa até decisão humana.
@@ -54,7 +56,7 @@ Antes de qualquer implantação aprovada, registre a revisão das regras em arma
 ### Condições para liberar o PR #69
 
 1. Operador aprova a matriz efetiva, incluindo os ancestrais e o esquema dos nós lidos anonimamente, e configura a chave Web do mesmo projeto da instância RTDB e a UID administrativa no perfil autorizado.
-2. A fixture por UID aprova os contratos locais, inclusive as duas variantes do PATCH, os GETs legados, a rejeição de IDs inválidos e a preservação de papéis na renovação.
+2. A fixture por UID aprova os contratos locais, inclusive PATCH com e sem nó auxiliar, GET legado, validação de IDs e campos na gravação e preservação de papéis na renovação.
 3. Em homologação separada, uma conta comum recebe recusa em licenças, revogações e atualizações. Um administrador consegue executar o PATCH. Os clientes distribuídos consultam a licença individual e o manifesto de atualização sem login administrativo.
 4. Há evidência sobre tokens assinados, expiração e revogação conforme o nível de acesso desejado. O responsável aprova a estratégia de proteção do histórico e o rollback de compatibilidade.
 5. CI e revisões apontam para o HEAD candidato à integração. Se houver atualização da base ou dos arquivos do PR, revalide os contratos afetados na revisão final.

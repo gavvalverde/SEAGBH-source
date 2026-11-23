@@ -4,7 +4,7 @@ Escopo da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70). O
 
 A política informada pelo operador exige uma única UID administrativa para escritas no RTDB. Configure `SEAGBH_FIREBASE_ADMIN_UID` com a UID autorizada, no ambiente do processo ou no `.env` local. Variáveis do processo têm precedência, inclusive quando vazias. A ferramenta compara a UID exata antes de abrir a janela ou ler o histórico e exige a mesma UID na renovação. O RTDB aplica a autorização de escrita a partir do token do Firebase.
 
-A [fixture por UID](../tests/integration/firebase/rules.uid.fixture.json) reproduz os contratos informados com uma conta fictícia. A [fixture por claim](../tests/integration/firebase/rules.fixture.json) continua sendo um controle independente de atomicidade. Consulte a [matriz de homologação](firebase-homologacao.md) e o procedimento de coleta em leitura para conferir a aplicação da política na instância operacional.
+A [fixture por UID](../tests/integration/firebase/rules.uid.fixture.json) reproduz as regras fornecidas pelo operador com uma conta fictícia. A leitura individual da licença é pública. O RTDB autoriza a escrita pela UID, valida o ID e os campos na gravação de dados e ignora as validações ao remover um nó com `null`. A [fixture por claim](../tests/integration/firebase/rules.fixture.json) continua sendo um controle independente de atomicidade. Consulte a [matriz de homologação](firebase-homologacao.md) e o procedimento de coleta em leitura para conferir a aplicação da política na instância operacional.
 
 ## Matriz de operações
 

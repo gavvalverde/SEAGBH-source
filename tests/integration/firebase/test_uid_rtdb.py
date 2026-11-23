@@ -150,13 +150,63 @@ class PoliticaUidRTDBTests(unittest.TestCase):
         self._negar(_database("PATCH", "", {**_exclusao(ALVO), "outro/item": True}, token=token))
         self.assertEqual(self._estado(), self.dados)
 
-    def test_ids_invalidos_e_chave_incompativel_com_rtdb(self):
+    def test_validacao_de_id_rejeita_gravacao_sem_restringir_leitura(self):
         token = self.admin["idToken"]
         for lid in ("0012ABCD34EF", "0012abcd34e", "0012abcd34ef0", "0012abcd34eg"):
             with self.subTest(id_sintetico=lid):
                 self._negar(_database("PUT", f"licenses/{lid}/auto_renew", True, token=token))
-                self._negar(_database("GET", f"licenses/{lid}"))
-                self._negar(_database("PATCH", "", _exclusao(lid), token=token))
+                self.assertEqual(_database("GET", f"licenses/{lid}"), (200, None))
+        self.assertEqual(self._estado(), self.dados)
+
+    def test_admin_exclui_dados_preexistentes_com_id_fora_do_padrao(self):
+        lid = "0012ABCD34EF"
+        caminho = f"licenses/{lid}"
+        self.assertEqual(_database("PATCH", "", {
+            caminho: LICENCA,
+            f"revoked/{lid}": REVOGACAO,
+        }, preparar_fixture=True)[0], 200)
+        self.assertEqual(_database("GET", caminho), (200, LICENCA))
+        token = self.admin["idToken"]
+        self._negar(_database("PUT", f"{caminho}/auto_renew", False, token=token))
+        self._negar(_database("PATCH", "", _exclusao(lid), token=self.comum["idToken"]))
+        self.assertEqual(_database("GET", caminho), (200, LICENCA))
+        self.assertEqual(self._estado()["revoked"][lid], REVOGACAO)
+
+        self.assertEqual(_database("PATCH", "", _exclusao(lid), token=token)[0], 200)
+        self.assertEqual(_database("GET", caminho), (200, None))
+        self.assertEqual(self._estado(), self.dados)
+
+    def test_validacoes_de_campos_recusam_tipos_e_formato_incompativeis(self):
+        token = self.admin["idToken"]
+        for campo, valor in (
+            ("auto_renew", "true"),
+            ("revoked_at", 123),
+            ("expiry_override", 20300101),
+            ("expiry_override", "2030-1-01"),
+            ("alerts_muted_until", {"data": "2030-01-01"}),
+        ):
+            with self.subTest(campo=campo, valor=valor):
+                self._negar(_database("PUT", f"licenses/{ALVO}/{campo}", valor, token=token))
+
+        self._negar(_database("PATCH", "", {
+            f"licenses/{ALVO}/expiry_override": "2030-1-01",
+            "updates/latest/version": "3.0.0",
+        }, token=token))
+        self.assertEqual(self._estado(), self.dados)
+
+    def test_campos_aceitam_valores_validos_e_exclusao_com_null(self):
+        token = self.admin["idToken"]
+        caminho = f"licenses/{AUSENTE}"
+        dados = dict(LICENCA, revoked_at=REVOGACAO)
+        self.assertEqual(_database("PUT", caminho, dados, token=token)[0], 200)
+        self.assertEqual(_database("GET", caminho), (200, dados))
+        for campo in dados:
+            self.assertEqual(_database("DELETE", f"{caminho}/{campo}", token=token)[0], 200)
+        self.assertEqual(_database("GET", caminho), (200, None))
+        self.assertEqual(self._estado(), self.dados)
+
+    def test_chave_incompativel_com_sintaxe_do_rtdb(self):
+        token = self.admin["idToken"]
         self.assertEqual(_database("PUT", f"licenses/{ALVO}", {"campo.invalido": True}, token=token)[0], 400)
         self.assertEqual(self._estado(), self.dados)
 

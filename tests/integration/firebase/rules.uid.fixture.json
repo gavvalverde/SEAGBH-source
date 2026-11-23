@@ -1,23 +1,40 @@
 {
   "rules": {
-    ".read": false,
-    ".write": false,
     "licenses": {
-      "$id": {
-        ".read": "$id.matches(/^[0-9a-f]{12}$/)",
-        ".write": "auth != null && auth.uid === 'uid-admin-sintetica' && $id.matches(/^[0-9a-f]{12}$/)"
-      }
-    },
-    "revoked": {
-      "$id": {
-        ".read": false,
-        ".write": "auth != null && auth.uid === 'uid-admin-sintetica'"
-      }
-    },
-    "updates": {
-      "$id": {
+      "$license_id": {
         ".read": true,
-        ".write": "auth != null && auth.uid === 'uid-admin-sintetica'"
+        ".write": "auth !== null && auth.uid === 'uid-admin-sintetica'",
+        ".validate": "$license_id.matches(/^[0-9a-f]{12}$/)",
+
+        "auto_renew": {
+          ".validate": "!newData.exists() || newData.isBoolean()"
+        },
+
+        "revoked_at": {
+          ".validate": "!newData.exists() || newData.isString()"
+        },
+
+        "expiry_override": {
+          ".validate": "!newData.exists() || (newData.isString() && newData.val().matches(/^\\d{4}-\\d{2}-\\d{2}$/))"
+        },
+
+        "alerts_muted_until": {
+          ".validate": "!newData.exists() || newData.isString()"
+        }
+      }
+    },
+
+    "revoked": {
+      "$revoked_id": {
+        ".read": false,
+        ".write": "auth !== null && auth.uid === 'uid-admin-sintetica'"
+      }
+    },
+
+    "updates": {
+      "$update_id": {
+        ".read": true,
+        ".write": "auth !== null && auth.uid === 'uid-admin-sintetica'"
       }
     }
   }
