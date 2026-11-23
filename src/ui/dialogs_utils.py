@@ -4,6 +4,7 @@ Auditoria, backup/restauração, verificação de permissões.
 """
 
 import os
+from pathlib import Path
 from threading import Event
 
 from PyQt6.QtWidgets import (
@@ -11,10 +12,11 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QHeaderView,
     QListWidget, QMessageBox, QProgressBar, QApplication,
 )
-from PyQt6.QtCore import Qt, QThread, QEvent, QTimer, pyqtSignal, pyqtSlot
+from PyQt6.QtCore import Qt, QEvent, QTimer, pyqtSignal, pyqtSlot
 
 from core.database import Database, APP_DIR, get_db_path
-from core.backup_sqlite import criar_backup, ResultadoBackup, ErroBackup
+from core.backup_sqlite import criar_backup, ResultadoBackup, ErroBackup, FechamentoOrigemPendente
+from ui.consulta_database_thread import ThreadComFechamentoSQLite
 
 
 _PASTA_BACKUPS = os.path.join(APP_DIR, "Backups")
@@ -142,7 +144,7 @@ class PermissoesDialog(QDialog):
         layout.addWidget(btn, alignment=Qt.AlignmentFlag.AlignRight)
 
 
-class _BackupThread(QThread):
+class _BackupThread(ThreadComFechamentoSQLite):
     """Uma operação bloqueante, com conexões pertencentes ao serviço/worker.
 
     O objeto QThread pertence à UI; somente run() executa na thread secundária.
@@ -151,11 +153,13 @@ class _BackupThread(QThread):
 
     progresso = pyqtSignal(object, object)  # restantes, total (sem limite de int Qt)
 
-    def __init__(self, backend: str, origem: str, pasta: str, parent=None):
+    def __init__(self, backend: str, origem: str | Path, pasta: str | Path,
+                 parent=None, *, protegido=False):
         super().__init__(parent)
         self._backend = backend
         self._origem = origem
         self._pasta = pasta
+        self._protegido = protegido
         self._cancelamento = Event()
         self.resultado: ResultadoBackup | None = None
         self.erro: ErroBackup | None = None
@@ -176,7 +180,11 @@ class _BackupThread(QThread):
             self.resultado = criar_backup(
                 backend=self._backend, origem=self._origem, pasta=self._pasta,
                 cancelar=self._cancelamento.is_set, progresso=self.progresso.emit,
+                protegido=self._protegido,
             )
+        except FechamentoOrigemPendente as exc:
+            self.erro = exc
+            self._fechar_na_thread_dona(exc.fechar, ja_pendente=True)
         except ErroBackup as exc:
             self.erro = exc
         except Exception as exc:
@@ -191,6 +199,7 @@ class FazerBackupDialog(QDialog):
     def __init__(self, db: Database, parent=None, *, quit_coordenado=False):
         super().__init__(parent)
         self._backend = db.backend
+        self._origem_protegida = getattr(db, "banco_backup_protegido", None)
         self._worker: _BackupThread | None = None
         self._cancelamento_solicitado = False
         self._fechar_pendente = False
@@ -252,7 +261,12 @@ class FazerBackupDialog(QDialog):
                                 "O backup PostgreSQL exige um procedimento próprio.")
             return
         try:
-            worker = _BackupThread(self._backend, get_db_path(), _PASTA_BACKUPS, parent=self)
+            protegido = self._origem_protegida is not None
+            if protegido:
+                origem, pasta = self._origem_protegida, self._origem_protegida.parent / "Backups"
+            else:
+                origem, pasta = get_db_path(), _PASTA_BACKUPS
+            worker = _BackupThread(self._backend, origem, pasta, parent=self, protegido=protegido)
         except Exception:
             self._mostrar_erro(ErroBackup("preparacao", "falha_inesperada"))
             return
@@ -265,6 +279,7 @@ class FazerBackupDialog(QDialog):
         self.status.setText("Backup em andamento: criando e validando a cópia…")
         self.progresso.setRange(0, 0)
         worker.progresso.connect(self._atualizar_progresso, Qt.ConnectionType.QueuedConnection)
+        worker.fechamento_falhou.connect(self._fechamento_falhou, Qt.ConnectionType.QueuedConnection)
         worker.finished.connect(self._backup_finalizado, Qt.ConnectionType.QueuedConnection)
         # quit() pode ser solicitado por timers da aplicação durante o diálogo modal.
         if not self._quit_coordenado:
@@ -305,6 +320,17 @@ class FazerBackupDialog(QDialog):
     def solicitar_fechamento(self):
         self._fechar_pendente = True
         self._cancelar_backup()
+        if self._worker is not None:
+            self._worker.repetir_fechamento_se_pendente()
+
+    @pyqtSlot()
+    def _fechamento_falhou(self):
+        if self.em_andamento:
+            self.btn_cancelar.setEnabled(False)
+            self.btn_fechar.setText("Tentar fechar novamente")
+            self.status.setText(
+                "O fechamento do banco ficou pendente. Tente fechar novamente."
+            )
 
     def preparar_saida(self):
         self._saida_da_janela = True
@@ -358,6 +384,7 @@ class FazerBackupDialog(QDialog):
             return
         self.btn_criar.setEnabled(True)
         self.btn_cancelar.setEnabled(False)
+        self.btn_fechar.setText("Fechar")
         self.progresso.setRange(0, 100)
         self.progresso.setValue(0)
         self.progresso.setFormat("Finalizado")
@@ -411,9 +438,12 @@ class FazerBackupDialog(QDialog):
                 QMessageBox.information(self, "Backup cancelado", texto)
             return
         etapas = {"argumentos": "verificação dos caminhos", "preparacao": "preparação",
+                  "barreira": "acesso ao banco", "fechamento": "fechamento do banco",
                   "exclusao": "controle de operação", "snapshot": "criação da cópia",
                   "validacao": "validação", "publicacao": "publicação", "retencao": "limpeza"}
         motivos = {
+            "barreira_ocupado": "O banco está em manutenção. Tente novamente após a liberação.",
+            "origem_fechamento_pendente": "O fechamento da origem falhou durante a operação.",
             "diretorio_inacessivel": "Não foi possível preparar a pasta de backups. Verifique o caminho e as permissões.",
             "pasta_ocupada": "Há uma operação ou controle residual na pasta. Não remova arquivos de controle sem orientação.",
             "prazo_excedido": "O tempo de espera foi excedido antes da publicação.",

@@ -18,6 +18,8 @@ from unittest.mock import patch
 from uuid import UUID
 
 from src.core import backup_sqlite as servico
+from src.core.barreira_sqlite import adquirir_manutencao, ErroBarreira
+from src.core.conexao_sqlite_protegida import abrir_conexao_operacional
 
 
 DDL = """
@@ -86,6 +88,15 @@ class BackupSQLite(unittest.TestCase):
         self.assertEqual(contexto.exception.codigo, codigo)
         return contexto.exception
 
+    def _manutencao(self):
+        return adquirir_manutencao(backend="sqlite", banco=self.origem)
+
+    def _assert_manutencao_bloqueada(self):
+        with self.assertRaises(ErroBarreira) as contexto:
+            with self._manutencao():
+                pass
+        self.assertEqual(contexto.exception.codigo, "ocupado")
+
     def test_backup_preserva_conteudo_tabelas_indices_views_triggers(self):
         antes = sha(self.origem)
         resultado = self.criar()
@@ -110,6 +121,170 @@ class BackupSQLite(unittest.TestCase):
         validacao = servico.validar_backup(backend="sqlite", caminho=resultado.caminho)
         self.assertEqual(validacao, resultado.validacao)
         self.assertIsNone(resultado.retencao)
+
+    def test_backup_legado_nao_adquire_barreira(self):
+        with self._manutencao():
+            resultado = self.criar()
+        self.assertTrue(resultado.caminho.is_file())
+
+    def test_manutencao_recusa_backup_protegido_antes_do_catalogo_e_da_abertura(self):
+        with self._manutencao(), patch.object(servico, "_exclusao") as catalogo, \
+             patch.object(servico, "_abrir_leitura") as abrir:
+            erro = self.assert_erro("barreira_ocupado", lambda: self.criar(protegido=True))
+        self.assertEqual(erro.fase, "barreira")
+        catalogo.assert_not_called()
+        abrir.assert_not_called()
+        self.assertEqual(list(self.pasta.iterdir()), [])
+
+    def test_backup_protegido_adquire_na_ordem_e_libera_apos_fechar_a_origem(self):
+        catalogo_real, abrir_real, validar_real = servico._exclusao, servico._abrir_leitura, servico._validar
+
+        def catalogo(*args):
+            self._assert_manutencao_bloqueada()
+            return catalogo_real(*args)
+
+        def abrir(caminho):
+            if caminho == self.origem:
+                self.assertTrue((self.pasta / ".seagbh-backup.lock").is_file())
+                self._assert_manutencao_bloqueada()
+            return abrir_real(caminho)
+
+        def validar(*args):
+            with self._manutencao():
+                return validar_real(*args)
+
+        with patch.object(servico, "_exclusao", side_effect=catalogo), \
+             patch.object(servico, "_abrir_leitura", side_effect=abrir), \
+             patch.object(servico, "_validar", side_effect=validar):
+            resultado = self.criar(protegido=True, progresso=lambda *_: self._assert_manutencao_bloqueada())
+        self.assertTrue(resultado.validacao.independente)
+        self.assert_sem_staging()
+
+    def test_catalogo_ocupado_libera_barreira_sem_abrir_origem(self):
+        lock = self.pasta / ".seagbh-backup.lock"
+        lock.touch()
+        with patch.object(servico, "_abrir_leitura") as abrir:
+            self.assert_erro("pasta_ocupada", lambda: self.criar(protegido=True))
+        abrir.assert_not_called()
+        with self._manutencao():
+            self.assertTrue(lock.is_file())
+
+    def test_backup_protegido_concorrente_com_leitor_e_escritor_cooperativos_no_wal(self):
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("CREATE TABLE volume (bloco BLOB)")
+        self.conn.executemany("INSERT INTO volume VALUES(?)", [(b"x" * 4096,)] * 20)
+        self.conn.commit()
+        iniciar, escritor_pronto, continuar = (threading.Event() for _ in range(3))
+        falhas = []
+
+        def escrever():
+            try:
+                if not iniciar.wait(5):
+                    raise TimeoutError("snapshot não iniciou")
+                with abrir_conexao_operacional(banco=self.origem) as escritor:
+                    escritor.executar("PRAGMA foreign_keys=ON")
+                    escritor.executar("INSERT INTO equipamentos VALUES(2,'COD-2','Segundo',NULL,NULL,'2026-01-01')")
+                    escritor.executar("INSERT INTO futuro VALUES(2,X'04')")
+                    escritor.commit()
+                    escritor.executar("INSERT INTO equipamentos VALUES(3,'COD-3','Pendente',NULL,NULL,'2026-01-01')")
+                    escritor_pronto.set()
+                    if not continuar.wait(8):
+                        raise TimeoutError("snapshot não concluiu")
+                    escritor.rollback()
+            except Exception as exc:
+                falhas.append(exc)
+                escritor_pronto.set()
+
+        def avancar(restantes, _total):
+            if restantes > 0 and not iniciar.is_set():
+                iniciar.set()
+                self.assertTrue(escritor_pronto.wait(5))
+                self.assertEqual(falhas, [])
+
+        worker = threading.Thread(target=escrever)
+        worker.start()
+        try:
+            with abrir_conexao_operacional(banco=self.origem) as leitor:
+                leitor.executar("BEGIN")
+                self.assertEqual(leitor.executar("SELECT id FROM equipamentos"), [(1,)])
+                resultado = self.criar(protegido=True, paginas=1, progresso=avancar, prazo=10)
+                self.assertEqual(leitor.executar("SELECT id FROM equipamentos"), [(1,)])
+                self.assertTrue(escritor_pronto.is_set())
+                with closing(sqlite3.connect(resultado.caminho)) as copia:
+                    self.assertEqual(copia.execute("SELECT id FROM equipamentos ORDER BY id").fetchall(), [(1,), (2,)])
+                    self.assertEqual(copia.execute("SELECT id FROM futuro ORDER BY id").fetchall(), [(1,), (2,)])
+                    self.assertEqual(copia.execute("PRAGMA foreign_key_check").fetchall(), [])
+        finally:
+            iniciar.set()
+            continuar.set()
+            worker.join(10)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(falhas, [])
+        with self._manutencao():
+            self.assertTrue(resultado.validacao.independente)
+
+    def test_backup_protegido_libera_barreira_em_falha_de_abertura_api_e_cancelamento(self):
+        def falhar(*_):
+            raise sqlite3.OperationalError("falha sintética dentro da Backup API")
+
+        with patch.object(servico, "_abrir_leitura", side_effect=sqlite3.OperationalError("falha sintética")):
+            erro = self.assert_erro("operacao_falhou", lambda: self.criar(protegido=True))
+        self.assertEqual(erro.fase, "snapshot")
+        with self._manutencao():
+            self.assertEqual(list(self.pasta.iterdir()), [])
+
+        self.assert_erro("operacao_falhou", lambda: self.criar(protegido=True, paginas=1, progresso=falhar))
+        with self._manutencao():
+            self.assertEqual(list(self.pasta.iterdir()), [])
+
+        cancelar = threading.Event()
+        self.assert_erro("cancelado", lambda: self.criar(protegido=True, paginas=1,
+            cancelar=cancelar.is_set, progresso=lambda *_: cancelar.set()))
+        self.assertTrue(cancelar.is_set())
+        with self._manutencao():
+            self.assertEqual(list(self.pasta.iterdir()), [])
+
+    def test_falha_no_fechamento_preserva_barreira_ate_fechar_na_thread_dona(self):
+        fonte = servico._abrir_leitura(self.origem)
+        self.addCleanup(fonte.close)
+        tentativas = []
+
+        class Origem:
+            backup = fonte.backup
+
+            def close(origem):
+                tentativas.append(threading.get_ident())
+                self._assert_manutencao_bloqueada()
+                if len(tentativas) == 1:
+                    raise sqlite3.OperationalError("falha sintética antes do fechamento")
+                fonte.close()
+
+        with patch.object(servico, "_abrir_leitura", return_value=Origem()):
+            with self.assertRaises(servico.FechamentoOrigemPendente) as contexto:
+                self.criar(protegido=True)
+        try:
+            self.assertEqual(list(self.pasta.iterdir()), [])
+            self._assert_manutencao_bloqueada()
+            self.assertEqual(tentativas, [threading.get_ident()])
+            self.assertEqual(fonte.execute("SELECT 1").fetchone(), (1,))
+        finally:
+            contexto.exception.fechar()
+        with self.assertRaises(sqlite3.ProgrammingError):
+            fonte.execute("SELECT 1")
+        with self._manutencao():
+            self.assertEqual(tentativas, [threading.get_ident()] * 2)
+
+    def test_falha_na_publicacao_protegida_preserva_backup_anterior(self):
+        anterior = self.criar(protegido=True, manter=None)
+        hash_anterior = sha(anterior.caminho)
+        with patch.object(servico.os, "link", side_effect=PermissionError("falha sintética")):
+            erro = self.assert_erro("operacao_falhou", lambda: self.criar(protegido=True, manter=1))
+        self.assertEqual(erro.fase, "publicacao")
+        self.assertEqual(self.arquivos(), [anterior.caminho])
+        self.assertEqual(sha(anterior.caminho), hash_anterior)
+        self.assert_sem_staging()
+        with self._manutencao():
+            self.assertTrue(anterior.validacao.independente)
 
     def test_wal_com_leitor_antigo_checkpoint_ocupado_e_commits(self):
         self.conn.execute("PRAGMA journal_mode=WAL")

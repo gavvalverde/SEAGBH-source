@@ -53,16 +53,32 @@ class ConexaoSQLiteProtegida:
         self.__encerrando = False
         self.__em_contexto = False
 
-    def _abrir(self, banco: str | Path, prazo: float) -> None:
+    def _reservar(self, banco: str | Path, prazo: float) -> None:
         self.__verificar_dono()
         if self.__encerrando or self.__concessao is not None:
             raise RuntimeError("conexao_protegida_ja_iniciada")
         self.__concessao = adquirir_uso_operacional(backend="sqlite", banco=banco, prazo=prazo)
+
+    def _abrir(self, banco: str | Path, prazo: float) -> None:
+        self._reservar(banco, prazo)
         self.__conexao = sqlite3.connect(
             self.__concessao.banco, timeout=30.0, cached_statements=0,
             autocommit=sqlite3.LEGACY_TRANSACTION_CONTROL,
         )
         self.__conexao.set_authorizer(_autorizar)
+
+    @property
+    def banco(self) -> Path:
+        self.verificar_disponivel()
+        return self.__concessao.banco
+
+    def _copiar_backup(self, destino: sqlite3.Connection, *, abrir_leitura, paginas, progresso):
+        self.__verificar_dono()
+        if self.__encerrando or self.__conexao is not None or self.__concessao is None:
+            raise RuntimeError("origem_backup_nao_reservada")
+        self.__conexao = abrir_leitura(self.__concessao.banco)
+        with self.__operacao() as origem:
+            origem.backup(destino, pages=paginas, progress=progresso, sleep=0.05)
 
     def __verificar_dono(self) -> None:
         if os.getpid() != self.__pid:
@@ -168,11 +184,26 @@ class ConexaoSQLiteProtegida:
 
 
 class FechamentoPendente(RuntimeError):
-    """A abertura falhou e o mesmo dono precisa concluir a limpeza."""
+    """O fechamento ficou pendente e o mesmo dono precisa concluir a limpeza."""
 
     def __init__(self, fechar):
         super().__init__("fechamento_pendente")
         self.fechar = fechar
+
+
+@contextmanager
+def _reservar_origem_backup(*, banco: str | Path):
+    """Reserva a origem antes do catálogo e adia a abertura até o snapshot."""
+    sessao = ConexaoSQLiteProtegida(_emissao=_EMISSAO)
+    _registrar(sessao)
+    try:
+        sessao._reservar(banco, prazo=0)
+        yield sessao
+    finally:
+        try:
+            sessao.fechar()
+        except BaseException as erro_fechamento:
+            raise FechamentoPendente(sessao.fechar) from erro_fechamento
 
 
 def abrir_conexao_operacional(*, banco: str | Path,

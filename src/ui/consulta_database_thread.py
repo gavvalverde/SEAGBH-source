@@ -8,14 +8,11 @@ from PyQt6.QtCore import QThread, pyqtSignal
 from core.conexao_sqlite_protegida import FechamentoPendente
 
 
-class ConsultaDatabaseThread(QThread):
-    pronto = pyqtSignal(object)
-    falha = pyqtSignal()
+class ThreadComFechamentoSQLite(QThread):
     fechamento_falhou = pyqtSignal()
 
-    def __init__(self, abrir_banco, parent=None):
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self._abrir_banco = abrir_banco
         self._repetir_fechamento = Event()
         # Signal set ONLY while this worker is blocked after a close failure.
         # A first exit request should retry an ALREADY pending close, but
@@ -29,6 +26,38 @@ class ConsultaDatabaseThread(QThread):
 
     def repetir_fechamento(self):
         self._repetir_fechamento.set()
+
+    def _aguardar_repeticao(self):
+        logging.getLogger(__name__).error("Fechamento de banco em background pendente")
+        # A janela pode receber outro closeEvent antes de processar o sinal.
+        self._fechamento_pendente.set()
+        try:
+            self.fechamento_falhou.emit()
+            self._repetir_fechamento.wait()
+            self._repetir_fechamento.clear()
+        finally:
+            self._fechamento_pendente.clear()
+
+    def _fechar_na_thread_dona(self, fechar, *, ja_pendente=False):
+        falhou = ja_pendente
+        if ja_pendente:
+            self._aguardar_repeticao()
+        while True:
+            try:
+                fechar()
+                return falhou
+            except BaseException:
+                falhou = True
+                self._aguardar_repeticao()
+
+
+class ConsultaDatabaseThread(ThreadComFechamentoSQLite):
+    pronto = pyqtSignal(object)
+    falha = pyqtSignal()
+
+    def __init__(self, abrir_banco, parent=None):
+        super().__init__(parent)
+        self._abrir_banco = abrir_banco
 
     def consultar(self, db):
         raise NotImplementedError
@@ -61,24 +90,3 @@ class ConsultaDatabaseThread(QThread):
                 self.falha.emit()
             else:
                 self.pronto.emit(dados)
-
-    def _fechar_na_thread_dona(self, fechar):
-        falhou = False
-        while True:
-            try:
-                fechar()
-                return falhou
-            except BaseException:
-                falhou = True
-                logging.getLogger(__name__).error("Fechamento de banco em background pendente")
-                # Expose the pending state BEFORE the Qt signal, because a
-                # closeEvent may run while that signal is still queued.
-                self._fechamento_pendente.set()
-                try:
-                    self.fechamento_falhou.emit()
-                    # The DB must only be retried by the owning worker thread.
-                    # Cancellation never authorizes abandoning this connection.
-                    self._repetir_fechamento.wait()
-                    self._repetir_fechamento.clear()
-                finally:
-                    self._fechamento_pendente.clear()

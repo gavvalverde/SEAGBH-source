@@ -317,9 +317,6 @@ class MainWindow(QMainWindow):
         util_menu.addAction(act_audit)
 
         act_backup = QAction("💾 Fazer Backup", self)
-        if self._sqlite_protegido:
-            act_backup.setText("💾 Fazer Backup (indisponível no modo protegido)")
-            act_backup.setEnabled(False)
         act_backup.triggered.connect(self._fazer_backup)
         util_menu.addAction(act_backup)
 
@@ -347,7 +344,7 @@ class MainWindow(QMainWindow):
             AuditoriaDialog(self.db, parent=self).exec()
 
     def _fazer_backup(self):
-        if self._encerrando or self._sqlite_protegido or self._backup_dialog is not None:
+        if self._encerrando or self._backup_dialog is not None:
             return
         self._backup_dialog = FazerBackupDialog(self.db, parent=self, quit_coordenado=True)
         try:
@@ -718,6 +715,8 @@ class MainWindow(QMainWindow):
         event.ignore()
         if self._encerrando:
             self._fechamento_principal_pendente = False
+            if self._backup_dialog is not None and self._backup_dialog.em_andamento:
+                self._backup_dialog.solicitar_fechamento()
             if self._atrasos_thread is not None:
                 self._atrasos_thread.repetir_fechamento()
             if self.tab_dashboard is not None:

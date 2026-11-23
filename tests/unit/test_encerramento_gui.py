@@ -25,6 +25,7 @@ except ImportError:
 SRC = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(SRC))
 from core import atualizacao, conexao_sqlite_protegida as protegido, database
+from core import backup_sqlite
 from ui import dialogs_utils, main_window
 from tests.unit.test_database_sqlite_protegido import _SONDA
 
@@ -406,16 +407,77 @@ class EncerramentoGUI(unittest.TestCase):
         self.assertEqual(ordem, [("interno", QDialog.DialogCode.Rejected),
                                  ("externo", QDialog.DialogCode.Rejected), ("banco", True)])
 
-    def test_backup_protegido_recusa_antes_de_consultar_caminho_operacional(self):
+    def test_backup_protegido_usa_origem_e_catalogo_do_banco_da_janela(self):
         janela = self._janela(real=True)
-        with patch.object(main_window, "FazerBackupDialog") as dialogo, \
-             patch.object(dialogs_utils, "get_db_path") as caminho:
-            janela._fazer_backup()
-        dialogo.assert_not_called()
-        caminho.assert_not_called()
         acoes = janela.menuBar().actions()[0].menu().actions()
         backup = next(acao for acao in acoes if "Fazer Backup" in acao.text())
-        self.assertFalse(backup.isEnabled())
+        self.assertTrue(backup.isEnabled())
+
+        def executar(dialogo):
+            dialogo._fazer_backup()
+            self._aguardar(lambda: not dialogo.em_andamento)
+            dialogo.reject()
+
+        with patch.object(dialogs_utils.FazerBackupDialog, "exec", executar), \
+             patch.object(dialogs_utils, "get_db_path") as caminho:
+            janela._fazer_backup()
+        caminho.assert_not_called()
+        self.informar.assert_called_once()
+        copia, = (self.raiz / "Backups").glob("*.db")
+        self.assertTrue(backup_sqlite.validar_backup(backend="sqlite", caminho=copia).independente)
+        self.assertIsNone(janela._backup_dialog)
+
+    def test_encerramento_cancela_backup_e_aguarda_retry_do_fechamento_no_worker(self):
+        janela = self._janela(real=True)
+        iniciou, liberar, bloquear = self._bloqueio()
+        abrir_real = backup_sqlite._abrir_leitura
+        fechamentos = []
+
+        class Origem:
+            def __init__(self, conexao):
+                self.conexao = conexao
+
+            def backup(self, destino, *, progress, **kwargs):
+                def avancar(*args):
+                    if not iniciou.is_set():
+                        bloquear()
+                    progress(*args)
+
+                return self.conexao.backup(destino, progress=avancar, **kwargs)
+
+            def close(self):
+                fechamentos.append(get_ident())
+                if len(fechamentos) == 1:
+                    raise sqlite3.OperationalError("falha sintética antes do close")
+                self.conexao.close()
+
+        def abrir(caminho):
+            conexao = abrir_real(caminho)
+            return Origem(conexao) if caminho == self.banco else conexao
+
+        def executar(dialogo):
+            dialogo._fazer_backup()
+            self._aguardar(iniciou.is_set)
+            janela.close()
+            self.assertFalse(janela.encerramento_confirmado)
+            liberar.set()
+            self._aguardar(lambda: "pendente" in dialogo.status.text())
+            self.assertTrue(dialogo.em_andamento)
+            self.assertFalse(janela.encerramento_confirmado)
+            self.assertEqual(len(fechamentos), 1)
+            self.assertEqual(self._sondar_manutencao(), "ocupado")
+            janela.close()
+            self._aguardar(lambda: not dialogo.em_andamento)
+
+        with patch.object(backup_sqlite, "_abrir_leitura", side_effect=abrir), \
+             patch.object(dialogs_utils.FazerBackupDialog, "exec", executar):
+            janela._fazer_backup()
+        self._aguardar(lambda: janela.encerramento_confirmado)
+        self.assertEqual(len(fechamentos), 2)
+        self.assertEqual(fechamentos[0], fechamentos[1])
+        self.assertNotEqual(fechamentos[0], self.gui)
+        self.assertEqual(self._sondar_manutencao(), "livre")
+        self.assertEqual(list((self.raiz / "Backups").iterdir()), [])
 
     def test_falha_na_construcao_da_interface_fecha_sessao_protegida(self):
         montar = main_window.MainWindow._montar_interface
