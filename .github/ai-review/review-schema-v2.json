@@ -1,0 +1,129 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "SEAGBH Reviewer v2 anchored output",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "summary",
+    "reviewed_scope",
+    "analysis_status",
+    "confidence_overall",
+    "findings"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 2
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 800
+    },
+    "reviewed_scope": {
+      "type": "string",
+      "minLength": 5,
+      "maxLength": 900
+    },
+    "confidence_overall": {
+      "enum": [
+        "high",
+        "medium",
+        "low"
+      ]
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 12,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "anchor_id",
+          "severity",
+          "category",
+          "confidence",
+          "title",
+          "trigger",
+          "mechanism",
+          "impact",
+          "counterevidence",
+          "suggested_fix"
+        ],
+        "properties": {
+          "anchor_id": {
+            "type": "string",
+            "pattern": "^a[0-9a-f]{16}$"
+          },
+          "severity": {
+            "enum": [
+              "critical",
+              "important",
+              "minor",
+              "informational"
+            ]
+          },
+          "category": {
+            "enum": [
+              "regression",
+              "edge-case",
+              "unhandled-state",
+              "exception-handling",
+              "race",
+              "security",
+              "data-integrity",
+              "broken-api",
+              "insufficient-test",
+              "other"
+            ]
+          },
+          "confidence": {
+            "enum": [
+              "high",
+              "medium",
+              "low"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 5,
+            "maxLength": 160
+          },
+          "trigger": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 600
+          },
+          "mechanism": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 800
+          },
+          "impact": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 600
+          },
+          "counterevidence": {
+            "type": "string",
+            "minLength": 12,
+            "maxLength": 800
+          },
+          "suggested_fix": {
+            "type": "string",
+            "minLength": 8,
+            "maxLength": 500
+          }
+        }
+      }
+    },
+    "analysis_status": {
+      "type": "string",
+      "enum": [
+        "complete",
+        "incomplete"
+      ],
+      "description": "complete somente quando todos os trechos fornecidos foram analisados com contexto suficiente; incomplete caso contrario. O runner nao publica parecer limpo para incomplete."
+    }
+  }
+}

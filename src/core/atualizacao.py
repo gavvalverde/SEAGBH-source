@@ -71,7 +71,8 @@ def verificar_atualizacao() -> dict | None:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def baixar_atualizacao(url: str, destino: str,
-                       progresso_cb=None, sha256_esperado: str | None = None) -> bool:
+                       progresso_cb=None, sha256_esperado: str | None = None,
+                       *, cancelado=None) -> bool:
     """
     Baixa o arquivo de *url* para *destino* com validação de integridade.
 
@@ -81,7 +82,10 @@ def baixar_atualizacao(url: str, destino: str,
     """
     import hashlib
     
+    iniciou_escrita = concluido = False
     try:
+        if cancelado and cancelado():
+            return False
         req = Request(url, method="GET")
         with urlopen(req, timeout=120) as resp:  # ← Timeout aumentado para 120s (internet lenta)
             total = int(resp.headers.get("Content-Length", 0))
@@ -89,8 +93,13 @@ def baixar_atualizacao(url: str, destino: str,
             chunk_size = 64 * 1024  # 64 KB
             sha256_hash = hashlib.sha256() if sha256_esperado else None
 
+            if cancelado and cancelado():
+                return False
             with open(destino, "wb") as f:
+                iniciou_escrita = True
                 while True:
+                    if cancelado and cancelado():
+                        return False
                     chunk = resp.read(chunk_size)
                     if not chunk:
                         break
@@ -101,23 +110,26 @@ def baixar_atualizacao(url: str, destino: str,
                     if progresso_cb:
                         progresso_cb(recebido, total)
 
+        if total > 0 and recebido != total:
+            return False
+
         # ── Validação de integridade ────────────────────────────────────────
         if sha256_esperado and sha256_hash:
             hash_calculado = sha256_hash.hexdigest().lower()
             if hash_calculado != sha256_esperado.lower():
                 # Hash não corresponde → arquivo corrompido!
-                os.remove(destino)
                 return False
 
-        return True
+        concluido = not (cancelado and cancelado())
+        return concluido
     except (URLError, OSError):
-        # Limpar arquivo incompleto/corrompido
-        if os.path.exists(destino):
+        return False
+    finally:
+        if iniciou_escrita and not concluido:
             try:
                 os.remove(destino)
             except OSError:
                 pass
-        return False
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -155,16 +167,7 @@ def limpar_arquivos_temporarios():
     except Exception as e:
         logger.warning(f"Erro ao limpar arquivos temporários: {e}")
 
-def aplicar_atualizacao(novo_exe: str):
-    """
-    Cria um .bat temporário que:
-      1. Espera o processo atual fechar
-      2. Copia o novo .exe sobre o antigo
-      3. Reinicia o app
-      4. Se auto-deleta
-
-    Após chamar esta função, o chamador deve encerrar o app (sys.exit).
-    """
+def validar_aplicacao_atualizacao(novo_exe: str):
     # Segurança: só permite auto-update quando executando binário congelado
     # (PyInstaller). Em modo desenvolvimento, sys.executable aponta para
     # python.exe e nunca deve ser sobrescrito.
@@ -177,6 +180,10 @@ def aplicar_atualizacao(novo_exe: str):
     if not os.path.isfile(novo_exe):
         raise RuntimeError("Arquivo da atualização não encontrado.")
 
+
+def aplicar_atualizacao(novo_exe: str):
+    """Inicia o atualizador, que aguarda a saída do processo antes de substituir o executável."""
+    validar_aplicacao_atualizacao(novo_exe)
     exe_atual = sys.executable  # Caminho do .exe em execução (PyInstaller)
 
     # .bat robusto: espera o .exe ser liberado antes de iniciar o novo app

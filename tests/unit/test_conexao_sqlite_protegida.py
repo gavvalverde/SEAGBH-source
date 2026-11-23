@@ -305,12 +305,15 @@ class ConexaoSQLiteProtegidaTests(unittest.TestCase):
             return conexao
 
         with patch.object(protegido.sqlite3, "connect", side_effect=conectar):
-            with self.assertRaisesRegex(sqlite3.OperationalError, "close sintético") as erro:
+            with self.assertRaises(protegido.FechamentoPendente) as erro:
                 protegido.abrir_conexao_operacional(banco=self.banco)
         (sessao,) = protegido._SESSOES_ABERTAS - antes
         self.addCleanup(sessao.fechar)
         self.addCleanup(setattr, conexoes[0], "fechar_possivel", True)
-        self.assertIsInstance(erro.exception.__cause__, ValueError)
+        causa = erro.exception.__cause__
+        self.assertIsInstance(causa, sqlite3.OperationalError)
+        self.assertEqual(str(causa), "close sintético")
+        self.assertIsInstance(causa.__context__, ValueError)
         self.assertEqual(self.sondar(), "ocupado")
         conexoes[0].fechar_possivel = True
         sessao.fechar()

@@ -1,4 +1,4 @@
-"""Qt offscreen, dados sintéticos e serviços simulados; não inicia MainWindow."""
+"""Qt offscreen com bancos sintéticos e serviços de backup controlados."""
 
 import ast
 from contextlib import closing
@@ -22,13 +22,14 @@ try:
     from PyQt6.QtCore import QCoreApplication, QEvent, QThread, QTimer, Qt
     from PyQt6.QtGui import QCloseEvent
     from PyQt6.QtTest import QSignalSpy, QTest
-    from PyQt6.QtWidgets import QApplication, QMainWindow, QDialog
+    from PyQt6.QtWidgets import QApplication, QDialog
 except ImportError:
     raise unittest.SkipTest("PyQt6 indisponível: integração Qt real não executada.")
 
 SRC = Path(__file__).resolve().parents[2] / "src"
 sys.path.insert(0, str(SRC))
 from ui import dialogs_utils as ui
+from ui import main_window
 from core.backup_sqlite import ResultadoRetencao, ValidacaoBackup
 from tests.unit.test_backup_sqlite import DDL
 
@@ -487,40 +488,42 @@ with tempfile.TemporaryDirectory(prefix='seagbh-quit-test-') as tmp:
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
 
     def _janela_sintetica(self):
-        # Exercita os métodos reais sem importar/iniciar MainWindow, tabs ou atualizador.
-        caminho = SRC / "ui" / "main_window.py"
-        classe = next(n for n in ast.parse(caminho.read_text(encoding="utf-8")).body
-                      if isinstance(n, ast.ClassDef) and n.name == "MainWindow")
-        metodos = [n for n in classe.body if isinstance(n, ast.FunctionDef)
-                   and n.name in {"_fazer_backup", "closeEvent"}]
-        namespace = {"FazerBackupDialog": ui.FazerBackupDialog}
-        exec(compile(ast.Module(body=metodos, type_ignores=[]), str(caminho), "exec"), namespace)
-        tipo = type("JanelaSintetica", (QMainWindow,),
-                    {nome: namespace[nome] for nome in ("_fazer_backup", "closeEvent")})
-        janela = tipo()
-        janela.db = BancoSemConexao()
-        janela.db.fechar = Mock()
+        banco = BancoSemConexao()
+        banco.fechar_para_gui = Mock()
+        with patch.object(main_window, "Database", return_value=banco):
+            janela = main_window.MainWindow()
+        janela.tab_dashboard._timer_inicial.stop()
         self.janelas.append(janela)
         return janela
 
     def test_fechamento_da_janela_principal_recusado_ate_finalizar_worker(self):
         iniciado, liberar, _ = self._bloquear_servico(cancelar=True)
         janela = self._janela_sintetica()
-        dialogo = self._dialogo(parent=janela)
-        janela._backup_dialog = dialogo
-        dialogo._fazer_backup()
-        self._aguardar(iniciado.is_set)
+        estado = []
         evento = QCloseEvent()
-        janela.closeEvent(evento)
-        self.assertFalse(evento.isAccepted())
-        janela.db.fechar.assert_not_called()
-        self.assertTrue(dialogo.em_andamento)
-        liberar.set()
-        self._aguardar(lambda: not dialogo.em_andamento)
+
+        def fechar_quando_iniciar():
+            if not iniciado.is_set() and time.monotonic() < prazo:
+                QTimer.singleShot(1, fechar_quando_iniciar)
+                return
+            dialogo = janela._backup_dialog
+            janela.closeEvent(evento)
+            estado.extend([evento.isAccepted(), janela.db.fechar_para_gui.called,
+                           dialogo.em_andamento, dialogo._cancelamento_solicitado])
+            liberar.set()
+
+        prazo = time.monotonic() + 4
+        QTimer.singleShot(0, lambda: janela._backup_dialog._fazer_backup())
+        QTimer.singleShot(0, fechar_quando_iniciar)
+        janela._fazer_backup()
+        self.assertTrue(iniciado.is_set())
+        self.assertEqual(estado, [False, False, True, True])
+        self._aguardar(lambda: janela.encerramento_confirmado)
+        self.assertIsNone(janela._backup_dialog)
         evento = QCloseEvent()
         janela.closeEvent(evento)
         self.assertTrue(evento.isAccepted())
-        janela.db.fechar.assert_called_once()
+        janela.db.fechar_para_gui.assert_called_once()
 
     def test_chamador_modal_mantem_referencia_e_libera_apos_conclusao(self):
         _, liberar, _ = self._bloquear_servico(cancelar=True)
@@ -536,7 +539,7 @@ with tempfile.TemporaryDirectory(prefix='seagbh-quit-test-') as tmp:
         QTimer.singleShot(0, iniciar)
         janela._fazer_backup()
         self.assertIsNone(janela._backup_dialog)
-        janela.db.fechar.assert_not_called()
+        janela.db.fechar_para_gui.assert_not_called()
 
     def test_fluxo_backup_nao_contem_checkpoint_copia_legada_ou_terminacao(self):
         texto = (SRC / "ui" / "dialogs_utils.py").read_text(encoding="utf-8")
@@ -545,7 +548,10 @@ with tempfile.TemporaryDirectory(prefix='seagbh-quit-test-') as tmp:
             if isinstance(classe, ast.ClassDef) and classe.name in {"_BackupThread", "FazerBackupDialog"}:
                 for no in ast.walk(classe):
                     if isinstance(no, ast.Attribute):
-                        self.assertNotIn(no.attr, {"copy2", "conn", "cursor", "terminate", "wait"})
+                        self.assertNotIn(no.attr, {"copy2", "conn", "cursor", "terminate"})
+                    if isinstance(no, ast.Call) and isinstance(no.func, ast.Attribute) and no.func.attr == "wait":
+                        self.assertEqual([ast.literal_eval(arg) for arg in no.args], [0])
+                        self.assertFalse(no.keywords, "O join da UI precisa ser não bloqueante.")
                     if isinstance(no, ast.Constant) and isinstance(no.value, str):
                         self.assertNotIn("wal_checkpoint", no.value)
 

@@ -2,76 +2,69 @@
 Janela principal — sidebar + páginas empilhadas.
 """
 
+import logging
 import os
+from functools import partial
+from pathlib import Path
 
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QStackedWidget, QPushButton, QLabel, QStatusBar,
-    QMessageBox, QSizePolicy, QProgressDialog, QApplication,
+    QMessageBox, QSizePolicy, QProgressDialog, QApplication, QDialog,
 )
-from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal
+from PyQt6.QtCore import QEvent, Qt, QTimer, QThread, pyqtSignal, pyqtSlot
 from PyQt6.QtGui import QAction
 
 from core.database import Database
+from core.conexao_sqlite_protegida import FechamentoPendente
+from ui.consulta_database_thread import ConsultaDatabaseThread
 from ui.tab_dashboard import TabDashboard
 from ui.tab_eventos import TabEventos
 from ui.tab_equipamentos import TabEquipamentos
 from ui.tab_manutencao import TabManutencao
-from ui.tab_relatorios import TabRelatorios
 from ui.dialogs_utils import (
     AuditoriaDialog, RestaurarBackupDialog,
     PermissoesDialog, FazerBackupDialog,
 )
 from core.versao import __version__
-from core.atualizacao import verificar_atualizacao, baixar_atualizacao, aplicar_atualizacao
+from core.atualizacao import (
+    verificar_atualizacao, baixar_atualizacao, validar_aplicacao_atualizacao,
+    aplicar_atualizacao,
+)
 
 
 class _DownloadThread(QThread):
     """Thread para baixar atualização sem travar a UI."""
     progresso = pyqtSignal(int, int)  # recebido, total
-    concluido = pyqtSignal(bool, str)  # sucesso, caminho
 
-    def __init__(self, url: str, destino: str, sha256_esperado: str | None = None):
-        super().__init__()
+    def __init__(self, url, destino, sha256_esperado, parent=None):
+        super().__init__(parent)
         self._url = url
-        self._destino = destino
+        self.destino = destino
         self._sha256 = sha256_esperado
+        self.sucesso = False
+        self.cancelado = False
+
+    def cancelar(self):
+        self.cancelado = True
+        self.requestInterruption()
 
     def run(self):
-        import logging
-        import traceback
-        logger = logging.getLogger(__name__)
         try:
-            ok = baixar_atualizacao(
-                self._url, self._destino,
+            self.sucesso = baixar_atualizacao(
+                self._url, self.destino,
                 progresso_cb=lambda r, t: self.progresso.emit(r, t),
-                sha256_esperado=self._sha256,  # ← Passa hash para validação
+                sha256_esperado=self._sha256,
+                cancelado=self.isInterruptionRequested,
             )
-            self.concluido.emit(ok, self._destino)
-        except Exception as e:
-            logger.error(f"Erro nao tratado na thread de download: {e}")
-            self.concluido.emit(False, self._destino)
+        except BaseException:
+            logging.getLogger(__name__).error("Falha inesperada no download da atualização")
 
 
-class _AtrasosThread(QThread):
+class _AtrasosThread(ConsultaDatabaseThread):
     """Thread para verificar atrasos sem bloquear a interface."""
-    pronto = pyqtSignal(list)
-    falha = pyqtSignal(str)
-
-    def run(self):
-        import logging
-        logger = logging.getLogger(__name__)
-        try:
-            db = Database()
-            atrasados = db.eventos_atrasados()
-            try:
-                db.fechar()
-            except Exception:
-                pass
-            self.pronto.emit(atrasados)
-        except Exception as e:
-            logger.exception("Falha ao verificar atrasos em background")
-            self.falha.emit(str(e))
+    def consultar(self, db):
+        return db.eventos_atrasados()
 
 
 def _resource(filename: str) -> str:
@@ -91,7 +84,8 @@ class MainWindow(QMainWindow):
     ]
 
     def __init__(self, alerta_vencimento: dict | None = None,
-                 alerta_revogacao: dict | None = None):
+                 alerta_revogacao: dict | None = None, *,
+                 banco_sqlite_protegido: str | Path | None = None):
         super().__init__()
         self.setWindowTitle("SEAGBH — Sistema de Almoxarifado")
         self.resize(1280, 720)
@@ -103,8 +97,33 @@ class MainWindow(QMainWindow):
         self._alerta_revogacao = alerta_revogacao
 
         # Banco de dados
-        self.db = Database()
+        self._sqlite_protegido = banco_sqlite_protegido is not None
+        self._abrir_banco = (partial(Database, banco_sqlite_protegido=banco_sqlite_protegido)
+                             if self._sqlite_protegido else Database)
+        self._encerrando = False
+        self.encerramento_confirmado = False
+        self._sair_da_aplicacao = False
+        self._fechamento_principal_pendente = False
+        self._atualizacao_pendente = None
+        self._backup_dialog = None
+        self._dl_thread = None
 
+        self.db = self._abrir_banco()
+        try:
+            self._montar_interface()
+            QApplication.instance().installEventFilter(self)
+            self._timer_atrasos.start(12000)
+            self.tab_dashboard.agendar_carregamento_inicial()
+        except BaseException:
+            self._encerrando = True
+            QApplication.instance().removeEventFilter(self)
+            try:
+                self.db.fechar_para_gui(confirmar=False)
+            except BaseException as erro_fechamento:
+                raise FechamentoPendente(partial(self.db.fechar_para_gui, confirmar=False)) from erro_fechamento
+            raise
+
+    def _montar_interface(self):
         # Tema (começa escuro)
         self._tema_escuro = True
 
@@ -203,12 +222,14 @@ class MainWindow(QMainWindow):
         self._criar_menu()
 
         # ── Ativa o painel inicial (e carrega a primeira aba) ──────────────
-        self._ir_para_seguro(0)
+        self._ir_para(0, atualizar=False)
 
         # ── Checagem automática de atrasos (segura) ──────────────────────
         # Dispara uma única vez após a inicialização completa para reduzir risco
         # de contenção no startup e evitar pop-up modal inesperado.
-        QTimer.singleShot(12000, self._checar_atrasos_auto)
+        self._timer_atrasos = QTimer(self)
+        self._timer_atrasos.setSingleShot(True)
+        self._timer_atrasos.timeout.connect(self._checar_atrasos_auto)
 
         # ── Alerta de vencimento de licença (2 s após abrir) ─────────────
         if self._alerta_vencimento:
@@ -220,9 +241,11 @@ class MainWindow(QMainWindow):
 
     # ── Navegação ─────────────────────────────────────────────────────────
 
-    def _ir_para(self, indice: int):
+    def _ir_para(self, indice: int, *, atualizar=True):
         """Troca a página e destaca o botão ativo na sidebar."""
         # Carrega a aba sob demanda se ainda não foi carregada
+        if self._encerrando:
+            return
         self._carregar_aba_se_necessario(indice)
         
         self.stack.setCurrentIndex(indice)
@@ -231,7 +254,7 @@ class MainWindow(QMainWindow):
             btn.style().unpolish(btn)
             btn.style().polish(btn)
         # Atualiza dashboard ao voltar para ele
-        if indice == 0 and self.tab_dashboard:
+        if atualizar and indice == 0 and self.tab_dashboard:
             self.tab_dashboard.atualizar()
 
     def _ir_para_seguro(self, indice: int):
@@ -248,7 +271,9 @@ class MainWindow(QMainWindow):
     def _carregar_aba_se_necessario(self, indice: int):
         """Carrega a aba sob demanda (lazy loading)."""
         if indice == 0 and self.tab_dashboard is None:
-            self.tab_dashboard = TabDashboard(self.db, parent=self)
+            self.tab_dashboard = TabDashboard(self.db, parent=self, abrir_banco=self._abrir_banco)
+            self.tab_dashboard.consulta_finalizada.connect(self._continuar_encerramento)
+            self.tab_dashboard.fechamento_falhou.connect(self._mostrar_fechamento_pendente)
             widget_antigo = self.stack.widget(0)
             self.stack.removeWidget(widget_antigo)
             self.stack.insertWidget(0, self.tab_dashboard)
@@ -268,6 +293,8 @@ class MainWindow(QMainWindow):
             self.stack.removeWidget(widget_antigo)
             self.stack.insertWidget(3, self.tab_manutencao)
         elif indice == 4 and self.tab_relatorios is None:
+            from ui.tab_relatorios import TabRelatorios
+
             self.tab_relatorios = TabRelatorios(self.db, parent=self)
             widget_antigo = self.stack.widget(4)
             self.stack.removeWidget(widget_antigo)
@@ -290,6 +317,9 @@ class MainWindow(QMainWindow):
         util_menu.addAction(act_audit)
 
         act_backup = QAction("💾 Fazer Backup", self)
+        if self._sqlite_protegido:
+            act_backup.setText("💾 Fazer Backup (indisponível no modo protegido)")
+            act_backup.setEnabled(False)
         act_backup.triggered.connect(self._fazer_backup)
         util_menu.addAction(act_backup)
 
@@ -313,18 +343,28 @@ class MainWindow(QMainWindow):
     # ── Utilitários ───────────────────────────────────────────────────────
 
     def _abrir_auditoria(self):
-        AuditoriaDialog(self.db, parent=self).exec()
+        if not self._encerrando:
+            AuditoriaDialog(self.db, parent=self).exec()
 
     def _fazer_backup(self):
-        if getattr(self, "_backup_dialog", None) is not None:
+        if self._encerrando or self._sqlite_protegido or self._backup_dialog is not None:
             return
-        self._backup_dialog = FazerBackupDialog(self.db, parent=self)
+        self._backup_dialog = FazerBackupDialog(self.db, parent=self, quit_coordenado=True)
         try:
             self._backup_dialog.exec()
         finally:
             if not self._backup_dialog.em_andamento:
-                self._backup_dialog.deleteLater()
-                self._backup_dialog = None
+                self._liberar_dialogo_backup()
+            else:
+                # Um exit() externo pode desenrolar o exec() modal sem fechar
+                # o worker. O diálogo permanece vivo até o sinal de término.
+                self._backup_dialog.backup_finalizado.connect(self._liberar_dialogo_backup)
+
+    @pyqtSlot()
+    def _liberar_dialogo_backup(self):
+        self._backup_dialog.deleteLater()
+        self._backup_dialog = None
+        self._continuar_encerramento()
 
     def _restaurar_backup(self):
         RestaurarBackupDialog(parent=self).exec()
@@ -363,43 +403,41 @@ class MainWindow(QMainWindow):
     # ── Atrasos ───────────────────────────────────────────────────────────
 
     def _checar_atrasos(self):
-        import logging
-        logger = logging.getLogger(__name__)
-        try:
-            if self._atrasos_thread is not None and self._atrasos_thread.isRunning():
-                return
-
-            self._ultimo_modo_checar_atrasos = "manual"
-            self._atrasos_thread = _AtrasosThread(self)
-            self._atrasos_thread.pronto.connect(self._mostrar_atrasos)
-            self._atrasos_thread.falha.connect(self._on_erro_checar_atrasos)
-            self._atrasos_thread.start()
-        except KeyboardInterrupt:
-            logger.warning("Checagem de atrasos interrompida por KeyboardInterrupt")
-        except Exception as e:
-            logger.exception(f"Falha inesperada ao iniciar checagem de atrasos: {e}")
+        self._iniciar_atrasos("manual")
 
     def _checar_atrasos_auto(self):
         """Checa atrasos automaticamente uma única vez por sessão."""
-        if self._atrasos_auto_executado:
+        if self._encerrando or self._atrasos_auto_executado:
             return
         self._atrasos_auto_executado = True
+        self._iniciar_atrasos("auto")
 
-        import logging
-        logger = logging.getLogger(__name__)
-        try:
-            if self._atrasos_thread is not None and self._atrasos_thread.isRunning():
-                return
+    def _iniciar_atrasos(self, modo):
+        if self._encerrando or self._atrasos_thread is not None:
+            return
+        self._ultimo_modo_checar_atrasos = modo
+        worker = _AtrasosThread(self._abrir_banco, self)
+        self._atrasos_thread = worker
+        worker.pronto.connect(self._mostrar_atrasos)
+        worker.falha.connect(self._on_erro_checar_atrasos)
+        worker.fechamento_falhou.connect(self._mostrar_fechamento_pendente)
+        worker.finished.connect(self._atrasos_finalizado)
+        worker.start()
 
-            self._ultimo_modo_checar_atrasos = "auto"
-            self._atrasos_thread = _AtrasosThread(self)
-            self._atrasos_thread.pronto.connect(self._mostrar_atrasos)
-            self._atrasos_thread.falha.connect(self._on_erro_checar_atrasos)
-            self._atrasos_thread.start()
-        except Exception as e:
-            logger.exception(f"Falha na checagem automatica de atrasos: {e}")
+    @pyqtSlot()
+    def _atrasos_finalizado(self):
+        worker = self._atrasos_thread
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._atrasos_finalizado)
+            return
+        self._atrasos_thread = None
+        worker.deleteLater()
+        self._continuar_encerramento()
 
-    def _mostrar_atrasos(self, atrasados: list):
+    @pyqtSlot(object)
+    def _mostrar_atrasos(self, atrasados):
+        if self._encerrando or self.sender() is not self._atrasos_thread:
+            return
         self._ultimo_atrasados = atrasados
         if not atrasados:
             self._btn_alerta_atrasos.setVisible(False)
@@ -427,14 +465,16 @@ class MainWindow(QMainWindow):
             12000,
         )
 
-    def _on_erro_checar_atrasos(self, erro: str):
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Erro ao checar atrasos: {erro}")
+    @pyqtSlot()
+    def _on_erro_checar_atrasos(self):
+        if not self._encerrando and self.sender() is self._atrasos_thread:
+            self.statusBar().showMessage("Não foi possível consultar os atrasos.", 12000)
 
     # ── Alerta de vencimento de licença ──────────────────────────────
 
     def _mostrar_alerta_vencimento(self):
+        if self._encerrando:
+            return
         info = self._alerta_vencimento
         if not info:
             return
@@ -488,6 +528,8 @@ class MainWindow(QMainWindow):
     # ── Alerta de revogação de licença (grace period) ───────────────
 
     def _mostrar_alerta_revogacao(self):
+        if self._encerrando:
+            return
         """Exibe toast de aviso quando a licença está em grace period (24h)."""
         info = self._alerta_revogacao
         if not info:
@@ -533,10 +575,14 @@ class MainWindow(QMainWindow):
 
     def _verificar_atualizacao(self):
         """Consulta Firebase por nova versão e oferece download."""
+        if self._encerrando or self._dl_thread is not None:
+            return
         self.btn_atualizar.setEnabled(False)
         self.btn_atualizar.setText("🔄  Verificando…")
         QApplication.processEvents()
 
+        if self._encerrando:
+            return
         try:
             info = verificar_atualizacao()
         except Exception as e:
@@ -569,7 +615,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.Yes,
         )
-        if resposta != QMessageBox.StandardButton.Yes:
+        if self._encerrando or resposta != QMessageBox.StandardButton.Yes:
             return
 
         if not url:
@@ -579,6 +625,8 @@ class MainWindow(QMainWindow):
         self._iniciar_download(url, versao, sha256=sha256)  # ← Passa hash
 
     def _iniciar_download(self, url: str, versao: str, sha256: str | None = None):
+        if self._encerrando or self._dl_thread is not None:
+            return
         import tempfile
         destino = os.path.join(tempfile.gettempdir(), f"SEAGBH_v{versao}.exe")
 
@@ -591,72 +639,168 @@ class MainWindow(QMainWindow):
         self._prog.setAutoReset(False)
         self._prog.show()
 
-        self._dl_thread = _DownloadThread(url, destino, sha256_esperado=sha256)
+        self._dl_thread = _DownloadThread(url, destino, sha256, self)
         self._dl_thread.progresso.connect(self._atualizar_progresso)
-        self._dl_thread.concluido.connect(self._download_concluido)
-        self._prog.canceled.connect(self._dl_thread.terminate)
+        self._dl_thread.finished.connect(self._download_concluido)
+        self._prog.canceled.connect(self._dl_thread.cancelar)
         self._dl_thread.start()
 
+    @pyqtSlot(int, int)
     def _atualizar_progresso(self, recebido: int, total: int):
+        if (self._encerrando or self._dl_thread is None
+                or self.sender() is not self._dl_thread or self._dl_thread.cancelado):
+            return
         if total > 0:
             self._prog.setValue(int(recebido * 100 / total))
         else:
             self._prog.setLabelText(f"Baixando… {recebido // 1024} KB")
 
-    def _download_concluido(self, sucesso: bool, caminho: str):
-        import logging
-        logger = logging.getLogger(__name__)
+    @pyqtSlot()
+    def _download_concluido(self):
+        worker = self._dl_thread
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._download_concluido)
+            return
+        self._prog.canceled.disconnect(worker.cancelar)
         self._prog.close()
+        self._prog.deleteLater()
+        self._dl_thread = None
+        worker.deleteLater()
+        caminho = worker.destino
 
-        if not sucesso:
-            logger.error(f"Falha no download de atualização: {caminho}. SHA256 invalido ou conexao perdida.")
+        if self._encerrando or worker.cancelado:
+            if worker.sucesso:
+                self._limpar_download(caminho)
+            self._continuar_encerramento()
+            return
+        if not worker.sucesso:
             QMessageBox.critical(
                 self, "Erro",
                 "Falha ao baixar a atualização.\n"
                 "Arquivo corrompido ou conexão perdida.\n"
                 "Verifique sua conexão e tente novamente.",
             )
-            # Limpeza automática de arquivo corrompido
-            if os.path.exists(caminho):
-                try:
-                    os.remove(caminho)
-                except OSError:
-                    pass
             return
 
-        logger.info(f"Download de atualização concluido com sucesso: {caminho}")
+        try:
+            validar_aplicacao_atualizacao(caminho)
+        except RuntimeError as exc:
+            self._limpar_download(caminho)
+            QMessageBox.warning(self, "Atualização", str(exc))
+            return
         QMessageBox.information(
             self, "Download Concluído",
             "O download foi concluído com sucesso.\n"
             "O aplicativo será fechado e reiniciado automaticamente.",
         )
 
-        try:
-            bat_path = aplicar_atualizacao(caminho)
-        except RuntimeError as exc:
-            logger.error(f"Erro ao preparar atualização: {exc}")
-            QMessageBox.warning(self, "Atualização", str(exc))
-            # Limpar arquivo se update falhar
-            if os.path.exists(caminho):
-                try:
-                    os.remove(caminho)
-                except OSError:
-                    pass
+        if self._encerrando:
+            self._limpar_download(caminho)
             return
+        self._atualizacao_pendente = caminho
+        self.solicitar_saida()
 
-        # ── CORRETO: Dar tempo para .bat começar a trabalhar ──────────────────
-        # .bat vai esperar o .exe liberar. Se encerrarmos AGORA, haverá race condition.
-        # Aguardamos 4 segundos para o .bat se estabelecer em sistemas lentos.
-        logger.info(f"Script de atualização preparado: {bat_path}. Aguardando 4s antes de encerrar aplicacao.")
-        QTimer.singleShot(4000, QApplication.quit)
+    @staticmethod
+    def _limpar_download(caminho):
+        try:
+            os.remove(caminho)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            logging.getLogger(__name__).warning("Falha ao remover download temporário")
 
     # ── Fechamento limpo ──────────────────────────────────────────────────
 
     def closeEvent(self, event):
-        backup = getattr(self, "_backup_dialog", None)
-        if backup is not None and backup.em_andamento:
-            backup.solicitar_fechamento()
-            event.ignore()
+        if self.encerramento_confirmado:
+            event.accept()
             return
-        self.db.fechar()
-        event.accept()
+        event.ignore()
+        if self._encerrando:
+            self._fechamento_principal_pendente = False
+            if self._atrasos_thread is not None:
+                self._atrasos_thread.repetir_fechamento()
+            if self.tab_dashboard is not None:
+                self.tab_dashboard.solicitar_encerramento(repetir=True)
+        else:
+            self._iniciar_encerramento()
+        self._agendar_encerramento()
+
+    def eventFilter(self, objeto, evento):
+        if (evento.type() == QEvent.Type.Quit and objeto is QApplication.instance()
+                and not self.encerramento_confirmado):
+            self.solicitar_saida()
+            return True
+        return super().eventFilter(objeto, evento)
+
+    def solicitar_saida(self):
+        """Encaminha o quit do Qt e a saída após atualização ao mesmo fluxo."""
+        self._sair_da_aplicacao = True
+        self.close()
+
+    def _iniciar_encerramento(self):
+        self._encerrando = True
+        self._timer_atrasos.stop()
+        self.centralWidget().setEnabled(False)
+        self.menuBar().setEnabled(False)
+        self._btn_alerta_atrasos.setEnabled(False)
+        if self.tab_dashboard is not None:
+            # A worker may have failed to close its SQLite connection BEFORE
+            # the first exit request; wake ONLY that pending retry.
+            self.tab_dashboard.solicitar_encerramento(repetir_pendente=True)
+        if self._atrasos_thread is not None:
+            self._atrasos_thread.requestInterruption()
+            self._atrasos_thread.repetir_fechamento_se_pendente()
+        if self._dl_thread is not None:
+            self._dl_thread.cancelar()
+        if self._backup_dialog is not None:
+            self._backup_dialog.preparar_saida()
+        self.statusBar().showMessage("Encerrando… aguardando operações em andamento.")
+
+    def _agendar_encerramento(self):
+        # O close original e qualquer diálogo modal podem estar na pilha do Qt.
+        QTimer.singleShot(0, self._continuar_encerramento)
+
+    @pyqtSlot()
+    def _continuar_encerramento(self):
+        if (not self._encerrando or self.encerramento_confirmado
+                or self._fechamento_principal_pendente):
+            return
+
+        # A árvore QObject inclui os diálogos filhos mesmo em janelas próprias.
+        modal = QApplication.activeModalWidget()
+        if (isinstance(modal, QDialog) and modal is not self._backup_dialog
+                and modal in self.findChildren(QDialog)):
+            modal.reject()
+            self._agendar_encerramento()
+            return
+
+        if (self._atrasos_thread is not None or self._dl_thread is not None
+                or self._backup_dialog is not None
+                or (self.tab_dashboard is not None and self.tab_dashboard.consultando)):
+            return
+        try:
+            self.db.fechar_para_gui()
+        except BaseException:
+            self._fechamento_principal_pendente = True
+            logging.getLogger(__name__).error("Fechamento do banco principal pendente")
+            self._mostrar_fechamento_pendente()
+            return
+
+        self.encerramento_confirmado = True
+        QApplication.instance().removeEventFilter(self)
+        if self._atualizacao_pendente is not None:
+            try:
+                aplicar_atualizacao(self._atualizacao_pendente)
+            except (OSError, RuntimeError):
+                self._limpar_download(self._atualizacao_pendente)
+                QMessageBox.warning(self, "Atualização", "Não foi possível iniciar o instalador.")
+        self.close()
+        if self._sair_da_aplicacao:
+            QTimer.singleShot(0, QApplication.quit)
+
+    @pyqtSlot()
+    def _mostrar_fechamento_pendente(self):
+        self.statusBar().showMessage(
+            "Não foi possível fechar o banco. Solicite a saída novamente para repetir a tentativa."
+        )

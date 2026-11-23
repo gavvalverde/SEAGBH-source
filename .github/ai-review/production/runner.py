@@ -850,4 +850,6 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    # Trusted CLI uses v2; legacy run_review stays for offline regression.
+    from production_v2 import main as production_v2_main
+    raise SystemExit(production_v2_main())
