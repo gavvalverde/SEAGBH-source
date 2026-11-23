@@ -59,6 +59,7 @@ from core.firebase_auth import (
     sessao_administrativa_renovavel,
     token_firebase as _get_id_token,
 )
+from core.historico_licencas import ErroHistorico, HistoricoLicencas
 from core.licenca import gerar_chave, validar_chave, PLANOS, FIREBASE_URL, DIAS_ALERTA
 
 _HISTORICO_PATH = os.path.join(os.path.dirname(__file__), "historico_chaves.json")
@@ -464,9 +465,10 @@ class _RenovacaoWorker(QThread):
 
 
 class GerenciamentoClientes(QWidget):
-    def __init__(self):
+    def __init__(self, *, historico: HistoricoLicencas | None = None):
         _exigir_sessao_admin()
         super().__init__()
+        self._historico_privado = historico
         self.setWindowTitle("Gerenciamento de Clientes — SEAGBH")
         self.setMinimumSize(1020, 750)
         self._firebase_cache: dict[str, dict] = {}
@@ -522,6 +524,13 @@ class GerenciamentoClientes(QWidget):
             if dialogo is not None:
                 dialogo.reject()
             self._avisar_sessao_encerrada()
+        except ErroHistorico as erro:
+            _LOGGER.warning("Histórico administrativo indisponível | Código: %s", erro.codigo)
+            QMessageBox.critical(
+                dialogo or self, "Falha no histórico local",
+                "O histórico local não pôde ser confirmado. Se houve uma alteração no Firebase, "
+                "confira o estado remoto antes de repetir a operação.",
+            )
 
     def _avisar_sessao_encerrada(self) -> None:
         self._firebase_cache.clear()
@@ -694,9 +703,38 @@ class GerenciamentoClientes(QWidget):
     #  Firebase — carregar dados em lote
     # ══════════════════════════════════════════════════════════════════════
 
+    def _ler_historico(self, *, excluidos=False):
+        _exigir_sessao_admin()
+        if self._historico_privado is not None:
+            if excluidos:
+                return self._historico_privado.ler_excluidos()
+            return self._historico_privado.ler_ativos()
+        return _carregar_arquivo_morto() if excluidos else _carregar_historico()
+
+    def _adicionar_registro(self, registro):
+        _exigir_sessao_admin()
+        if self._historico_privado is not None:
+            self._historico_privado.adicionar(registro)
+        else:
+            historico = _carregar_historico()
+            historico.append(registro)
+            _salvar_historico(historico)
+
+    def _atualizar_registro(self, anterior, **mudancas):
+        _exigir_sessao_admin()
+        if self._historico_privado is not None:
+            self._historico_privado.atualizar(anterior, **mudancas)
+        else:
+            historico = _carregar_historico()
+            for item in historico:
+                if item["id"] == anterior["id"]:
+                    item.update(mudancas)
+                    break
+            _salvar_historico(historico)
+
     def _carregar_firebase_dados(self):
         """Carrega dados de auto_renew / alertas para todas as licenças."""
-        historico = _carregar_historico()
+        historico = self._ler_historico()
         for reg in historico:
             lid = reg.get("id", "")
             if not lid:
@@ -713,7 +751,7 @@ class GerenciamentoClientes(QWidget):
     # ══════════════════════════════════════════════════════════════════════
 
     def _carregar_tabela(self):
-        historico = _carregar_historico()
+        historico = self._ler_historico()
         filtro = self.entry_busca.text().strip().lower() if hasattr(self, 'entry_busca') else ""
         if filtro:
             historico = [r for r in historico if filtro in r.get("cliente", "").lower()]
@@ -815,6 +853,9 @@ class GerenciamentoClientes(QWidget):
         if not rows:
             return None
         idx = rows[0].row()
+        if self._historico_privado is not None:
+            id_exibido = self.tabela.item(idx, 5).text()
+            return next((reg for reg in self._ler_historico() if reg["id"] == id_exibido), None)
         # Recalcular o histórico filtrado para achar o registro correto
         historico = _carregar_historico()
         filtro = self.entry_busca.text().strip().lower() if hasattr(self, 'entry_busca') else ""
@@ -844,8 +885,7 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
-        historico = _carregar_historico()
-        historico.append({
+        self._adicionar_registro({
             "id": payload["id"],
             "cliente": payload["c"],
             "plano": payload["p"],
@@ -854,7 +894,6 @@ class GerenciamentoClientes(QWidget):
             "chave": chave,
             "status": "ativa",
         })
-        _salvar_historico(historico)
 
         self._firebase_cache[payload["id"]] = {"auto_renew": True}
 
@@ -926,12 +965,7 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
-        historico = _carregar_historico()
-        for item in historico:
-            if item["id"] == reg["id"]:
-                item["status"] = "revogada"
-                break
-        _salvar_historico(historico)
+        self._atualizar_registro(reg, status="revogada")
         self._carregar_tabela()
 
         _mostrar_toast(
@@ -960,12 +994,7 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
-        historico = _carregar_historico()
-        for item in historico:
-            if item["id"] == reg["id"]:
-                item["status"] = "ativa"
-                break
-        _salvar_historico(historico)
+        self._atualizar_registro(reg, status="ativa")
         self._carregar_tabela()
 
         QGuiApplication.clipboard().setText(reg["chave"])
@@ -1016,19 +1045,16 @@ class GerenciamentoClientes(QWidget):
                 "preservado. Confira o estado remoto antes de repetir.",
             )
             return
-        # Remover do cache local
-        if lid in self._firebase_cache:
-            del self._firebase_cache[lid]
-
-        # Mover para arquivo morto
-        morto = _carregar_arquivo_morto()
-        morto.append(reg)
-        _salvar_arquivo_morto(morto)
-
-        # Remover do histórico ativo
-        historico = _carregar_historico()
-        historico = [h for h in historico if h.get("id") != lid]
-        _salvar_historico(historico)
+        _exigir_sessao_admin()
+        if self._historico_privado is not None:
+            self._historico_privado.mover(reg, para_excluidos=True)
+        else:
+            morto = _carregar_arquivo_morto()
+            morto.append(reg)
+            _salvar_arquivo_morto(morto)
+            historico = [h for h in _carregar_historico() if h.get("id") != lid]
+            _salvar_historico(historico)
+        self._firebase_cache.pop(lid, None)
         self._carregar_tabela()
 
         _mostrar_toast(
@@ -1046,7 +1072,7 @@ class GerenciamentoClientes(QWidget):
         self._com_sessao(self._abrir_restauracao)
 
     def _abrir_restauracao(self):
-        morto = _carregar_arquivo_morto()
+        morto = self._ler_historico(excluidos=True)
         if not morto:
             QMessageBox.information(self, "Info", "Não há licenças excluídas para restaurar.")
             return
@@ -1116,7 +1142,7 @@ class GerenciamentoClientes(QWidget):
                 return
 
             # Verificar duplicata no histórico ativo
-            historico = _carregar_historico()
+            historico = self._ler_historico()
             for h in historico:
                 if h.get("id") == lid:
                     QMessageBox.information(dlg, "Info", "Esta licença já existe no histórico.")
@@ -1138,9 +1164,13 @@ class GerenciamentoClientes(QWidget):
                     QMessageBox.critical(dlg, "Erro", "Falha ao restaurar a licença no Firebase.")
                     return
 
-            historico.append(registro)
-            _salvar_historico(historico)
-            _salvar_arquivo_morto(novo_morto)
+            _exigir_sessao_admin()
+            if self._historico_privado is not None:
+                self._historico_privado.mover(registro, para_excluidos=False)
+            else:
+                historico.append(registro)
+                _salvar_historico(historico)
+                _salvar_arquivo_morto(novo_morto)
             self._firebase_cache[lid] = fb_data if isinstance(fb_data, dict) else {}
             self._carregar_tabela()
             dlg.accept()
@@ -1180,7 +1210,7 @@ class GerenciamentoClientes(QWidget):
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
         from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 
-        historico = _carregar_historico()
+        historico = self._ler_historico()
         hoje_str = datetime.now().strftime("%Y-%m-%d")
 
         # Montar dados da tabela
@@ -1419,17 +1449,10 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
+        self._atualizar_registro(reg, expira=new_date)
         if lid not in self._firebase_cache:
             self._firebase_cache[lid] = {}
         self._firebase_cache[lid]["expiry_override"] = new_date
-
-        # Atualizar histórico local
-        historico = _carregar_historico()
-        for item in historico:
-            if item["id"] == lid:
-                item["expira"] = new_date
-                break
-        _salvar_historico(historico)
         self._carregar_tabela()
 
         _mostrar_toast(
