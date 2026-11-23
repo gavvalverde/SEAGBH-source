@@ -19,6 +19,8 @@ A cópia `originais.sqlite3` armazena os dois fluxos de bytes exatos, em uma tra
 
 A homologação injeta `HistoricoLicencas` na janela administrativa. A janela exige sessão autorizada antes de ler o armazenamento. O caminho privado não recorre aos JSONs quando faltam arquivos, quando há perda de permissões ou quando a importação ainda está pendente. O ponto de entrada continua usando o caminho legado até uma ativação aprovada.
 
+As gravações privadas abrem e fecham suas conexões em um worker. Durante a gravação, a janela processa eventos, bloqueia novos comandos administrativos e adia o fechamento. A interface só apresenta sucesso após o término do worker. Leituras de tela recusam um bloqueio SQLite imediatamente.
+
 Em exclusão e restauração, a janela confirma o Firebase antes de iniciar a movimentação SQLite. A confirmação remota e a transação local são independentes. Se o Firebase confirmar e o SQLite falhar, a interface informa a falha e pede conferência do estado remoto antes de repetir. O bloqueio SQLite coordena os escritores locais.
 
 ### Roteiro de ativação

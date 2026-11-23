@@ -464,6 +464,22 @@ class _RenovacaoWorker(QThread):
             _LOGGER.error("Firebase Auth: renovação recusada | Código: ERRO_INTERNO")
 
 
+class _GravacaoHistoricoWorker(QThread):
+    def __init__(self, gravar: Callable[[], None], pai):
+        super().__init__(pai)
+        self._gravar = gravar
+        self.erro = None
+
+    def run(self):
+        try:
+            _exigir_sessao_admin()
+            self._gravar()
+        except (ErroHistorico, _SessaoAdminEncerrada) as erro:
+            self.erro = erro
+        except Exception:
+            self.erro = ErroHistorico("falha_armazenamento")
+
+
 class GerenciamentoClientes(QWidget):
     def __init__(self, *, historico: HistoricoLicencas | None = None):
         _exigir_sessao_admin()
@@ -474,13 +490,16 @@ class GerenciamentoClientes(QWidget):
         self._firebase_cache: dict[str, dict] = {}
         self._renovacao: _RenovacaoWorker | None = None
         self._acao_apos_renovacao: Callable[[], None] | None = None
-        self._fechar_apos_renovacao = False
+        self._gravacao: _GravacaoHistoricoWorker | None = None
+        self._apos_gravacao: Callable[[], None] | None = None
+        self._dialogo_gravacao: QDialog | None = None
+        self._fechar_apos_worker = False
         self._build_ui()
         self._carregar_firebase_dados()
         self._carregar_tabela()
 
     def _com_sessao(self, acao: Callable[[], None]) -> None:
-        if self._renovacao is not None:
+        if self._renovacao is not None or self._gravacao is not None:
             return
         if sessao_administrativa_ativa():
             self._executar_acao_autorizada(acao)
@@ -501,7 +520,7 @@ class GerenciamentoClientes(QWidget):
         self._renovacao = None
         self.setEnabled(True)
         self.unsetCursor()
-        if self._fechar_apos_renovacao:
+        if self._fechar_apos_worker:
             self.close()
         elif acao is not None and sessao_administrativa_ativa():
             self._executar_acao_autorizada(acao)
@@ -509,14 +528,16 @@ class GerenciamentoClientes(QWidget):
             self._avisar_sessao_encerrada()
 
     def closeEvent(self, event):
-        if self._renovacao is not None:
-            self._fechar_apos_renovacao = True
+        if self._renovacao is not None or self._gravacao is not None:
+            self._fechar_apos_worker = True
             event.ignore()
             return
         _logout()
         super().closeEvent(event)
 
     def _executar_acao_autorizada(self, acao: Callable[[], None], *, dialogo: QDialog | None = None) -> None:
+        if self._gravacao is not None:
+            return
         try:
             _exigir_sessao_admin()
             acao()
@@ -525,12 +546,53 @@ class GerenciamentoClientes(QWidget):
                 dialogo.reject()
             self._avisar_sessao_encerrada()
         except ErroHistorico as erro:
-            _LOGGER.warning("Histórico administrativo indisponível | Código: %s", erro.codigo)
-            QMessageBox.critical(
-                dialogo or self, "Falha no histórico local",
-                "O histórico local não pôde ser confirmado. Se houve uma alteração no Firebase, "
-                "confira o estado remoto antes de repetir a operação.",
-            )
+            self._avisar_falha_historico(erro, dialogo)
+
+    def _avisar_falha_historico(self, erro: ErroHistorico, dialogo: QDialog | None):
+        _LOGGER.warning("Histórico administrativo indisponível | Código: %s", erro.codigo)
+        QMessageBox.critical(
+            dialogo or self, "Falha no histórico local",
+            "O histórico local não pôde ser confirmado. Se houve uma alteração no Firebase, "
+            "confira o estado remoto antes de repetir a operação.",
+        )
+
+    def _gravar_privado(self, gravar, concluir, *, dialogo=None):
+        _exigir_sessao_admin()
+        self._apos_gravacao = concluir
+        self._dialogo_gravacao = dialogo
+        self._gravacao = _GravacaoHistoricoWorker(gravar, self)
+        self._gravacao.finished.connect(self._concluir_gravacao)
+        self.setEnabled(False)
+        self.setCursor(Qt.CursorShape.WaitCursor)
+        try:
+            self._gravacao.start()
+        except RuntimeError:
+            self._gravacao.erro = ErroHistorico("falha_armazenamento")
+            self._concluir_gravacao()
+
+    def _concluir_gravacao(self):
+        worker = self._gravacao
+        if worker is None:
+            return
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._concluir_gravacao)
+            return
+        concluir, dialogo = self._apos_gravacao, self._dialogo_gravacao
+        self._gravacao = self._apos_gravacao = self._dialogo_gravacao = None
+        self.setEnabled(True)
+        self.unsetCursor()
+        erro = worker.erro
+        worker.deleteLater()
+        if isinstance(erro, ErroHistorico):
+            self._avisar_falha_historico(erro, dialogo)
+        if self._fechar_apos_worker:
+            self.close()
+        elif erro is None and concluir is not None:
+            self._executar_acao_autorizada(concluir, dialogo=dialogo)
+        elif isinstance(erro, _SessaoAdminEncerrada):
+            if dialogo is not None:
+                dialogo.reject()
+            self._avisar_sessao_encerrada()
 
     def _avisar_sessao_encerrada(self) -> None:
         self._firebase_cache.clear()
@@ -711,19 +773,22 @@ class GerenciamentoClientes(QWidget):
             return self._historico_privado.ler_ativos()
         return _carregar_arquivo_morto() if excluidos else _carregar_historico()
 
-    def _adicionar_registro(self, registro):
+    def _adicionar_registro(self, registro, concluir):
         _exigir_sessao_admin()
-        if self._historico_privado is not None:
-            self._historico_privado.adicionar(registro)
+        banco = self._historico_privado
+        if banco is not None:
+            self._gravar_privado(lambda: banco.adicionar(registro), concluir)
         else:
             historico = _carregar_historico()
             historico.append(registro)
             _salvar_historico(historico)
+            concluir()
 
-    def _atualizar_registro(self, anterior, **mudancas):
+    def _atualizar_registro(self, anterior, concluir, **mudancas):
         _exigir_sessao_admin()
-        if self._historico_privado is not None:
-            self._historico_privado.atualizar(anterior, **mudancas)
+        banco = self._historico_privado
+        if banco is not None:
+            self._gravar_privado(lambda: banco.atualizar(anterior, **mudancas), concluir)
         else:
             historico = _carregar_historico()
             for item in historico:
@@ -731,6 +796,7 @@ class GerenciamentoClientes(QWidget):
                     item.update(mudancas)
                     break
             _salvar_historico(historico)
+            concluir()
 
     def _carregar_firebase_dados(self):
         """Carrega dados de auto_renew / alertas para todas as licenças."""
@@ -893,8 +959,9 @@ class GerenciamentoClientes(QWidget):
             "expira": payload["e"],
             "chave": chave,
             "status": "ativa",
-        })
+        }, lambda: self._concluir_emissao(payload, chave))
 
+    def _concluir_emissao(self, payload, chave):
         self._firebase_cache[payload["id"]] = {"auto_renew": True}
 
         self._carregar_tabela()
@@ -965,7 +1032,9 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
-        self._atualizar_registro(reg, status="revogada")
+        self._atualizar_registro(reg, lambda: self._concluir_revogacao(reg), status="revogada")
+
+    def _concluir_revogacao(self, reg):
         self._carregar_tabela()
 
         _mostrar_toast(
@@ -994,7 +1063,9 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
-        self._atualizar_registro(reg, status="ativa")
+        self._atualizar_registro(reg, lambda: self._concluir_reativacao(reg), status="ativa")
+
+    def _concluir_reativacao(self, reg):
         self._carregar_tabela()
 
         QGuiApplication.clipboard().setText(reg["chave"])
@@ -1046,15 +1117,20 @@ class GerenciamentoClientes(QWidget):
             )
             return
         _exigir_sessao_admin()
-        if self._historico_privado is not None:
-            self._historico_privado.mover(reg, para_excluidos=True)
-        else:
-            morto = _carregar_arquivo_morto()
-            morto.append(reg)
-            _salvar_arquivo_morto(morto)
-            historico = [h for h in _carregar_historico() if h.get("id") != lid]
-            _salvar_historico(historico)
-        self._firebase_cache.pop(lid, None)
+        banco = self._historico_privado
+        if banco is not None:
+            self._gravar_privado(lambda: banco.mover(reg, para_excluidos=True),
+                                 lambda: self._concluir_exclusao(reg))
+            return
+        morto = _carregar_arquivo_morto()
+        morto.append(reg)
+        _salvar_arquivo_morto(morto)
+        historico = [h for h in _carregar_historico() if h.get("id") != lid]
+        _salvar_historico(historico)
+        self._concluir_exclusao(reg)
+
+    def _concluir_exclusao(self, reg):
+        self._firebase_cache.pop(reg["id"], None)
         self._carregar_tabela()
 
         _mostrar_toast(
@@ -1165,32 +1241,40 @@ class GerenciamentoClientes(QWidget):
                     return
 
             _exigir_sessao_admin()
-            if self._historico_privado is not None:
-                self._historico_privado.mover(registro, para_excluidos=False)
+            banco = self._historico_privado
+            if banco is not None:
+                self._gravar_privado(
+                    lambda: banco.mover(registro, para_excluidos=False),
+                    lambda: self._concluir_restauracao(dlg, registro, fb_data),
+                    dialogo=dlg,
+                )
             else:
                 historico.append(registro)
                 _salvar_historico(historico)
                 _salvar_arquivo_morto(novo_morto)
-            self._firebase_cache[lid] = fb_data if isinstance(fb_data, dict) else {}
-            self._carregar_tabela()
-            dlg.accept()
-
-            plano = registro.get("plano", "")
-            plano_fmt = "Vitalício" if plano == "vitalicio" else plano.capitalize()
-            _mostrar_toast(
-                self,
-                titulo="Licença Restaurada",
-                corpo=(
-                    f"Cliente: {registro['cliente']}\n"
-                    f"Plano: {plano_fmt}\n"
-                    f"ID: {registro['id']}\n\n"
-                    f"Registro restaurado ao histórico."
-                ),
-                cor_borda="#4ADE80",
-            )
+                self._concluir_restauracao(dlg, registro, fb_data)
 
         btn.clicked.connect(lambda: self._executar_acao_autorizada(_restaurar, dialogo=dlg))
         dlg.exec()
+
+    def _concluir_restauracao(self, dlg, registro, fb_data):
+        self._firebase_cache[registro["id"]] = fb_data if isinstance(fb_data, dict) else {}
+        self._carregar_tabela()
+        dlg.accept()
+
+        plano = registro.get("plano", "")
+        plano_fmt = "Vitalício" if plano == "vitalicio" else plano.capitalize()
+        _mostrar_toast(
+            self,
+            titulo="Licença Restaurada",
+            corpo=(
+                f"Cliente: {registro['cliente']}\n"
+                f"Plano: {plano_fmt}\n"
+                f"ID: {registro['id']}\n\n"
+                f"Registro restaurado ao histórico."
+            ),
+            cor_borda="#4ADE80",
+        )
 
     def _on_exportar_pdf(self):
         self._com_sessao(self._selecionar_destino_pdf)
@@ -1449,7 +1533,10 @@ class GerenciamentoClientes(QWidget):
             QMessageBox.critical(self, "Erro", "Falha ao conectar ao Firebase.")
             return
 
-        self._atualizar_registro(reg, expira=new_date)
+        self._atualizar_registro(reg, lambda: self._concluir_edicao_vencimento(reg, new_date), expira=new_date)
+
+    def _concluir_edicao_vencimento(self, reg, new_date):
+        lid = reg["id"]
         if lid not in self._firebase_cache:
             self._firebase_cache[lid] = {}
         self._firebase_cache[lid]["expiry_override"] = new_date

@@ -10,6 +10,7 @@ import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from threading import Barrier
+from time import monotonic
 import unittest
 from unittest.mock import patch
 
@@ -200,6 +201,15 @@ modulo.HistoricoLicencas(Path(sys.argv[1])).migrar_fixtures(
         self.assert_erro("registro_alterado", self.historico.mover, self.ativo, para_excluidos=True)
         self.assert_erro("id_duplicado", self.historico.adicionar, self.excluido)
         self.assertEqual(self.historico.ler_ativos(), [dict(self.ativo, status="revogada")])
+
+    def test_leitura_recusa_bloqueio_exclusivo_sem_espera_de_escritor(self):
+        self.migrar()
+        with closing(sqlite3.connect(self.pasta / "historico.sqlite3")) as concorrente:
+            concorrente.execute("BEGIN EXCLUSIVE")
+            inicio = monotonic()
+            self.assert_erro("armazenamento_ocupado", self.historico.ler_ativos)
+            self.assertLess(monotonic() - inicio, 3)
+        self.assertEqual(self.historico.ler_ativos(), [self.ativo])
 
     def test_perda_de_permissoes_de_arquivo_e_diretorio_recusa_acesso(self):
         self.migrar()

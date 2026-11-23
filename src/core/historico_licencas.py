@@ -199,7 +199,8 @@ class HistoricoLicencas:
             if pasta.arquivo(nome) is None:
                 raise ErroHistorico("armazenamento_ausente")
             uri = caminho.as_uri() + "?mode=rw"
-            with closing(sqlite3.connect(uri, uri=True, isolation_level=None, timeout=5)) as conexao, conexao:
+            tempo_espera = 5 if gravar else 0
+            with closing(sqlite3.connect(uri, uri=True, isolation_level=None, timeout=tempo_espera)) as conexao, conexao:
                 if conexao.execute("PRAGMA journal_mode").fetchone() != ("delete",):
                     raise ErroHistorico("modo_sqlite_incompativel")
                 conexao.execute("PRAGMA synchronous=EXTRA")

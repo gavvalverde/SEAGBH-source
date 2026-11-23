@@ -448,6 +448,13 @@ class FirebaseAuthQtTests(unittest.TestCase):
         raiz = self.enterContext(tempfile.TemporaryDirectory(prefix="seagbh-historico-qt-", dir=base))
         return self.ui.HistoricoLicencas(Path(raiz) / "privado")
 
+    def _aguardar_gravacao(self, janela):
+        for _ in range(600):
+            if janela._gravacao is None:
+                return
+            QTest.qWait(10)
+        self.fail("O worker do histórico não concluiu")
+
     def test_janela_privada_sem_sessao_ou_migracao_recusa_e_nao_le_legado(self):
         historico = self._armazenamento_sintetico()
         with patch.object(historico, "ler_ativos", wraps=historico.ler_ativos) as ler:
@@ -485,6 +492,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
 
             with patch.object(self.ui, "_excluir_licenca_remota_atomicamente", side_effect=excluir):
                 janela._on_excluir()
+                self._aguardar_gravacao(janela)
             self.assertEqual(historico.ler_ativos(), [])
             self.assertEqual(historico.ler_excluidos(), [reg])
 
@@ -503,6 +511,7 @@ class FirebaseAuthQtTests(unittest.TestCase):
                 patch.object(self.ui, "_firebase_put", side_effect=restaurar),
             ):
                 janela._on_restaurar()
+                self._aguardar_gravacao(janela)
         self.assertEqual(historico.ler_ativos(), [reg])
         self.assertEqual(historico.ler_excluidos(), [])
         self.assertEqual(sucesso.call_count, 2)
@@ -531,12 +540,58 @@ class FirebaseAuthQtTests(unittest.TestCase):
                 patch.object(historico, "mover", side_effect=self.ui.ErroHistorico("falha_armazenamento")) as mover,
             ):
                 janela._on_excluir()
+                self._aguardar_gravacao(janela)
                 self.assertEqual(mover.call_count, int(remoto))
                 aviso.assert_called_once()
                 sucesso.assert_not_called()
         self.assertEqual(historico.ler_ativos(), [reg])
         self.assertEqual(historico.ler_excluidos(), [])
         self.assertEqual(janela._firebase_cache, {reg["id"]: {"auto_renew": True}})
+
+    def test_gravacao_privada_contendida_mantem_eventos_qt_e_adia_fechamento(self):
+        import sqlite3
+        from contextlib import closing
+        from PyQt6.QtCore import QTimer
+        from tests.unit.test_historico_licencas import json_bytes, registro
+
+        historico = self._armazenamento_sintetico()
+        reg = registro()
+        historico.migrar_fixtures(ativos=json_bytes([reg]), excluidos=b"[]")
+        self._login_ok()
+        with (
+            patch.object(self.ui, "_firebase_get", return_value=(True, None)),
+            patch.object(self.ui, "_excluir_licenca_remota_atomicamente", return_value=True),
+            patch.object(self.ui, "_mostrar_toast") as sucesso,
+            patch.object(self.ui.QMessageBox, "warning", return_value=self.ui.QMessageBox.StandardButton.Yes),
+            patch.object(self.ui.QMessageBox, "critical") as aviso,
+        ):
+            janela = self.ui.GerenciamentoClientes(historico=historico)
+            self.addCleanup(janela.close)
+            janela.show()
+            janela.tabela.selectRow(0)
+            eventos = []
+            try:
+                with closing(sqlite3.connect(historico._pasta / "historico.sqlite3")) as concorrente:
+                    concorrente.execute("BEGIN IMMEDIATE")
+                    janela._on_excluir()
+                    QTimer.singleShot(0, lambda: eventos.append(get_ident()))
+                    for _ in range(50):
+                        if eventos:
+                            break
+                        QTest.qWait(5)
+                    self.assertEqual(eventos, [get_ident()])
+                    self.assertIsNotNone(janela._gravacao)
+                    self.assertTrue(janela._gravacao.isRunning())
+                    self.assertEqual(historico.ler_ativos(), [reg])
+                    self.assertFalse(janela.close())
+                    self.assertTrue(janela.isVisible())
+            finally:
+                self._aguardar_gravacao(janela)
+        self.assertFalse(janela.isVisible())
+        self.assertIsNone(self.auth.token_firebase())
+        self.assertEqual(historico.ler_excluidos(), [reg])
+        sucesso.assert_not_called()
+        aviso.assert_not_called()
 
     def test_dialogo_real_aceita_somente_com_token_e_limpa_campo_de_senha(self):
         dialogo = self.ui.LoginDialog()
