@@ -9,10 +9,6 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: historico-git-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
   inventario:
     name: historico-git
@@ -22,6 +18,13 @@ jobs:
       - name: Checkout sem credenciais persistidas
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /tests/__init__.py
+            /tests/unit/__init__.py
+            /tests/unit/test_protecao_historicos_git.py
+            /tools/protecao_historicos_git.py
+          sparse-checkout-cone-mode: false
           persist-credentials: false
           submodules: false
           lfs: false
@@ -32,8 +35,15 @@ jobs:
       - name: Regressao de metadados sinteticos
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -B -m unittest -v tests.unit.test_protecao_historicos_git
-      - name: Recusar novos historicos rastreados e modificacoes dos legados
+        run: |
+          test ! -e tools/historico_chaves.json
+          test ! -e tools/historico_excluidos.json
+          python -B -m unittest -v tests.unit.test_protecao_historicos_git
+      - name: Inspecionar todos os commits introduzidos
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: python -B tools/protecao_historicos_git.py
+          HISTORICO_GIT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HISTORICO_GIT_HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
+        run: >-
+          python -B tools/protecao_historicos_git.py
+          --evento "$GITHUB_EVENT_NAME" --base "$HISTORICO_GIT_BASE" --head "$HISTORICO_GIT_HEAD"
