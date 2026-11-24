@@ -26,12 +26,16 @@ ATUALIZACAO = {
 _SEM_CORPO = object()
 
 
-def _requisicao(porta, metodo, destino, corpo=_SEM_CORPO, *, preparar_fixture=False):
+def _requisicao(porta, metodo, destino, corpo=_SEM_CORPO, *, preparar_fixture=False, formulario=False):
     headers = {"Accept": "application/json"}
     dados = None
     if corpo is not _SEM_CORPO:
-        headers["Content-Type"] = "application/json"
-        dados = json.dumps(corpo).encode("utf-8")
+        if formulario:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+            dados = urlencode(corpo).encode("ascii")
+        else:
+            headers["Content-Type"] = "application/json"
+            dados = json.dumps(corpo).encode("utf-8")
     if preparar_fixture:
         headers["Authorization"] = "Bearer owner"
     conexao = HTTPConnection(HOST, porta, timeout=10)
@@ -76,17 +80,20 @@ def _expirar_token_emulado(token):
     return f"{cabecalho}.{prazo_vencido}."
 
 
+def _verificar_emuladores():
+    ambiente_esperado = {
+        "GCLOUD_PROJECT": PROJETO,
+        "FIREBASE_AUTH_EMULATOR_HOST": f"{HOST}:{AUTH_PORTA}",
+        "FIREBASE_DATABASE_EMULATOR_HOST": f"{HOST}:{DATABASE_PORTA}",
+    }
+    if any(os.environ.get(nome) != valor for nome, valor in ambiente_esperado.items()):
+        raise RuntimeError("Execute a suíte via emulators:exec no projeto demo-seagbh-authz.")
+
+
 class FirebaseAutorizacaoTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        ambiente_esperado = {
-            "GCLOUD_PROJECT": PROJETO,
-            "FIREBASE_AUTH_EMULATOR_HOST": f"{HOST}:{AUTH_PORTA}",
-            "FIREBASE_DATABASE_EMULATOR_HOST": f"{HOST}:{DATABASE_PORTA}",
-        }
-        if any(os.environ.get(nome) != valor for nome, valor in ambiente_esperado.items()):
-            raise RuntimeError("Execute a suíte via emulators:exec no projeto demo-seagbh-authz.")
-
+        _verificar_emuladores()
         comum = cls._criar_conta("comum")
         admin = cls._criar_conta("admin")
         status, _ = _auth("update", {

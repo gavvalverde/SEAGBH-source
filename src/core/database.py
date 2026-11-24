@@ -169,6 +169,7 @@ class Database:
             Exception: Se não conseguir conectar ao banco de dados
         """
         self._sqlite_protegido = banco_sqlite_protegido is not None
+        self.banco_backup_protegido: Path | None = None
         self._fechamento_gui_iniciado = False
         if self._sqlite_protegido:
             self._inicializar_sqlite_protegido(banco_sqlite_protegido)
@@ -247,6 +248,7 @@ class Database:
                 raise RuntimeError("sqlite_protegido_wal_indisponivel")
             self._criar_tabelas()
             self._atualizar_estrutura()
+            self.banco_backup_protegido = sessao.banco
         except BaseException:
             try:
                 sessao.fechar()

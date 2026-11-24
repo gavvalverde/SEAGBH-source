@@ -1,5 +1,9 @@
 {
-    "python.analysis.extraPaths": ["src"],
+    "python.analysis.extraPaths": [
+        "src"
+    ],
     "python.envFile": "${workspaceFolder}/.env",
-    "terminal.integrated.cwd": "${workspaceFolder}/src"
+    "terminal.integrated.cwd": "${workspaceFolder}/src",
+    "git.autofetch": true,
+    "git.pruneOnFetch": true
 }
