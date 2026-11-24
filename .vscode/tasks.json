@@ -1,0 +1,42 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Git: Atualizar branch atual (pull seguro)",
+            "type": "process",
+            "command": "git",
+            "args": [
+                "pull",
+                "--ff-only"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false
+            }
+        },
+        {
+            "label": "Git: Consultar atualizações (fetch)",
+            "type": "process",
+            "command": "git",
+            "args": [
+                "fetch",
+                "--prune",
+                "origin"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared",
+                "clear": false
+            }
+        }
+    ]
+}
