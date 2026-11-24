@@ -2,8 +2,8 @@
 
 ## Estado entregue e contratos observados
 
-src/core/restauracao_sqlite.py somente inspeciona e planeja. Não há executor,
-migração, publicação ou limpeza. A UI permanece bloqueada pela 04D1.
+src/core/restauracao_sqlite.py somente inspeciona e planeja. O executor
+experimental é separado e está descrito na seção 04D2K5. A UI permanece bloqueada pela 04D1.
 Os workflows existentes permanecem inalterados. A CI isolada da barreira está
 definida em .github/workflows/sqlite-barreira-ci.yml; não integra clientes reais.
 
@@ -59,7 +59,7 @@ continua NAO_COMPROVADA.
 O plano distingue esses estados dos impedimentos do destino e da ausência de
 prova de exclusividade. Mesmo sem riscos locais detectados, compatibilidade e
 exclusividade continuam sendo impedimentos. Todo plano exige nova validação
-antes de qualquer execução futura, que não existe nesta entrega.
+antes de qualquer execução. O executor experimental refaz as verificações.
 
 Caminhos relativos, parent traversal, UNC/dispositivos Windows e componentes
 com symlinks/reparse points são recusados. A inspeção detecta identidade por
@@ -459,7 +459,7 @@ usa um driver simulado. A mudança prepara a próxima etapa de ciclo de vida
 dos workers e da GUI. O comportamento padrão e o bloqueio da restauração
 continuam como antes.
 
-## Proposta 04D2B — integração e recuperação ainda não implementadas
+## Proposta 04D2B — integração e recuperação operacionais
 
 O [inventário 04D2B3](inventario-conexoes-sqlite.md) detalha os acessos
 operacionais, os limites do piloto de conexão do PR #62 e a sequência de
@@ -566,6 +566,97 @@ retenção do resgate; protocolo de quarentena/publicação/diário; fronteira d
 reabertura; recuperação assistida; integração e empacotamento da ferramenta.
 
 Publicar a pré-validação não autoriza essas mudanças e não habilita a UI.
+
+## 04D2K5 — executor restrito a bancos sintéticos
+
+O [executor](../src/core/executor_restauracao_sqlite.py) oferece três operações.
+O chamador cria um diretório temporário dedicado com
+`criar_ambiente_restauracao_teste()`, prepara os bancos de origem e destino
+sintéticos e fornece à função `restaurar_sqlite_teste` os caminhos absolutos
+de origem, destino e do novo arquivo de resgate. As três árvores precisam
+ser disjuntas, com diretórios já existentes abaixo da raiz criada.
+`recuperar_restauracao_teste` recebe o mesmo ambiente, destino e resgate.
+Preserve o diretório e seu identificador para retomar um ensaio interrompido.
+
+### Escopo e compatibilidade
+
+- A raiz fica diretamente no diretório temporário do sistema e é verificada por
+  uma marca criada junto com o ambiente. Cada arquivo precisa ter a marca
+  SQLite `APPLICATION_ID_TESTE`, gravada pelo teste que o criou. Os caminhos
+  passam pelos validadores existentes, incluindo recusa de links, aliases,
+  volume Windows não fixo e arquivos fora da raiz. O contrato pressupõe
+  árvores de teste privadas e estáveis.
+- Sob nova concessão exclusiva do destino, o executor revalida origem, destino
+  e condições do preflight. A compatibilidade exige integridade física e FKs,
+  o `sqlite_schema` exato do DDL SQLite atual, `user_version=0` e as classes
+  de valores, datas e estados usados pelo código atual. Isso inclui as
+  constraints, chaves e índices implícitos do DDL. A prova é intencionalmente
+  estreita. Esquemas históricos, objetos extras e formatações equivalentes do
+  DDL ficam fora deste ensaio. O preflight continua consultivo.
+- A concessão impede a substituição enquanto um participante cooperativo
+  mantém o destino aberto. Origem e artefatos preparados também precisam
+  permanecer fechados e estáveis. A execução recusa `-wal`, `-shm`,
+  `-journal`, marcadores legados no destino e cabeçalho em WAL sem
+  auxiliares. Os arquivos auxiliares são preservados. O ensaio inclui um WAL
+  real com commit pendente de checkpoint. [SQLite e arquivos ativos](https://sqlite.org/howtocorrupt.html)
+
+O backup protegido do PR #82 usa a mesma identidade canônica quando abre o
+banco de destino como origem do snapshot. Os testes pausam uma cópia real no
+callback da API SQLite e verificam que tanto a restauração quanto a retomada
+recusam a concessão exclusiva. Na direção inversa, o backup protegido é recusado
+durante a confirmação da troca e volta a funcionar após a liberação.
+
+### Ordem de execução e retomada
+
+O resgate é criado exclusivamente, como cópia byte a byte do banco antigo
+independente. O executor faz o mesmo para o substituto em arquivo irmão do
+destino. Ambos passam por validação e comparação de SHA-256. A intenção registra
+a revisão do formato, os hashes antigo e novo e o caminho relativo do resgate.
+O diário é publicado antes da troca. Após nova comparação dos bytes e ausência
+de auxiliares, o executor publica o substituto com uma única troca de nome,
+confirma o hash e encerra o diário. O resgate permanece disponível.
+
+| Resultado | Significado |
+| --- | --- |
+| `sucesso` | O novo conteúdo foi publicado ou reconhecido na retomada. O resgate foi validado |
+| `recusada` | A verificação de caminhos, compatibilidade ou exclusividade impediu a tentativa |
+| `falha_recuperavel` | O hash antigo foi confirmado. Caso a intenção já exista, a retomada verifica os artefatos e encerra o diário |
+| `intervencao_manual` | O estado final ficou incerto ou uma validação impediu encerrar o diário com segurança |
+
+A retomada adquire sua própria concessão. Com resgate íntegro e diário válido,
+ela reconhece o banco antigo ou o novo pelo hash, remove apenas seu substituto
+verificado que restou e encerra o diário. A retomada nunca grava o banco
+de destino. Se ele estiver ausente, for um terceiro estado ou o resgate divergir,
+preserva as evidências. Preparação órfã sem diário exige inspeção manual.
+Depois da remoção do diário, uma chamada de retomada sem artefatos retorna
+`sem_diario`. Uma falha antes da intenção pode deixar resgate incompleto.
+Use `resgate_validado` para distinguir esse caso e um caminho de resgate novo
+para outra tentativa. Mantenha outros consumidores do banco de teste fechados
+enquanto houver uma operação interrompida.
+
+### Persistência e evidência
+
+- O conteúdo de resgate, substituto e diário passa por `fsync`. No Linux,
+  a publicação usa `os.replace` no mesmo diretório e sincroniza os diretórios
+  de resgate e destino nos pontos do protocolo. No Windows, a troca usa
+  `MoveFileExW` com `REPLACE_EXISTING | WRITE_THROUGH` sem permitir cópia entre
+  volumes. A sincronização portável de diretório permanece uma limitação no
+  Windows. [Linux fsync](https://man7.org/linux/man-pages/man2/fsync.2.html) · [Windows MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)
+- A suíte usa bancos temporários e falhas injetadas de escrita e sincronização.
+  Um subprocesso sai abruptamente imediatamente antes e depois da troca. Isso
+  exercita a sobrevivência do diário e a retomada após morte do processo. Falha
+  de energia, falha do SO, perda de metadados e comportamento de cache e mídia
+  continuam sem validação experimental. Atomicidade do nome e durabilidade são
+  propriedades distintas.
+- Os testes estão em `tests.unit.test_restauracao_sqlite`, já incluído nas
+  matrizes Windows e Linux de Python 3.12 da pré-validação e da barreira.
+
+Para habilitar a restauração na interface, a etapa operacional precisa
+coordenar todas as conexões e a inicialização com barreira e diário pendente,
+incluindo caminhos legados, workers de backup e ferramentas externas.
+Também precisa validar versões históricas e o procedimento com a coorte WAL,
+definir permissões e retenção do resgate e verificar recuperação nas plataformas
+e filesystems que serão suportados.
 
 ## Referências primárias
 
