@@ -1,8 +1,10 @@
-"""Pré-validação offline: stdlib, bancos sintéticos e nenhuma restauração."""
+"""Pré-validação e restauração experimental offline com bancos sintéticos."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing, ExitStack
 from dataclasses import FrozenInstanceError
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -10,6 +12,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+from threading import Event
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -854,6 +857,62 @@ raise SystemExit(88)
         self.assertEqual(sha(self.destino), self.hash_antigo)
         self.assertFalse(self.resgate.exists())
 
+    def test_backup_protegido_ativo_impede_restauracao_e_recuperacao(self):
+        iniciou_copia = Event()
+        liberar_copia = Event()
+
+        def avancar(_restantes, _total):
+            iniciou_copia.set()
+            if not liberar_copia.wait(10):
+                raise TimeoutError("restauracao nao verificou a barreira")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            tarefa = pool.submit(
+                backup.criar_backup, backend="sqlite", origem=self.destino,
+                pasta=self.origem.parent, protegido=True, progresso=avancar, paginas=1,
+            )
+            try:
+                self.assertTrue(iniciou_copia.wait(10), "backup nao iniciou a copia")
+                for tentar in (self._restaurar, self._recuperar):
+                    with self.subTest(operacao=tentar.__name__):
+                        resultado = tentar()
+                        self._estado(resultado, executor.EstadoRestauracao.RECUSADA, "ocupado")
+                        self.assertEqual(resultado.fase, "barreira_aquisicao")
+                self.assertEqual(sha(self.destino), self.hash_antigo)
+                self.assertFalse(self.resgate.exists())
+                self.assertFalse(self.diario.exists())
+            finally:
+                liberar_copia.set()
+            snapshot = tarefa.result(timeout=10)
+
+        with closing(sqlite3.connect(snapshot.caminho)) as conn:
+            self.assertEqual(conn.execute("SELECT nome FROM equipamentos").fetchone(), ("Antigo",))
+        self._estado(self._restaurar(), executor.EstadoRestauracao.SUCESSO)
+        self.assertEqual(sha(self.destino), self.hash_novo)
+        self.assertEqual(sha(self.resgate), self.hash_antigo)
+
+    def test_restauracao_impede_backup_protegido_ate_confirmar(self):
+        finalizar = executor._finalizar
+        argumentos = dict(backend="sqlite", origem=self.destino, pasta=self.origem.parent,
+                          protegido=True)
+        antes = set(self.origem.parent.iterdir())
+
+        def conferir(arqs):
+            with self.assertRaises(backup.ErroBackup) as negado:
+                backup.criar_backup(**argumentos)
+            self.assertEqual(negado.exception.fase, "barreira")
+            self.assertEqual(negado.exception.codigo, "barreira_ocupado")
+            self.assertEqual(set(self.origem.parent.iterdir()), antes)
+            self.assertEqual(sha(self.destino), self.hash_novo)
+            finalizar(arqs)
+
+        with patch.object(executor, "_finalizar", side_effect=conferir) as confirmar:
+            self._estado(self._restaurar(), executor.EstadoRestauracao.SUCESSO)
+        confirmar.assert_called_once()
+        snapshot = backup.criar_backup(**argumentos)
+        with closing(sqlite3.connect(snapshot.caminho)) as conn:
+            self.assertEqual(conn.execute("SELECT nome FROM equipamentos").fetchone(), ("Novo",))
+
     def test_barreira_permanece_exclusiva_ate_publicar(self):
         publicar = executor._publicar
 
@@ -955,6 +1014,10 @@ raise SystemExit(88)
         self.assertEqual(sha(self.resgate), self.hash_antigo)
         self.assertFalse(self.diario.exists())
 
+        self._estado(self._recuperar(), executor.EstadoRestauracao.RECUSADA, "sem_diario")
+        self.assertEqual(sha(self.destino), self.hash_novo)
+        self.assertEqual(sha(self.resgate), self.hash_antigo)
+
     def test_recuperacao_preserva_terceiro_estado_para_intervencao(self):
         self._interromper_processo(apos_publicacao=True)
         with closing(sqlite3.connect(self.destino)) as conn:
@@ -1015,6 +1078,32 @@ raise SystemExit(88)
         self.assertTrue(self.diario.exists())
         self.assertEqual(sha(self.destino), self.hash_novo)
         self.assertEqual(self.resgate.read_bytes(), b"resgate adulterado")
+
+    def test_diario_adulterado_preserva_evidencias(self):
+        self._interromper_processo(apos_publicacao=False)
+        original = self.diario.read_bytes()
+        registro = json.loads(original)
+        registro["novo"] = "0" * 64
+        casos = ((b"{", "JSONDecodeError"),
+                 (json.dumps(registro).encode(), "substituto_diverge_do_diario"))
+        for dados, codigo in casos:
+            with self.subTest(codigo=codigo):
+                self.diario.write_bytes(dados)
+                resultado = self._recuperar()
+                self._estado(resultado, executor.EstadoRestauracao.INTERVENCAO_MANUAL, codigo)
+                self.assertEqual(resultado.fase, "recuperacao")
+                self.assertEqual(self.diario.read_bytes(), dados)
+                self.assertEqual(sha(self.destino), self.hash_antigo)
+                self.assertEqual(sha(self.resgate), self.hash_antigo)
+                self.assertEqual(sha(self.substituto), self.hash_novo)
+
+        self.diario.write_bytes(original)
+        self._estado(self._recuperar(), executor.EstadoRestauracao.FALHA_RECUPERAVEL,
+                     "original_preservado")
+        self._estado(self._recuperar(), executor.EstadoRestauracao.RECUSADA, "sem_diario")
+        self.assertEqual(sha(self.destino), self.hash_antigo)
+        self.assertEqual(sha(self.resgate), self.hash_antigo)
+        self.assertFalse(self.substituto.exists())
 
     def test_caminhos_sobrepostos_ou_fora_do_ambiente_sao_recusados(self):
         casos = (

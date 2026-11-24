@@ -600,6 +600,12 @@ Preserve o diretório e seu identificador para retomar um ensaio interrompido.
   auxiliares. Os arquivos auxiliares são preservados. O ensaio inclui um WAL
   real com commit pendente de checkpoint. [SQLite e arquivos ativos](https://sqlite.org/howtocorrupt.html)
 
+O backup protegido do PR #82 usa a mesma identidade canônica quando abre o
+banco de destino como origem do snapshot. Os testes pausam uma cópia real no
+callback da API SQLite e verificam que tanto a restauração quanto a retomada
+recusam a concessão exclusiva. Na direção inversa, o backup protegido é recusado
+durante a confirmação da troca e volta a funcionar após a liberação.
+
 ### Ordem de execução e retomada
 
 O resgate é criado exclusivamente, como cópia byte a byte do banco antigo
