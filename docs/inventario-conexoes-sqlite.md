@@ -229,13 +229,37 @@ download pode demorar a reagir ao cancelamento durante I/O bloqueado. O
 atualizador é iniciado depois da drenagem. Se falhar ao iniciar nessa
 etapa, a GUI informa a falha e conclui o fechamento já confirmado.
 
-O backup fica indisponível no modo protegido. Uma integração futura
-precisa adquirir a concessão compartilhada para a identidade canônica do
-banco antes de abrir a origem e mantê-la até o fim da Backup API e o
-fechamento da conexão de origem. O lock do catálogo protege os artefatos
-separadamente. O encerramento cobre os recursos controlados pela GUI.
-Processos externos, clientes legados, falhas permanentes de driver e
-encerramentos forçados pelo sistema permanecem fora dessa garantia.
+## Backup com concessão compartilhada (04D2K6)
+
+Em uma janela de homologação com `banco_sqlite_protegido`, o diálogo
+envia ao worker o caminho canônico da sessão principal e usa o catálogo
+`Backups` ao lado desse banco. O worker abre sua própria conexão de
+origem, em modo somente leitura, por meio de `criar_backup(protegido=True)`.
+Chamadas sem a opção usam o fluxo legado. A janela padrão continua usando
+`Database()`, `get_db_path()` e o catálogo de backups da instalação.
+
+O serviço adquire a concessão compartilhada da origem antes do lock de
+catálogo, e só então abre as conexões do snapshot. A Backup API lê
+transações confirmadas, inclusive no WAL. Após a cópia, o serviço fecha
+o staging e a conexão de origem, então libera a concessão. Validação,
+publicação e retenção usam somente arquivos do catálogo e continuam
+serializadas pelo lock de catálogo. Retenção isolada e validação de
+artefatos fechados não adquirem concessão da origem.
+
+Uma concessão exclusiva impede iniciar a cópia protegida. Se fechar a
+origem falhar, o serviço retorna `FechamentoOrigemPendente` e conserva
+a concessão. O chamador deve repetir `erro.fechar()` na thread que iniciou
+o backup. O worker Qt aguarda esse pedido na própria thread, e a janela
+adia a saída até o worker terminar. O backup que falhou no fechamento
+fica sem publicação, mesmo quando uma nova tentativa consegue fechar.
+Cancelamento e prazos são cooperativos entre passos, inclusive com o WAL.
+Uma operação de disco bloqueada pode atrasar a saída.
+
+A ativação por padrão depende da migração dos caminhos operacionais e
+ferramentas restantes para a mesma identidade de barreira e da validação
+do encerramento e da concorrência nos ambientes distribuídos. A cobertura
+cooperativa depende da adesão dos processos que abrem a origem. O backup
+protegido não habilita a restauração.
 
 ## Limites desta auditoria
 

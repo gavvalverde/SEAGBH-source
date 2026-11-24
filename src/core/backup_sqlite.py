@@ -11,6 +11,8 @@ sobrescreve em ambos; criar o destino com O_EXCL e depois copiar exporia parcial
 Sem suporte a hard links, a operação falha, sem fallback para cópia/replace.
 Um lock exclusivo serializa criação/retenção nesta pasta; após crash, um lock
 remanescente exige investigação manual, nunca remoção automática.
+O modo protegido adquire uso compartilhado da origem antes desse lock e
+mantém a concessão até confirmar o fechamento da leitura.
 
 O prazo/cancelamento é cooperativo: verificado entre passos SQLite, consultas e
 blocos de hash. Não interrompe uma syscall de disco, fsync ou callback bloqueado.
@@ -22,7 +24,7 @@ ou proteção contra outro processo do mesmo usuário adulterando a pasta.
 
 from __future__ import annotations
 
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, ExitStack
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import hashlib
@@ -38,9 +40,12 @@ from typing import Callable, Iterator
 from urllib.parse import quote
 from uuid import uuid4
 
+from .barreira_sqlite import ErroBarreira
+from .conexao_sqlite_protegida import FechamentoPendente, _reservar_origem_backup
+
 
 __all__ = [
-    "ErroBackup", "ValidacaoBackup", "ResultadoBackup", "ResultadoRetencao",
+    "ErroBackup", "FechamentoOrigemPendente", "ValidacaoBackup", "ResultadoBackup", "ResultadoRetencao",
     "criar_backup", "validar_backup", "aplicar_retencao",
 ]
 
@@ -67,6 +72,14 @@ class ErroBackup(Exception):
         self.erro_sqlite = getattr(causa, "sqlite_errorcode", None)
         self.avisos: tuple[str, ...] = ()
         super().__init__(f"Backup não concluído: fase={fase}; código={codigo}.")
+
+
+class FechamentoOrigemPendente(ErroBackup):
+    """A origem protegida pode estar aberta. Repetir fechar na thread dona."""
+
+    def __init__(self, fechar: Callable[[], None]):
+        super().__init__("fechamento", "origem_fechamento_pendente")
+        self.fechar = fechar
 
 
 @dataclass(frozen=True)
@@ -351,19 +364,41 @@ def aplicar_retencao(*, backend: str, pasta: str | Path, manter: int = 10,
         raise ErroBackup("retencao", "erro_io", exc) from None
 
 
+def _snapshot(origem, temporario, *, sessao, paginas, avancar):
+    with ExitStack() as recursos:
+        if sessao is None:
+            fonte = recursos.enter_context(closing(_abrir_leitura(origem)))
+        destino = recursos.enter_context(closing(sqlite3.connect(
+            temporario, timeout=0.1, isolation_level=None,
+        )))
+        if sessao is None:
+            fonte.backup(destino, pages=paginas, progress=avancar, sleep=0.05)
+        else:
+            sessao._copiar_backup(destino, abrir_leitura=_abrir_leitura, paginas=paginas,
+                                  progresso=avancar)
+        with closing(destino.execute("PRAGMA journal_mode=DELETE")) as cursor:
+            if cursor.fetchone() != ("delete",):
+                raise ErroBackup("snapshot", "destino_nao_independente")
+
+
 def criar_backup(*, backend: str, origem: str | Path, pasta: str | Path,
                  manter: int | None = 10, prazo: float = 30, paginas: int = 128,
                  cancelar: Callable[[], bool] | None = None,
-                 progresso: Callable[[int, int], None] | None = None) -> ResultadoBackup:
+                 progresso: Callable[[int, int], None] | None = None,
+                 protegido: bool = False) -> ResultadoBackup:
     """Publica snapshot validado; manter=None desabilita retenção.
 
     Não altera dados/journal_mode da origem. Recusa origem em qualquer nível da
     árvore de backups. Cancelamento anterior à publicação não publica nem roda retenção;
     após o hard link, a criação está concluída e falhas posteriores viram avisos.
     O chamador deve apresentar esses avisos (inclusive limpeza/retencão).
+    protegido=True reserva a origem cooperativa antes do catálogo. Uma falha
+    de fechamento interrompe a publicação e exige repetir a limpeza na mesma thread.
     """
     controle = _controle(backend, prazo, cancelar)
     _validar_retencao(manter)
+    if type(protegido) is not bool:
+        raise ErroBackup("argumentos", "modo_protegido_invalido")
     if type(paginas) is not int or paginas < 1 or (progresso is not None and not callable(progresso)):
         raise ErroBackup("argumentos", "progresso_invalido")
     origem = _caminho(origem)
@@ -377,9 +412,13 @@ def criar_backup(*, backend: str, origem: str | Path, pasta: str | Path,
     resultado = None
     fase = "exclusao"
     try:
-        with _exclusao(pasta, avisos):
+        with ExitStack() as protecao, ExitStack() as catalogo:
+            sessao = (protecao.enter_context(_reservar_origem_backup(banco=origem))
+                      if protegido else None)
+            catalogo.enter_context(_exclusao(pasta, avisos))
             try:
                 fase = "snapshot"
+                controle.verificar(fase)
                 staging = Path(tempfile.mkdtemp(prefix=".seagbh-staging-", dir=pasta))
                 temporario = staging / "snapshot.partial"
                 fd = os.open(temporario, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -391,12 +430,12 @@ def criar_backup(*, backend: str, origem: str | Path, pasta: str | Path,
                         progresso(restantes, total)
                     controle.verificar("snapshot")
 
-                with closing(_abrir_leitura(origem)) as fonte:
-                    with closing(sqlite3.connect(temporario, timeout=0.1,
-                                                isolation_level=None)) as destino:
-                        fonte.backup(destino, pages=paginas, progress=avancar, sleep=0.05)
-                        if destino.execute("PRAGMA journal_mode=DELETE").fetchone() != ("delete",):
-                            raise ErroBackup("snapshot", "destino_nao_independente")
+                try:
+                    _snapshot(origem, temporario, sessao=sessao, paginas=paginas, avancar=avancar)
+                finally:
+                    # Fecha uma única vez aqui. Se falhar, o dono registrado
+                    # mantém a concessão e o catálogo sai independentemente.
+                    protecao.close()
                 fase = "validacao"
                 validacao = _validar(temporario, controle)
                 fase = "publicacao"
@@ -423,6 +462,10 @@ def criar_backup(*, backend: str, origem: str | Path, pasta: str | Path,
                 resultado = replace(resultado, retencao=retencao)
             elif manter is not None:
                 avisos.append("retencao_nao_executada")
+    except FechamentoPendente as exc:
+        erro = FechamentoOrigemPendente(exc.fechar)
+    except ErroBarreira as exc:
+        erro = ErroBackup("barreira", "barreira_" + exc.codigo, exc)
     except ErroBackup as exc:
         if resultado is None:
             erro = exc
