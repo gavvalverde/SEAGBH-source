@@ -1,0 +1,7 @@
+# Dados administrativos locais. Nao afeta arquivos JA rastreados pelo Git.
+# O check historico-git impede alteracoes nos blobs legados publicados.
+historico*.json*
+historico*.sqlite3*
+historico*.db*
+historico*.backup*
+originais.sqlite3*

@@ -1,0 +1,49 @@
+name: Proteger historicos administrativos no Git
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  inventario:
+    name: historico-git
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout sem credenciais persistidas
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          sparse-checkout: |
+            /tests/__init__.py
+            /tests/unit/__init__.py
+            /tests/unit/test_protecao_historicos_git.py
+            /tools/protecao_historicos_git.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+          submodules: false
+          lfs: false
+      - name: Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Regressao de metadados sinteticos
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: |
+          test ! -e tools/historico_chaves.json
+          test ! -e tools/historico_excluidos.json
+          python -B -m unittest -v tests.unit.test_protecao_historicos_git
+      - name: Inspecionar todos os commits introduzidos
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+          HISTORICO_GIT_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HISTORICO_GIT_HEAD: ${{ github.event.pull_request.head.sha || github.event.after }}
+        run: >-
+          python -B tools/protecao_historicos_git.py
+          --evento "$GITHUB_EVENT_NAME" --base "$HISTORICO_GIT_BASE" --head "$HISTORICO_GIT_HEAD"
