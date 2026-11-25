@@ -8,8 +8,12 @@ on:
       - "src/main_qt.py"
       - "src/ui/consulta_database_thread.py"
       - "src/ui/dialogs_utils.py"
+      - "src/ui/dialogs.py"
       - "src/ui/main_window.py"
       - "src/ui/tab_dashboard.py"
+      - "src/ui/tab_equipamentos.py"
+      - "src/ui/tab_eventos.py"
+      - "src/ui/tab_manutencao.py"
       - "src/core/__init__.py"
       - "src/core/atualizacao.py"
       - "src/core/barreira_sqlite.py"
@@ -21,6 +25,7 @@ on:
       - "tests/unit/test_backup_ui.py"
       - "tests/unit/test_database_sqlite_protegido.py"
       - "tests/unit/test_encerramento_gui.py"
+      - "tests/unit/test_movimentacoes_ui.py"
       - "tests/unit/test_restauracao_bloqueada_ui.py"
       - "tests/unit/test_backup_sqlite.py"
       - "tests/requirements-backup-ui.txt"
@@ -133,6 +138,7 @@ jobs:
           for modulos in (
               ["tests.unit.test_backup_ui", "tests.unit.test_restauracao_bloqueada_ui"],
               ["tests.unit.test_encerramento_gui"],
+              ["tests.unit.test_movimentacoes_ui"],
               ["tests.unit.test_backup_sqlite"],
           ):
               subprocess.run([*comando, "-m", "unittest", "-v", *modulos],

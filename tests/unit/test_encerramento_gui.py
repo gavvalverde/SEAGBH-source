@@ -572,16 +572,18 @@ class EncerramentoGUI(unittest.TestCase):
             self._aguardar(lambda: self.sair.called)
         self.assertEqual(estado, [self.raiz, None, False, ("fechou", self.gui)])
 
-    def test_database_legado_fecha_cursor_e_conexao_mesmo_com_commit_falho(self):
+    def test_database_legado_repete_fechamento_falho_sem_commit(self):
         db = database.Database.__new__(database.Database)
-        db._sqlite_protegido = db._fechamento_gui_iniciado = False
+        db._sqlite_protegido = False
+        db._cursor_pendente = db._conexao_pendente = None
         operacoes = Mock()
         db.conn, db.cursor = operacoes.conn, operacoes.cursor
-        db.conn.commit.side_effect = sqlite3.OperationalError("commit sintético")
-        with self.assertLogs("core.database", level="ERROR"):
+        operacoes.conn.close.side_effect = [sqlite3.OperationalError("close sintético"), None]
+        with self.assertRaisesRegex(sqlite3.OperationalError, "close sintético"):
             db.fechar_para_gui()
+        db.fechar_para_gui()
         self.assertEqual([c[0] for c in operacoes.mock_calls],
-                         ["conn.commit", "cursor.close", "conn.close"])
+                         ["cursor.close", "conn.close", "conn.close"])
         self.assertIsNone(db.conn)
         self.assertIsNone(db.cursor)
 
