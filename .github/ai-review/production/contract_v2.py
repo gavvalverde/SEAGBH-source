@@ -24,6 +24,9 @@ MAX_REFUTATION_BYTES = 200000
 MAX_REFUTATION_CANDIDATE_RESERVE_BYTES = 50000
 MAX_COMPLETION_TOKENS = 4096
 MAX_TOTAL_USD = 0.20
+# v1 is a frozen offline regression path. Only the active v2 route changes.
+PROVIDER_ENDPOINT = "chutes/int4"
+OUTPUT_USD_M_CEILING = 1.80
 MAX_CANDIDATES = 12
 
 
@@ -268,11 +271,11 @@ def make_payload(pinned, plan, chunk, *, candidates=None):
             },
         },
         "provider": {
-            "only": [runner.PRODUCTION_PROVIDER], "allow_fallbacks": False,
+            "only": [PROVIDER_ENDPOINT], "allow_fallbacks": False,
             "require_parameters": True,
             "max_price": {
                 "prompt": runner.PRODUCTION_INPUT_USD_M_CEILING,
-                "completion": runner.PRODUCTION_OUTPUT_USD_M_CEILING,
+                "completion": OUTPUT_USD_M_CEILING,
             },
         },
     }
@@ -328,7 +331,7 @@ def worst_case_usd(payloads, *, reserve_refutation=True):
         completion += MAX_COMPLETION_TOKENS
     estimate = (
         input_bytes * runner.PRODUCTION_INPUT_USD_M_CEILING +
-        completion * runner.PRODUCTION_OUTPUT_USD_M_CEILING
+        completion * OUTPUT_USD_M_CEILING
     ) / 1_000_000
     if estimate > MAX_TOTAL_USD:
         raise Problem("v2_total_budget")

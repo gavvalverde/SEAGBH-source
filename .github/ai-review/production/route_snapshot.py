@@ -6,9 +6,13 @@ It never fetches a catalog, reads credentials, or sends an inference request.
 
 from decimal import Decimal, InvalidOperation
 
-MODEL = "moonshotai/kimi-k2.6"
-PIN = "baidu"
-CAPS_USD_PER_MILLION = {"prompt": Decimal("0.42"), "completion": Decimal("1.75")}
+from contract_v2 import PROVIDER_ENDPOINT as PIN, OUTPUT_USD_M_CEILING
+from runner import PRODUCTION_MODEL as MODEL, PRODUCTION_INPUT_USD_M_CEILING
+
+CAPS_USD_PER_MILLION = {
+    "prompt": Decimal(str(PRODUCTION_INPUT_USD_M_CEILING)),
+    "completion": Decimal(str(OUTPUT_USD_M_CEILING)),
+}
 REQUIRED_ADVERTISED = frozenset({"reasoning", "max_tokens", "temperature", "structured_outputs"})
 
 
@@ -25,7 +29,7 @@ def inspect_snapshot(snapshot: dict) -> dict:
         tag = endpoint.get("tag") if isinstance(endpoint, dict) else None
         if not isinstance(tag, str) or not tag:
             raise ValueError("catalog endpoint tag missing")
-        if tag.split("/", 1)[0] != PIN:
+        if tag != PIN:
             continue
         pricing = endpoint.get("pricing")
         rates = {}

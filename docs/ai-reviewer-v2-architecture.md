@@ -49,7 +49,8 @@ fazer o quality gate parecer verde.
    uma refutação adicional e custo agregado estimado máximo de US$0,20;
    descoberta limitada a 90 KB por chamada e refutação integral a 200 KB,
    com reserva de 50 KB para candidatos e preflight ANTES do primeiro gasto.
-   Kimi K2.6/Baidu, non-thinking, sem retries pagos ocultos.
+   Kimi K2.6/`chutes/int4`, non-thinking, sem retries pagos ocultos.
+   [Contrato e limites de ativação da rota K68-C](k68-c-rota-chutes.md).
 5. Publicação única após releitura do HEAD, marker de deduplicação e
    confirmação. pull_request_target executa exclusivamente scripts do
    workflow SHA trusted; nenhum código de PR é executado.

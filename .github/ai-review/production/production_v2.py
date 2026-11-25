@@ -233,7 +233,7 @@ def main():
             "published": outcome.published,
             "model_calls_attempted": outcome.model_calls_attempted,
             "requested_model": runner.PRODUCTION_MODEL,
-            "requested_provider": runner.PRODUCTION_PROVIDER}
+            "requested_provider": contract.PROVIDER_ENDPOINT}
     if outcome.http_failure is not None:
         diag["http_service"] = outcome.http_failure.service
         diag["http_category"] = outcome.http_failure.category

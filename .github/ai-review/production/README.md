@@ -38,8 +38,12 @@ kill-switch.
 
 The trusted `runner.py` CLI delegates to `production_v2.main()`. The v1
 `run_review` API and historical tests remain available for regression tests.
-The model remains Kimi K2.6 via Baidu/OpenRouter, non-thinking, at most 4,096
-completion tokens per request with explicit routing price ceilings.
+The v2 contract pins Kimi K2.6 to `chutes/int4` on OpenRouter, non-thinking,
+at most 4,096 completion tokens per request, with ceilings of US$0.42/M input
+and US$1.80/M output. Keep the automation disabled until contract validation
+and data-handling approval. The historical Actions display name still says
+Baidu; v1's offline regression contract is unchanged. See
+[the K68-C routing and privacy note](../../../docs/k68-c-rota-chutes.md).
 
 `planning_v2.py` validates every patch from a fixed-SHA compare and partitions
 large hunks without silently dropping source. Only added NEW lines receive
