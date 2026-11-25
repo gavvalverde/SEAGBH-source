@@ -49,6 +49,7 @@ jobs:
           "$PY" -B .github/ai-review/production/test_runner.py
           "$PY" -B .github/ai-review/production/test_planning_v2.py
           "$PY" -B .github/ai-review/production/test_production_v2.py
+          "$PY" -B .github/ai-review/production/test_semantic_controls_v2.py
           "$PY" -B .github/ai-review/production/test_route_snapshot.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
           "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
@@ -91,6 +92,7 @@ jobs:
             'test_runner.py',
             'test_planning_v2.py',
             'test_production_v2.py',
+            'test_semantic_controls_v2.py',
             'test_route_snapshot.py'
           )) {
             & $py -B (Join-Path '.github/ai-review/production' $test)
