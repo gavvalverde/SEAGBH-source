@@ -17,7 +17,7 @@ from urllib.parse import quote
 import core
 import evidence
 import quality_gate
-from transport import HTTPS, Problem, REASONING_CONTROL_CODES, decode
+from transport import HTTPS, HttpFailure, Problem, REASONING_CONTROL_CODES, decode, http_problem
 
 REPOSITORY = "gavvalverde/SEAGBH-source"
 BOT_LOGIN = "github-actions[bot]"
@@ -105,6 +105,8 @@ class Outcome:
     quality_short_line_count: int = 0
     quality_invalid_reference_count: int = 0
     coverage: dict[str, int] | None = None
+    http_failure: HttpFailure | None = None
+    model_calls_attempted: int = 0
 
 
 def snapshot(pr, number):
@@ -344,9 +346,9 @@ class GitHub:
              "Content-Type": "application/json"},
             json.dumps(value, ensure_ascii=True).encode() if value is not None else None)
         if reply.status in (401, 403):
-            raise Problem("authentication_error", reply.status)
+            raise http_problem("authentication_error", "api.github.com", reply.status)
         if not 200 <= reply.status <= 299:
-            raise Problem("github_http_error", reply.status)
+            raise http_problem("github_http_error", "api.github.com", reply.status)
         return decode(reply)
 
     def pr(self, number):
