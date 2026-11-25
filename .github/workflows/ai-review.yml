@@ -1,4 +1,4 @@
-name: AI PR Review (Kimi K2.6 Non-Thinking / Baidu)
+name: AI PR Review (Kimi K2.6 Non-Thinking / Chutes)
 
 on:
   pull_request_target:
