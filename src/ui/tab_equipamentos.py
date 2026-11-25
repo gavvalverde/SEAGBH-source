@@ -59,7 +59,7 @@ class TabEquipamentos(QWidget):
         botoes = [
             ("Cadastrar",    "primary", self._on_cadastrar),
             ("Consultar",    None,      self._on_consultar),
-            ("Listar Todos", None,      self.listar_todos),
+            ("Listar Disponíveis", None, self.listar_todos),
             ("Editar",       None,      self._on_editar),
             ("Remover",      "danger",  self._on_remover),
         ]
@@ -76,7 +76,7 @@ class TabEquipamentos(QWidget):
         search_bar = QHBoxLayout()
         search_bar.addWidget(QLabel("Buscar:"))
         self.entry_search = QLineEdit()
-        self.entry_search.setPlaceholderText("Código, nome ou localização…")
+        self.entry_search.setPlaceholderText("Buscar disponíveis por código, nome ou localização…")
         self.entry_search.returnPressed.connect(self._on_filtrar)
         search_bar.addWidget(self.entry_search, stretch=1)
         btn_search = QPushButton("🔍")
@@ -109,9 +109,13 @@ class TabEquipamentos(QWidget):
     # ── Dados ─────────────────────────────────────────────────────────────
 
     def listar_todos(self):
-        """Carrega equipamentos disponíveis (não em manutenção)."""
+        """Carrega equipamentos sem saída pendente ou manutenção ativa."""
         dados = self.db.listar_equipamentos_disponiveis()
         self._popular_tabela(dados)
+
+    def atualizar_disponibilidade(self):
+        """Reconsulta a disponibilidade aplicando o filtro digitado."""
+        self._on_filtrar()
 
     def _on_filtrar(self):
         filtro = self.entry_search.text().strip()

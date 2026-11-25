@@ -12,6 +12,7 @@ on:
       - "tests/unit/test_barreira_sqlite.py"
       - "tests/unit/test_conexao_sqlite_protegida.py"
       - "tests/unit/test_database_sqlite_protegido.py"
+      - "tests/unit/test_integridade_estoque_m1.py"
       - "tests/unit/test_restauracao_sqlite.py"
       - "tests/unit/test_backup_sqlite.py"
       - "docs/restauracao-sqlite-manutencao.md"
@@ -27,6 +28,7 @@ on:
       - "tests/unit/test_barreira_sqlite.py"
       - "tests/unit/test_conexao_sqlite_protegida.py"
       - "tests/unit/test_database_sqlite_protegido.py"
+      - "tests/unit/test_integridade_estoque_m1.py"
       - "tests/unit/test_restauracao_sqlite.py"
       - "tests/unit/test_backup_sqlite.py"
       - "docs/restauracao-sqlite-manutencao.md"
@@ -91,6 +93,7 @@ jobs:
                          env=variables, check=True, timeout=30)
           modules = ["tests.unit.test_barreira_sqlite", "tests.unit.test_conexao_sqlite_protegida",
                      "tests.unit.test_database_sqlite_protegido",
+                     "tests.unit.test_integridade_estoque_m1",
                      "tests.unit.test_restauracao_sqlite",
                      "tests.unit.test_backup_sqlite"]
           print("Tests:", ", ".join(modules), flush=True)

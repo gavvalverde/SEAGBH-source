@@ -120,12 +120,19 @@ class DatabaseSQLiteProtegidoTests(unittest.TestCase):
         equipamento = db.obter_id_por_codigo("EQ1")
         db.editar_equipamento(equipamento, "Microfone 2", "Seguro", "Sala B")
         self.assertEqual(db.obter_nome_equipamento(equipamento), "Microfone 2")
-        primeiro = self.criar_evento(db, [equipamento, equipamento])
-        segundo = self.criar_evento(db, [equipamento])
+        db.cadastrar_equipamento("EQ2", "Mesa", "", "Sala")
+        segundo_item = db.obter_id_por_codigo("EQ2")
+        db.cadastrar_equipamento("EQ3", "Cabo", "", "Sala")
+        terceiro_item = db.obter_id_por_codigo("EQ3")
+        primeiro = self.criar_evento(db, [equipamento, segundo_item])
+        segundo = self.criar_evento(db, [terceiro_item])
         self.assertEqual((primeiro, segundo), (1, 2))
         self.assertEqual(db.contar_pendentes(segundo), 1)
-        self.assertEqual(self.query_externa("SELECT evento_id FROM movimentacoes ORDER BY id"),
-                         [(1,), (1,), (2,)])
+        self.assertEqual(db.contar_pendentes(primeiro), 2)
+        self.assertEqual(self.query_externa(
+            "SELECT evento_id, equipamento_id FROM movimentacoes ORDER BY id"),
+            [(primeiro, equipamento), (primeiro, segundo_item), (segundo, terceiro_item)],
+        )
         db.salvar_notas(segundo, "nota")
         self.assertEqual(db.obter_notas(segundo), "nota")
         db.remover_evento(primeiro)
@@ -193,7 +200,17 @@ class DatabaseSQLiteProtegidoTests(unittest.TestCase):
             yield equipamento
             raise ValueError("iterador sintético")
 
-        for valores, erro in (([equipamento, -1], sqlite3.IntegrityError),
+        db.cadastrar_equipamento("EQ2", "Cabo", "", "")
+        segundo_item = db.obter_id_por_codigo("EQ2")
+        db.cursor.execute(f"""
+            CREATE TRIGGER impedir_segunda_saida BEFORE INSERT ON movimentacoes
+            WHEN NEW.equipamento_id = {segundo_item} AND EXISTS (
+                SELECT 1 FROM movimentacoes WHERE evento_id = NEW.evento_id
+                AND equipamento_id = {equipamento} AND tipo = 'saida'
+            )
+            BEGIN SELECT RAISE(ABORT, 'falha sintética após a primeira saída'); END
+        """)
+        for valores, erro in (([equipamento, segundo_item], sqlite3.IntegrityError),
                               (itens(), ValueError)):
             with self.subTest(erro=erro.__name__), self.assertRaises(erro):
                 self.criar_evento(db, valores)
@@ -366,9 +383,12 @@ class DatabaseSQLiteProtegidoTests(unittest.TestCase):
         self.assertEqual(self.sondar(), "ocupado")
         db.cadastrar_equipamento("EQ1", "Mesa", "", "")
         equipamento = db.obter_id_por_codigo("EQ1")
-        with self.assertRaises(sqlite3.IntegrityError):
+        with self.assertRaises(database.ErroMovimentacao) as erro:
             self.criar_evento(db, [equipamento, -1])
+        self.assertEqual(erro.exception.codigo, "equipamento_inexistente")
         self.assertEqual(db.listar_eventos(), [])
+        self.assertEqual(self.query_externa("SELECT id FROM movimentacoes"), [])
+        self.assertIsInstance(self.criar_evento(db, [equipamento]), int)
 
 
 class DatabasePostgresTests(unittest.TestCase):
@@ -376,7 +396,19 @@ class DatabasePostgresTests(unittest.TestCase):
         driver = Mock()
         conexao = driver.connect.return_value
         cursor = conexao.cursor.return_value
-        cursor.fetchone.side_effect = [(1,), (1,), (73,), (74,)]
+        cursor.fetchone.side_effect = [
+            (1,), (1,),  # duas verificações de coluna na inicialização
+            ("read committed",), (7,), (8,), (73,),
+            ("read committed",), (7,), (8,), (74,),
+        ]
+        estados = [
+            (item, f"EQ{item}", "Mesa", "", "", "25/11/2026",
+             0, None, None, None, None, None, None, None, None)
+            for item in (7, 8)
+        ]
+        cursor.fetchall.side_effect = [
+            [estados[0]], [estados[1]], [estados[0]], [estados[1]],
+        ]
 
         with patch.object(database, "psycopg", driver), \
              patch.object(database, "_load_env_file"), \
@@ -386,13 +418,23 @@ class DatabasePostgresTests(unittest.TestCase):
             db = database.Database()
             self.assertIs(db.conn, conexao)
             self.assertEqual(db.backend, "postgres")
-            self.assertEqual(db.criar_evento("Evento", "Sala", "Equipe", "i", "f", [7]), 73)
+            self.assertEqual(db.criar_evento("Evento", "Sala", "Equipe", "i", "f", [8, 7]), 73)
             chamadas = cursor.execute.call_args_list
             sqls = [call.args[0] for call in chamadas]
             self.assertTrue(any("id SERIAL PRIMARY KEY" in sql for sql in sqls))
             self.assertTrue(any("RETURNING id" in sql and "%s" in sql for sql in sqls))
             self.assertTrue(any(call.args[1][:2] == (73, 7)
                                 for call in chamadas if "INSERT INTO movimentacoes" in call.args[0]))
+            isolamento = sqls.index("SHOW transaction_isolation")
+            travas = [(i, call.args[1]) for i, call in enumerate(chamadas)
+                      if "FOR UPDATE" in call.args[0]]
+            estados_lidos = [(i, call.args[1]) for i, call in enumerate(chamadas)
+                             if "WITH itens AS" in call.args[0]]
+            self.assertEqual([params for _, params in travas], [(7,), (8,)])
+            self.assertEqual([params for _, params in estados_lidos], [(7,), (8,)])
+            self.assertLess(isolamento, travas[0][0])
+            for (i_trava, _), (i_estado, _) in zip(travas, estados_lidos, strict=True):
+                self.assertLess(i_trava, i_estado)
             self.assertEqual(conexao.commit.call_count, 3)
 
             def falhar_movimentacao(sql, *args):
@@ -401,7 +443,7 @@ class DatabasePostgresTests(unittest.TestCase):
 
             cursor.execute.side_effect = falhar_movimentacao
             with self.assertRaisesRegex(RuntimeError, "falha PostgreSQL sintética"):
-                db.criar_evento("Evento", "Sala", "Equipe", "i", "f", [7])
+                db.criar_evento("Evento", "Sala", "Equipe", "i", "f", [8, 7])
             conexao.rollback.assert_called_once_with()
             self.assertEqual(conexao.commit.call_count, 3)
             db.fechar()

@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
-from core.database import Database
+from core.database import Database, ErroMovimentacao
 from ui.dialogs import (
     CriarEventoDialog, RetornoDialog, EditarEventoDialog,
     HistoricoDialog, LocalizacaoDialog,
@@ -233,11 +233,19 @@ class TabEventos(QWidget):
         if not codigo:
             return
 
-        info = self.db.localizar_equipamento(codigo)
+        try:
+            info = self.db.localizar_equipamento(codigo)
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Localização não confirmada", str(erro))
+            return
+        except Exception:
+            QMessageBox.critical(self, "Erro", "Não foi possível consultar a localização.")
+            return
+
         if info is None:
-            QMessageBox.warning(
-                self, "Nenhum Evento Ativo",
-                f"O equipamento {codigo} não está alocado em nenhum evento agendado.",
+            QMessageBox.information(
+                self, "Sem movimentação ativa",
+                f"Nenhuma saída pendente ou manutenção ativa foi encontrada para o código {codigo}.",
             )
             return
 

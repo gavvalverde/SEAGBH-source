@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
-from core.database import Database
+from core.database import Database, ErroMovimentacao
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -72,9 +72,12 @@ class CriarEventoDialog(QDialog):
         bar = QHBoxLayout()
         bar.addStretch()
         btn_notas = QPushButton("📝 Bloco de Anotações")
+        # O Enter do leitor pertence ao campo de código, não aos botões.
+        btn_notas.setAutoDefault(False)
         btn_notas.clicked.connect(self._abrir_notas)
         bar.addWidget(btn_notas)
         btn_finish = QPushButton("✔️ Finalizar Cadastro")
+        btn_finish.setAutoDefault(False)
         btn_finish.setProperty("class", "success")
         btn_finish.clicked.connect(self._finalizar)
         bar.addWidget(btn_finish)
@@ -123,20 +126,29 @@ class CriarEventoDialog(QDialog):
             self.entry_codigo.setFocus()
             return
 
-        # Pendência de retorno
-        mov = self.db.verificar_pendencia_retorno(equip_id)
-        if mov and mov[0] == "saida":
-            nome_evt = self.db.obter_nome_evento(mov[1])
+        # Consulta informativa; a disponibilidade é revalidada ao gravar.
+        try:
+            localizacao = self.db.localizar_equipamento(codigo)
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Equipamento não adicionado", str(erro))
+            self.entry_codigo.clear()
+            self.entry_codigo.setFocus()
+            return
+        except Exception:
+            QMessageBox.critical(self, "Erro", "Não foi possível consultar a disponibilidade do equipamento.")
+            return
+
+        if localizacao and localizacao["tipo"] == "evento":
+            nome_evt = localizacao["nome_evento"]
             QMessageBox.warning(
                 self, "Equipamento Pendente",
-                f"Equipamento {codigo} está pendente de retorno no evento \"{nome_evt}\".",
+                f'Equipamento {codigo} está pendente de retorno no evento "{nome_evt}".',
             )
             self.entry_codigo.clear()
             self.entry_codigo.setFocus()
             return
 
-        # Manutenção
-        if self.db.esta_em_manutencao(equip_id):
+        if localizacao and localizacao["tipo"] == "manutencao":
             QMessageBox.warning(self, "Aviso", "⚠️ Equipamento em manutenção!")
             self.entry_codigo.clear()
             self.entry_codigo.setFocus()
@@ -165,11 +177,22 @@ class CriarEventoDialog(QDialog):
                 self._nome, self._local, self._resp,
                 self._inicio, self._fim, ids, self._conteudo_notas,
             )
-            self.db.registrar_auditoria("eventos", evento_id, "CRIAÇÃO",
-                                        f"{self._nome} | {len(ids)} equips")
-            self.accept()
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Evento não criado", str(erro))
+            return
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Falha ao criar evento: {e}")
+            return
+
+        try:
+            self.db.registrar_auditoria("eventos", evento_id, "CRIAÇÃO",
+                                        f"{self._nome} | {len(ids)} equips")
+        except Exception:
+            QMessageBox.warning(
+                self, "Evento criado",
+                "O evento foi criado, mas não foi possível confirmar o registro na auditoria.",
+            )
+        self.accept()
 
     # ── Bloco de notas ────────────────────────────────────────────────────
 
@@ -231,13 +254,15 @@ class RetornoDialog(QDialog):
         self.entry_codigo.setFocus()
 
     def _carregar_listas(self):
+        pendentes = self.db.pendentes_retorno(self.evento_id)
+        devolvidos = self.db.devolvidos_retorno(self.evento_id)
         self.list_pend.clear()
         self.list_dev.clear()
 
-        for codigo, nome in self.db.pendentes_retorno(self.evento_id):
+        for codigo, nome in pendentes:
             self.list_pend.addItem(f"{nome} ({codigo})")
 
-        for codigo, nome, dt in self.db.devolvidos_retorno(self.evento_id):
+        for codigo, nome, dt in devolvidos:
             self.list_dev.addItem(f"{nome} ({codigo}) – {dt}")
 
     def _on_scan(self):
@@ -245,35 +270,38 @@ class RetornoDialog(QDialog):
         if not codigo:
             return
 
-        # Verifica se está pendente
-        pendentes_textos = [self.list_pend.item(i).text()
-                            for i in range(self.list_pend.count())]
-        if not any(f"({codigo})" in t for t in pendentes_textos):
-            QMessageBox.warning(
-                self,
-                "Aviso",
-                (
-                    f"Código {codigo} não está pendente!\n\n"
-                    "Orientação: confirme se o código foi cadastrado no evento "
-                    "com o mesmo formato (inclusive zeros à esquerda)."
-                ),
-            )
-            self.entry_codigo.clear()
+        try:
+            resultado = self.db.registrar_retorno(self.evento_id, codigo)
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Retorno não registrado", str(erro))
             return
+        except Exception:
+            QMessageBox.critical(
+                self, "Erro", "Não foi possível confirmar o retorno. Confira a lista antes de tentar novamente.",
+            )
+            return
+        finally:
+            self.entry_codigo.clear()
+            self.entry_codigo.setFocus()
 
-        self.db.registrar_retorno(self.evento_id, codigo)
-        self.entry_codigo.clear()
-        self._carregar_listas()
-
-        # Auto-conclusão
-        if self.list_pend.count() == 0:
-            self.db.concluir_evento(self.evento_id)
+        if resultado.registrado and resultado.evento_concluido:
             self._evento_concluido = True
             QMessageBox.information(
                 self, "Concluído",
                 "Todos os equipamentos foram devolvidos.\nEvento marcado como Concluído.",
             )
             self.accept()
+            return
+
+        try:
+            self._carregar_listas()
+        except Exception:
+            QMessageBox.warning(
+                self, "Lista não atualizada",
+                "Não foi possível atualizar a lista. Reabra o registro de retornos para conferi-la.",
+            )
+        if not resultado.registrado:
+            QMessageBox.information(self, "Retorno já registrado", "Nenhum novo retorno foi gravado.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -448,6 +476,7 @@ class AdicionarEquipEventoDialog(QDialog):
         bar = QHBoxLayout()
         bar.addStretch()
         btn_ok = QPushButton("OK")
+        btn_ok.setAutoDefault(False)
         btn_ok.setProperty("class", "primary")
         btn_ok.clicked.connect(self.accept)
         bar.addWidget(btn_ok)
@@ -473,32 +502,31 @@ class AdicionarEquipEventoDialog(QDialog):
             self.entry.setFocus()
             return
 
-        # Já no evento?
-        equips_atuais = self.db.equipamentos_do_evento(self.evento_id)
-        if any(e[0] == codigo for e in equips_atuais):
-            QMessageBox.warning(self, "Aviso", f"Equipamento {codigo} já adicionado!")
-            self.entry.clear()
-            self.entry.setFocus()
-            return
-
-        if self.db.esta_em_manutencao(equip_id):
-            QMessageBox.warning(self, "Aviso", "⚠️ Equipamento em manutenção!")
-            self.entry.clear()
-            self.entry.setFocus()
-            return
-
         try:
             self.db.adicionar_equipamento_evento(self.evento_id, equip_id)
-            nome = self.db.obter_nome_equipamento(equip_id)
-            row = self.tabela.rowCount()
-            self.tabela.insertRow(row)
-            self.tabela.setItem(row, 0, QTableWidgetItem(codigo))
-            self.tabela.setItem(row, 1, QTableWidgetItem(nome))
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Falha: {e}")
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Equipamento não adicionado", str(erro))
+            return
+        except Exception:
+            QMessageBox.critical(
+                self, "Erro", "Não foi possível confirmar a saída. Confira o evento antes de tentar novamente.",
+            )
+            return
+        finally:
+            self.entry.clear()
+            self.entry.setFocus()
 
-        self.entry.clear()
-        self.entry.setFocus()
+        try:
+            nome = self.db.obter_nome_equipamento(equip_id)
+        except Exception:
+            nome = ""
+            QMessageBox.warning(
+                self, "Saída registrada", "A saída foi registrada, mas o nome do equipamento não pôde ser consultado.",
+            )
+        row = self.tabela.rowCount()
+        self.tabela.insertRow(row)
+        self.tabela.setItem(row, 0, QTableWidgetItem(codigo))
+        self.tabela.setItem(row, 1, QTableWidgetItem(nome))
 
 
 # ═══════════════════════════════════════════════════════════════════════════

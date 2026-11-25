@@ -246,8 +246,9 @@ class MainWindow(QMainWindow):
         # Carrega a aba sob demanda se ainda não foi carregada
         if self._encerrando:
             return
+        equipamentos_abertos = indice == 2 and self.tab_equipamentos is not None
         self._carregar_aba_se_necessario(indice)
-        
+
         self.stack.setCurrentIndex(indice)
         for i, btn in enumerate(self._sidebar_btns):
             btn.setProperty("active", "true" if i == indice else "false")
@@ -256,6 +257,8 @@ class MainWindow(QMainWindow):
         # Atualiza dashboard ao voltar para ele
         if atualizar and indice == 0 and self.tab_dashboard:
             self.tab_dashboard.atualizar()
+        elif atualizar and equipamentos_abertos:
+            self.tab_equipamentos.atualizar_disponibilidade()
 
     def _ir_para_seguro(self, indice: int):
         """Wrapper de navegação para evitar queda da aplicação por exceções."""

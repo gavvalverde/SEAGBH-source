@@ -7,6 +7,8 @@ import logging
 import os
 import sys
 import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -16,6 +18,60 @@ try:
     import psycopg  # type: ignore
 except ImportError:
     psycopg = None
+
+
+class ErroMovimentacao(ValueError):
+    """Operação recusada por uma regra de estoque, sem gravar alterações."""
+
+    def __init__(self, codigo: str, mensagem: str):
+        super().__init__(mensagem)
+        self.codigo = codigo
+
+
+@dataclass(frozen=True)
+class ResultadoRetorno:
+    registrado: bool
+    evento_concluido: bool
+
+
+@dataclass
+class _EstadoEquipamento:
+    id: int
+    codigo: str
+    nome: str
+    descricao: str | None
+    localizacao: str | None
+    cadastro: str
+    manutencoes: int
+    movimentos: dict[int, tuple] = field(default_factory=dict)
+
+    def validar_integridade(self) -> None:
+        pendentes = 0
+        for saidas, retornos, invalidos, status, *_ in self.movimentos.values():
+            if (invalidos or saidas != 1 or retornos not in (0, 1)
+                    or status not in ("Agendado", "Concluído")
+                    or (not retornos and status != "Agendado")):
+                break
+            pendentes += not retornos
+        else:
+            if pendentes + self.manutencoes <= 1:
+                return
+        raise ErroMovimentacao(
+            "estado_legado_inconsistente",
+            "Há registros de saída, retorno ou manutenção inconsistentes para "
+            "este equipamento. Revise o histórico antes de movimentá-lo.",
+        )
+
+    def saida_pendente(self) -> int | None:
+        return next((evento for evento, mov in self.movimentos.items() if not mov[1]), None)
+
+    def exigir_disponivel(self) -> None:
+        if self.manutencoes:
+            raise ErroMovimentacao("equipamento_indisponivel", "O equipamento está em manutenção.")
+        if self.saida_pendente() is not None:
+            raise ErroMovimentacao(
+                "equipamento_indisponivel", "O equipamento tem uma saída pendente de retorno."
+            )
 
 
 def _get_app_dir() -> str:
@@ -390,6 +446,113 @@ class Database:
                     raise
         self.conn.commit()
 
+    @contextmanager
+    def _transacao_movimentacao(self):
+        """Serializa escritas SQLite; no PostgreSQL, use os locks de linha abaixo."""
+        try:
+            if self.backend == "sqlite":
+                # Reserva a vez de escrever ANTES de consultar disponibilidade.
+                self.cursor.execute("BEGIN IMMEDIATE")
+            else:
+                # O driver inicia a transação implicitamente; leitores podem já tê-la
+                # aberto. A releitura após o lock exige snapshots por instrução.
+                self.cursor.execute("SHOW transaction_isolation")
+                if self.cursor.fetchone() != ("read committed",):
+                    raise ErroMovimentacao(
+                        "transacao_isolamento_incompativel",
+                        "Esta operação exige isolamento READ COMMITTED no PostgreSQL."
+                    )
+            yield
+            self.conn.commit()
+        except BaseException as erro:
+            self._reverter_operacao_composta(erro)
+            raise
+
+    def _travar_evento(self, evento_id):
+        lock = " FOR UPDATE" if self.backend == "postgres" else ""
+        self.cursor.execute("SELECT status FROM eventos WHERE id = ?" + lock, (evento_id,))
+        row = self.cursor.fetchone()
+        if row is None:
+            raise ErroMovimentacao("evento_inexistente", "O evento não existe mais.")
+        return row[0]
+
+    @staticmethod
+    def _exigir_evento_aberto(status):
+        if status != "Agendado":
+            raise ErroMovimentacao("evento_encerrado", "O evento não está aberto para movimentação.")
+
+    def _travar_equipamento(self, equipamento_id):
+        if self.backend != "postgres":
+            return  # BEGIN IMMEDIATE já protege a janela de checagem/escrita.
+        self.cursor.execute("SELECT id FROM equipamentos WHERE id = ? FOR UPDATE", (equipamento_id,))
+        if self.cursor.fetchone() is None:
+            raise ErroMovimentacao("equipamento_inexistente", "O equipamento não existe mais.")
+
+    def _consultar_estados(self, *, equipamento_id=None, codigo=None, filtro="") -> dict[int, _EstadoEquipamento]:
+        """Uma só leitura para cadastro, movimentos, manutenção e localização."""
+        if equipamento_id is not None:
+            criterio, params = "WHERE id = ?", (equipamento_id,)
+        elif codigo is not None:
+            criterio, params = "WHERE codigo_barras = ?", (codigo,)
+        elif filtro:
+            criterio = "WHERE lower(codigo_barras) LIKE ? OR lower(nome) LIKE ? OR lower(localizacao) LIKE ?"
+            params = (f"%{filtro.lower()}%",) * 3
+        else:
+            criterio, params = "", ()
+        self.cursor.execute(
+            f"""WITH itens AS (
+                    SELECT id, codigo_barras, nome, descricao, localizacao, data_cadastro
+                    FROM equipamentos {criterio}
+                ), pares AS (
+                    SELECT m.equipamento_id, m.evento_id,
+                           SUM(CASE WHEN m.tipo = 'saida' THEN 1 ELSE 0 END) AS saidas,
+                           SUM(CASE WHEN m.tipo = 'retorno' THEN 1 ELSE 0 END) AS retornos,
+                           SUM(CASE WHEN m.tipo IN ('saida', 'retorno') THEN 0 ELSE 1 END) AS invalidos
+                    FROM movimentacoes m JOIN itens i ON i.id = m.equipamento_id
+                    GROUP BY m.equipamento_id, m.evento_id
+                ), ativos AS (
+                    SELECT m.equipamento_id, COUNT(*) AS total
+                    FROM manutencao m JOIN itens i ON i.id = m.equipamento_id
+                    WHERE m.status = 'Em manutenção'
+                    GROUP BY m.equipamento_id
+                )
+                SELECT i.id, i.codigo_barras, i.nome, i.descricao, i.localizacao,
+                       i.data_cadastro, COALESCE(a.total, 0), p.evento_id, p.saidas,
+                       p.retornos, p.invalidos, ev.status, ev.nome_evento,
+                       ev.data_inicio, ev.local_evento
+                FROM itens i
+                LEFT JOIN ativos a ON a.equipamento_id = i.id
+                LEFT JOIN pares p ON p.equipamento_id = i.id
+                LEFT JOIN eventos ev ON ev.id = p.evento_id
+                ORDER BY i.id""",
+            params,
+        )
+        estados = {}
+        for linha in self.cursor.fetchall():
+            item = estados.get(linha[0])
+            if item is None:
+                item = estados[linha[0]] = _EstadoEquipamento(*linha[:7])
+            if linha[7] is not None:
+                item.movimentos[linha[7]] = linha[8:]
+        return estados
+
+    def _estado_para_escrita(self, equipamento_id) -> _EstadoEquipamento:
+        self._travar_equipamento(equipamento_id)
+        estado = self._consultar_estados(equipamento_id=equipamento_id).get(equipamento_id)
+        if estado is None:
+            raise ErroMovimentacao("equipamento_inexistente", "O equipamento não existe mais.")
+        estado.validar_integridade()
+        return estado
+
+    def _equipamentos_para_saida(self, equipamentos_ids):
+        ids = tuple(equipamentos_ids)
+        if len(set(ids)) != len(ids):
+            raise ErroMovimentacao("equipamento_duplicado", "O mesmo equipamento consta mais de uma vez.")
+        # A ordem canônica evita inversão de locks entre eventos no PostgreSQL.
+        for eid in sorted(ids):
+            self._estado_para_escrita(eid).exigir_disponivel()
+        return ids
+
     # ── Eventos ───────────────────────────────────────────────────────────
 
     def listar_eventos(self, apenas_agendados=False) -> list:
@@ -409,8 +572,8 @@ class Database:
         Cria evento + movimentações de saída em uma única transação.
         Retorna o ID do novo evento.
         """
-        try:
-            self.cursor.execute("BEGIN")
+        with self._transacao_movimentacao():
+            ids = self._equipamentos_para_saida(equipamentos_ids)
             if self.backend == "postgres":
                 self.cursor.execute(
                     """INSERT INTO eventos
@@ -428,18 +591,14 @@ class Database:
                 )
                 evento_id = self.cursor.lastrowid
             agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-            for eid in equipamentos_ids:
+            for eid in ids:
                 self.cursor.execute(
                     """INSERT INTO movimentacoes
                        (evento_id, equipamento_id, data_movimentacao, tipo)
                        VALUES (?, ?, ?, 'saida')""",
                     (evento_id, eid, agora),
                 )
-            self.conn.commit()
             return evento_id
-        except BaseException as erro:
-            self._reverter_operacao_composta(erro)
-            raise
 
     def obter_evento(self, evento_id) -> dict | None:
         self.cursor.execute(
@@ -463,15 +622,38 @@ class Database:
         self.conn.commit()
 
     def remover_evento(self, evento_id):
-        self.cursor.execute("DELETE FROM eventos WHERE id = ?", (evento_id,))
-        self.conn.commit()
+        with self._transacao_movimentacao():
+            self._travar_evento(evento_id)
+            self.cursor.execute(
+                "SELECT DISTINCT equipamento_id FROM movimentacoes WHERE evento_id = ? ORDER BY equipamento_id",
+                (evento_id,),
+            )
+            for (equip_id,) in self.cursor.fetchall():
+                self._estado_para_escrita(equip_id)
+            self.cursor.execute("DELETE FROM eventos WHERE id = ?", (evento_id,))
 
-    def concluir_evento(self, evento_id):
+    def _concluir_evento_validado(self, evento_id):
         self.cursor.execute(
-            "UPDATE eventos SET status = 'Concluído' WHERE id = ?",
+            """SELECT equipamento_id FROM movimentacoes WHERE evento_id = ?
+               GROUP BY equipamento_id
+               HAVING SUM(CASE WHEN tipo = 'saida' THEN 1 ELSE 0 END) <> 1
+                   OR SUM(CASE WHEN tipo = 'retorno' THEN 1 ELSE 0 END) <> 1
+                   OR SUM(CASE WHEN tipo IN ('saida', 'retorno') THEN 0 ELSE 1 END) > 0""",
             (evento_id,),
         )
-        self.conn.commit()
+        if self.cursor.fetchone() is not None:
+            raise ErroMovimentacao(
+                "estado_legado_inconsistente",
+                "O evento não pode ser concluído enquanto houver movimentações pendentes ou inconsistentes.",
+            )
+        self.cursor.execute("UPDATE eventos SET status = 'Concluído' WHERE id = ?", (evento_id,))
+
+    def concluir_evento(self, evento_id):
+        with self._transacao_movimentacao():
+            status = self._travar_evento(evento_id)
+            if status != "Concluído":
+                self._exigir_evento_aberto(status)
+                self._concluir_evento_validado(evento_id)
 
     # ── Equipamentos ──────────────────────────────────────────────────────
 
@@ -509,32 +691,19 @@ class Database:
         self.conn.commit()
 
     def obter_id_por_codigo(self, codigo: str) -> int | None:
-        """Busca por texto exato ou equivalência numérica."""
-        codigo = str(codigo).strip()
+        """Busca o código de barras como texto exato, incluindo zeros à esquerda."""
         self.cursor.execute(
-            "SELECT id FROM equipamentos WHERE codigo_barras = ?", (codigo,)
+            "SELECT id FROM equipamentos WHERE codigo_barras = ?", (str(codigo).strip(),)
         )
         row = self.cursor.fetchone()
-        if not row:
-            try:
-                num = int(codigo)
-                self.cursor.execute(
-                    "SELECT id FROM equipamentos WHERE CAST(codigo_barras AS INTEGER) = ?",
-                    (num,),
-                )
-                row = self.cursor.fetchone()
-            except ValueError:
-                pass
         return row[0] if row else None
 
     def esta_em_manutencao(self, equipamento_id: int) -> bool:
-        self.cursor.execute(
-            "SELECT status FROM manutencao WHERE equipamento_id = ? "
-            "ORDER BY id DESC LIMIT 1",
-            (equipamento_id,),
-        )
-        row = self.cursor.fetchone()
-        return bool(row and row[0] == "Em manutenção")
+        estado = self._consultar_estados(equipamento_id=equipamento_id).get(equipamento_id)
+        if estado is None:
+            return False
+        estado.validar_integridade()
+        return estado.manutencoes > 0
 
     # ── Movimentações ─────────────────────────────────────────────────────
 
@@ -569,16 +738,31 @@ class Database:
         )
         return self.cursor.fetchall()
 
-    def registrar_retorno(self, evento_id, codigo_barras):
-        agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-        self.cursor.execute(
-            """INSERT INTO movimentacoes
-               (evento_id, equipamento_id, data_movimentacao, tipo)
-               VALUES (?, (SELECT id FROM equipamentos WHERE codigo_barras = ?),
-                       ?, 'retorno')""",
-            (evento_id, codigo_barras, agora),
-        )
-        self.conn.commit()
+    def registrar_retorno(self, evento_id, codigo_barras) -> ResultadoRetorno:
+        with self._transacao_movimentacao():
+            status = self._travar_evento(evento_id)
+            equip_id = self.obter_id_por_codigo(codigo_barras)
+            if equip_id is None:
+                raise ErroMovimentacao("equipamento_inexistente", "Código de barras não cadastrado.")
+            estado = self._estado_para_escrita(equip_id)
+            if estado.codigo != str(codigo_barras).strip():
+                raise ErroMovimentacao("equipamento_inexistente", "Código de barras não cadastrado.")
+            movimento = estado.movimentos.get(evento_id)
+            if movimento is None:
+                raise ErroMovimentacao("saida_nao_pendente", "Este código não possui saída neste evento.")
+            if movimento[1]:
+                return ResultadoRetorno(False, status == "Concluído")
+            self._exigir_evento_aberto(status)
+            agora = datetime.now().strftime("%d/%m/%Y %H:%M")
+            self.cursor.execute(
+                """INSERT INTO movimentacoes (evento_id, equipamento_id, data_movimentacao, tipo)
+                   VALUES (?, ?, ?, 'retorno')""",
+                (evento_id, equip_id, agora),
+            )
+            concluido = self.contar_pendentes(evento_id) == 0
+            if concluido:
+                self._concluir_evento_validado(evento_id)
+            return ResultadoRetorno(True, concluido)
 
     # ── Eventos atrasados ─────────────────────────────────────────────────
 
@@ -625,16 +809,12 @@ class Database:
         self.conn.commit()
 
     def remover_equipamento(self, equip_id):
-        """Remove equipamento e registros relacionados em cascata."""
-        try:
-            self.cursor.execute("BEGIN")
+        """Preserva a política legada de exclusão para itens não ambíguos."""
+        with self._transacao_movimentacao():
+            self._estado_para_escrita(equip_id)
             self.cursor.execute("DELETE FROM movimentacoes WHERE equipamento_id=?", (equip_id,))
             self.cursor.execute("DELETE FROM manutencao WHERE equipamento_id=?", (equip_id,))
             self.cursor.execute("DELETE FROM equipamentos WHERE id=?", (equip_id,))
-            self.conn.commit()
-        except BaseException as erro:
-            self._reverter_operacao_composta(erro)
-            raise
 
     def obter_equipamento(self, equip_id) -> tuple | None:
         self.cursor.execute(
@@ -644,40 +824,24 @@ class Database:
         return self.cursor.fetchone()
 
     def listar_equipamentos_disponiveis(self, filtro="") -> list:
-        """Lista equipamentos que NÃO estão em manutenção."""
-        if filtro:
-            like = f"%{filtro.lower()}%"
-            self.cursor.execute(
-                """SELECT id, codigo_barras, nome, localizacao, data_cadastro
-                   FROM equipamentos
-                   WHERE id NOT IN (
-                       SELECT equipamento_id FROM manutencao WHERE status='Em manutenção'
-                   )
-                   AND (lower(codigo_barras) LIKE ?
-                     OR lower(nome) LIKE ?
-                     OR lower(localizacao) LIKE ?)
-                   ORDER BY id""",
-                (like, like, like),
-            )
-        else:
-            self.cursor.execute(
-                """SELECT id, codigo_barras, nome, localizacao, data_cadastro
-                   FROM equipamentos
-                   WHERE id NOT IN (
-                       SELECT equipamento_id FROM manutencao WHERE status='Em manutenção'
-                   )
-                   ORDER BY id"""
-            )
-        return self.cursor.fetchall()
+        """Só inclui itens com disponibilidade comprovada e sem vínculo ativo."""
+        disponiveis = []
+        for estado in self._consultar_estados(filtro=filtro).values():
+            try:
+                estado.validar_integridade()
+                estado.exigir_disponivel()
+            except ErroMovimentacao:
+                continue
+            disponiveis.append((estado.id, estado.codigo, estado.nome, estado.localizacao, estado.cadastro))
+        return disponiveis
 
     def verificar_pendencia_retorno(self, equip_id) -> tuple | None:
-        """Retorna (tipo, evento_id) da última movimentação, ou None."""
-        self.cursor.execute(
-            "SELECT tipo, evento_id FROM movimentacoes "
-            "WHERE equipamento_id=? ORDER BY id DESC LIMIT 1",
-            (equip_id,),
-        )
-        return self.cursor.fetchone()
+        estado = self._consultar_estados(equipamento_id=equip_id).get(equip_id)
+        if estado is None:
+            return None
+        estado.validar_integridade()
+        evento = estado.saida_pendente()
+        return ("saida", evento) if evento is not None else None
 
     def obter_nome_evento(self, evento_id) -> str:
         self.cursor.execute("SELECT nome_evento FROM eventos WHERE id=?", (evento_id,))
@@ -702,19 +866,29 @@ class Database:
         return self.cursor.fetchall()
 
     def cadastrar_saida_manutencao(self, equip_id, local_manutencao):
-        self.cursor.execute(
-            """INSERT INTO manutencao
-               (equipamento_id, data_saida, local_manutencao, status)
-               VALUES (?, ?, ?, 'Em manutenção')""",
-            (equip_id, datetime.now().strftime("%d/%m/%Y %H:%M"), local_manutencao),
-        )
-        self.conn.commit()
+        with self._transacao_movimentacao():
+            self._estado_para_escrita(equip_id).exigir_disponivel()
+            self.cursor.execute(
+                """INSERT INTO manutencao
+                   (equipamento_id, data_saida, local_manutencao, status)
+                   VALUES (?, ?, ?, 'Em manutenção')""",
+                (equip_id, datetime.now().strftime("%d/%m/%Y %H:%M"), local_manutencao),
+            )
 
     def registrar_retorno_manutencao(self, manutencao_id):
-        self.cursor.execute(
-            "UPDATE manutencao SET status='Concluído' WHERE id=?", (manutencao_id,),
-        )
-        self.conn.commit()
+        with self._transacao_movimentacao():
+            self.cursor.execute("SELECT equipamento_id FROM manutencao WHERE id = ?", (manutencao_id,))
+            row = self.cursor.fetchone()
+            if row is None:
+                raise ErroMovimentacao("manutencao_nao_pendente", "A manutenção não existe mais.")
+            self._estado_para_escrita(row[0])
+            self.cursor.execute("SELECT status FROM manutencao WHERE id = ?", (manutencao_id,))
+            row = self.cursor.fetchone()
+            if row is None or row[0] != "Em manutenção":
+                raise ErroMovimentacao("manutencao_nao_pendente", "A manutenção não está pendente.")
+            self.cursor.execute(
+                "UPDATE manutencao SET status='Concluído' WHERE id=?", (manutencao_id,),
+            )
 
     def obter_status_manutencao(self, manutencao_id) -> str | None:
         self.cursor.execute("SELECT status FROM manutencao WHERE id=?", (manutencao_id,))
@@ -724,24 +898,36 @@ class Database:
     # ── Movimentações – edição de evento ──────────────────────────────────
 
     def adicionar_equipamento_evento(self, evento_id, equip_id):
-        self.cursor.execute(
-            """INSERT INTO movimentacoes
-               (evento_id, equipamento_id, data_movimentacao, tipo)
-               VALUES (?, ?, ?, 'saida')""",
-            (evento_id, equip_id, datetime.now().strftime("%d/%m/%Y %H:%M")),
-        )
-        self.conn.commit()
+        with self._transacao_movimentacao():
+            self._exigir_evento_aberto(self._travar_evento(evento_id))
+            estado = self._estado_para_escrita(equip_id)
+            if evento_id in estado.movimentos:
+                raise ErroMovimentacao(
+                    "equipamento_duplicado", "O equipamento já tem movimentação neste evento."
+                )
+            estado.exigir_disponivel()
+            self.cursor.execute(
+                """INSERT INTO movimentacoes
+                   (evento_id, equipamento_id, data_movimentacao, tipo)
+                   VALUES (?, ?, ?, 'saida')""",
+                (evento_id, equip_id, datetime.now().strftime("%d/%m/%Y %H:%M")),
+            )
 
     def remover_equipamento_evento(self, evento_id, equip_id):
-        self.cursor.execute(
-            "DELETE FROM movimentacoes WHERE evento_id=? AND equipamento_id=? AND tipo='saida'",
-            (evento_id, equip_id),
-        )
-        self.cursor.execute(
-            "DELETE FROM movimentacoes WHERE evento_id=? AND equipamento_id=? AND tipo='retorno'",
-            (evento_id, equip_id),
-        )
-        self.conn.commit()
+        """Edição explícita legada; mantém as remoções dentro de uma transação."""
+        with self._transacao_movimentacao():
+            self._travar_evento(evento_id)
+            estado = self._estado_para_escrita(equip_id)
+            if evento_id not in estado.movimentos:
+                raise ErroMovimentacao("saida_nao_pendente", "O equipamento não consta neste evento.")
+            self.cursor.execute(
+                "DELETE FROM movimentacoes WHERE evento_id=? AND equipamento_id=? AND tipo='saida'",
+                (evento_id, equip_id),
+            )
+            self.cursor.execute(
+                "DELETE FROM movimentacoes WHERE evento_id=? AND equipamento_id=? AND tipo='retorno'",
+                (evento_id, equip_id),
+            )
 
     def devolvidos_retorno(self, evento_id) -> list:
         self.cursor.execute(
@@ -793,36 +979,26 @@ class Database:
     # ── Localização de equipamento ────────────────────────────────────────
 
     def localizar_equipamento(self, codigo) -> dict | None:
-        """Busca onde o equipamento está (evento agendado ou manutenção)."""
-        equip_id = self.obter_id_por_codigo(codigo)
-        if equip_id is None:
+        """Localiza apenas um vínculo ativo; não confunde o histórico com posição atual."""
+        estados = self._consultar_estados(codigo=str(codigo).strip())
+        estado = next(iter(estados.values()), None)
+        if estado is None:
             return None
-
-        if self.esta_em_manutencao(equip_id):
-            return {"tipo": "manutencao", "codigo": codigo}
-
-        self.cursor.execute(
-            """SELECT ev.nome_evento, ev.data_inicio, ev.local_evento,
-                      ev.status, eq.nome, eq.codigo_barras, eq.descricao
-               FROM movimentacoes m
-               JOIN eventos ev ON m.evento_id = ev.id
-               JOIN equipamentos eq ON m.equipamento_id = eq.id
-               WHERE eq.codigo_barras=? AND m.tipo='saida'
-               ORDER BY m.id DESC LIMIT 1""",
-            (codigo,),
-        )
-        row = self.cursor.fetchone()
-        if not row or row[3].lower() != "agendado":
+        estado.validar_integridade()
+        if estado.manutencoes:
+            return {"tipo": "manutencao", "codigo": estado.codigo}
+        evento = estado.saida_pendente()
+        if evento is None:
             return None
-
+        _, _, _, _, nome_evento, inicio, local_evento = estado.movimentos[evento]
         return {
             "tipo": "evento",
-            "nome_evento": row[0],
-            "data_inicio": row[1],
-            "local_evento": row[2],
-            "nome_equip": row[4],
-            "codigo": row[5],
-            "descricao": row[6],
+            "nome_evento": nome_evento,
+            "data_inicio": inicio,
+            "local_evento": local_evento,
+            "nome_equip": estado.nome,
+            "codigo": estado.codigo,
+            "descricao": estado.descricao,
         }
 
     # ── Relatórios ─────────────────────────────────────────────────────────

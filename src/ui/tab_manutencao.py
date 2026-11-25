@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
-from core.database import Database
+from core.database import Database, ErroMovimentacao
 
 
 class TabManutencao(QWidget):
@@ -143,18 +143,20 @@ class TabManutencao(QWidget):
             QMessageBox.warning(self, "Aviso", f"Código {codigo} não encontrado!")
             return
 
-        if self.db.esta_em_manutencao(equip_id):
-            QMessageBox.warning(self, "Aviso", "⚠️ Equipamento já está em manutenção!")
-            return
-
         try:
             self.db.cadastrar_saida_manutencao(equip_id, local)
-            self.atualizar_lista()
-            self.entry_codigo.clear()
-            self.entry_local.clear()
-            QMessageBox.information(self, "Sucesso", "Saída para manutenção cadastrada!")
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Falha: {e}")
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Saída não registrada", str(erro))
+            return
+        except Exception:
+            QMessageBox.critical(
+                self, "Erro", "Não foi possível confirmar a saída. Confira a lista antes de tentar novamente.",
+            )
+            return
+
+        self.entry_codigo.clear()
+        self.entry_local.clear()
+        self._exibir_movimentacao_confirmada("Saída para manutenção cadastrada!")
 
     # ── Registrar retorno ─────────────────────────────────────────────────
 
@@ -163,14 +165,26 @@ class TabManutencao(QWidget):
         if manut_id is None:
             return
 
-        status = self.db.obter_status_manutencao(manut_id)
-        if status != "Em manutenção":
-            QMessageBox.warning(self, "Aviso", "⚠️ Este equipamento não está em manutenção!")
-            return
-
         try:
             self.db.registrar_retorno_manutencao(manut_id)
+        except ErroMovimentacao as erro:
+            QMessageBox.warning(self, "Retorno não registrado", str(erro))
+            return
+        except Exception:
+            QMessageBox.critical(
+                self, "Erro", "Não foi possível confirmar o retorno. Confira a lista antes de tentar novamente.",
+            )
+            return
+
+        self._exibir_movimentacao_confirmada("Retorno registrado com sucesso!")
+
+    def _exibir_movimentacao_confirmada(self, mensagem: str):
+        try:
             self.atualizar_lista()
-            QMessageBox.information(self, "Sucesso", "Retorno registrado com sucesso!")
-        except Exception as e:
-            QMessageBox.critical(self, "Erro", f"Falha: {e}")
+        except Exception:
+            QMessageBox.warning(
+                self, "Movimentação registrada",
+                f"{mensagem} A lista não pôde ser atualizada. Use Atualizar Lista para conferi-la.",
+            )
+        else:
+            QMessageBox.information(self, "Sucesso", mensagem)
