@@ -100,6 +100,14 @@ def preflight(plans, *, ceiling=None):
     # Per case, production's own gate reserves a full refutation, even if unused.
     for item in plans:
         contract.worst_case_usd(item.discovery)
+        # A dataclass Plan is frozen, but its nested payload dictionaries are not.
+        # Reject any post-planning change to tokens, price caps, routing, schemas,
+        # messages or other wire fields before certifying the batch budget.
+        # Rebuild from the pinned source instead of trusting mutable request data.
+        if (len(item.discovery) != len(item.review_plan.chunks) or
+                any(actual != contract.make_payload(item.pinned, item.review_plan, chunk)
+                    for actual, chunk in zip(item.discovery, item.review_plan.chunks))):
+            raise ValueError("pilot payload contract drift")
     # Recompute the same conservative bound with exact decimal arithmetic; no
     # float rounding may lower the independently enforced batch ceiling.
     inp = Decimal(str(runner.PRODUCTION_INPUT_USD_M_CEILING))
