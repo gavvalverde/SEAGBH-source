@@ -14,7 +14,9 @@ from test_rtdb import PROJETO
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--firebase", default="firebase", help="Caminho do Firebase CLI.")
-    parser.add_argument("--politica-uid", action="store_true", help="Executa a homologação da política por UID.")
+    politicas = parser.add_mutually_exclusive_group()
+    politicas.add_argument("--politica-uid", action="store_true", help="Executa o contrato de referência por UID.")
+    politicas.add_argument("--politica-k70", action="store_true", help="Executa a proposta separada de claims da K70.")
     args = parser.parse_args()
     firebase = shutil.which(args.firebase)
     if not firebase or not shutil.which("java"):
@@ -27,10 +29,13 @@ def main():
         for nome in ("firebase.json", "rules.fixture.json", "test_rtdb.py"):
             shutil.copyfile(fonte / nome, pasta / nome)
         teste = "test_rtdb.py"
-        if args.politica_uid:
-            teste = "test_uid_rtdb.py"
+        if args.politica_uid or args.politica_k70:
+            teste, regras = (
+                ("test_claims_k70.py", "rules.claims-k70.fixture.json") if args.politica_k70
+                else ("test_uid_rtdb.py", "rules.uid.fixture.json")
+            )
             shutil.copyfile(fonte / teste, pasta / teste)
-            shutil.copyfile(fonte / "rules.uid.fixture.json", pasta / "rules.fixture.json")
+            shutil.copyfile(fonte / regras, pasta / "rules.fixture.json")
 
         chaves_sistema = ("PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR")
         env = {chave: os.environ[chave] for chave in chaves_sistema if chave in os.environ}
