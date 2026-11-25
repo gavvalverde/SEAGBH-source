@@ -1,6 +1,6 @@
 # Auditoria e homologação das regras Firebase
 
-Continuação da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70). O [PR #69](https://github.com/gavvalverde/SEAGBH-source/pull/69) usa a infraestrutura dos PRs #79 e #80 incorporada à `main`.
+Continuação da [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70). O [PR #69](https://github.com/gavvalverde/SEAGBH-source/pull/69) foi integrado e usa a infraestrutura dos PRs #79 e #80 incorporada à `main`. Veja o [registro de evidências e aceite pendente](firebase-issue-70-evidencias.md).
 
 O operador forneceu as regras de administrador único baseadas em `auth.uid`. A fixture reproduz esse JSON com uma UID fictícia. A conferência direta da revisão implantada e dos campos reais dos nós públicos cabe ao operador autorizado, pelo procedimento de leitura abaixo.
 
@@ -48,17 +48,17 @@ O Auth Emulator emite ID tokens sem assinatura e os emuladores os aceitam para t
 ## Autorização, implantação e rollback
 
 - O login estabelece a identidade pelo Firebase. A ferramenta exige correspondência exata com `SEAGBH_FIREBASE_ADMIN_UID` para abrir a janela, acessar o histórico e prosseguir após renovar. O RTDB aplica a autorização definitiva de escrita em cada caminho a partir do ID token. [Condições do RTDB](https://firebase.google.com/docs/database/security/rules-conditions)
-- `tools/historico_chaves.json` e `tools/historico_excluidos.json` são lidos sob demanda e gravados em JSON durante operações administrativas. Ambos estão rastreados no Git. Neste checkout, as ACLs incluem concessões herdadas de leitura a grupos amplos. A inspeção desta etapa se limitou à existência, ao rastreamento e às ACLs dos arquivos. O conteúdo e o acesso efetivo por outros usuários ainda precisam de auditoria autorizada.
+- `tools/historico_chaves.json` e `tools/historico_excluidos.json` são lidos sob demanda e gravados em JSON durante operações administrativas. Ambos permaneciam rastreados na revisão `0382a428`. A inspeção original registrou concessões herdadas de leitura a grupos amplos no checkout então avaliado; isso não comprova as ACLs das máquinas instaladas. O [armazenamento privado opt-in](historico-administrativo-privado.md) e a [proteção preventiva no Git](protecao-historicos-publicos.md) não ativam a migração, não restringem a leitura do histórico público anterior e não comprovam as permissões efetivas das máquinas reais.
 - Para proteger os históricos, reserve uma conta operacional individual, restrinja as ACLs do diretório e dos backups a essa conta e às identidades de manutenção necessárias, e teste o acesso com outra conta. Audite cópias e revisões do Git em ambiente restrito. Se houver chaves reais disponíveis a terceiros, avalie exposição e trate reemissão e remoção do histórico do repositório em uma missão de correção separada. A interface controla o acesso da aplicação. A proteção contra leitura pelo sistema operacional depende das ACLs e da remoção de cópias acessíveis.
 
 Antes de qualquer implantação aprovada, registre a revisão das regras em armazenamento restrito e ensaie a mudança e o rollback numa instância de homologação separada. Compare códigos HTTP, formato dos dois GETs anônimos e comportamento em um exemplar de cada versão distribuída. Em especial, um GET de licença recusado entra no caminho offline, com limite de 72 h. Um `200 null` significa exclusão e pode apagar a licença local. Interrompa diante de qualquer regressão, escrita indevida ou PATCH administrativo recusado. Restaure a revisão aprovada de regras em janela controlada, confirme novamente os GETs e a recusa de escrita e verifique que o rollback preserva o papel administrativo. Se a última revisão reabrir uma permissão indevida, mantenha a operação administrativa suspensa até decisão humana.
 
-### Condições para liberar o PR #69
+### Condições para liberar o uso operacional do Gerenciamento
 
 1. Operador aprova a matriz efetiva, incluindo os ancestrais e o esquema dos nós lidos anonimamente, e configura a chave Web do mesmo projeto da instância RTDB e a UID administrativa no perfil autorizado.
 2. A fixture por UID aprova os contratos locais, inclusive PATCH com e sem nó auxiliar, GET legado, validação de IDs e campos na gravação e preservação de papéis na renovação.
 3. Em homologação separada, uma conta comum recebe recusa em licenças, revogações e atualizações. Um administrador consegue executar o PATCH. Os clientes distribuídos consultam a licença individual e o manifesto de atualização sem login administrativo.
 4. Há evidência sobre tokens assinados, expiração e revogação conforme o nível de acesso desejado. O responsável aprova a estratégia de proteção do histórico e o rollback de compatibilidade.
-5. CI e revisões apontam para o HEAD candidato à integração. Se houver atualização da base ou dos arquivos do PR, revalide os contratos afetados na revisão final.
+5. CI e revisões apontam para o candidato à liberação. Se houver atualização da base ou dos arquivos, revalide os contratos afetados na revisão final. O merge do #69 não substitui essa homologação.
 
 A leitura direta da revisão implantada, a exposição de campos reais e a compatibilidade com todo o parque instalado permanecem pendentes. Se houver falha da ferramenta após a atualização, suspenda o uso administrativo e mantenha a política RTDB. Uma reversão não deve recolocar uma versão da ferramenta que permita à conta comum ler os históricos locais.
