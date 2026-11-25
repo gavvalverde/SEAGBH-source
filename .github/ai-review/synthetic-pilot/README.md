@@ -62,8 +62,11 @@ continua **US$ 0,20 por caso**. Usando os limites de US$ 0,42/M entrada,
 US$ 1,80/M saída, 4.096 tokens de conclusão por chamada e a reserva de
 200.000 bytes por refutação, o lote soma **US$ 0,40673736** de preflight.
 Não é cotação de faturamento nem autorização. Um teto explícito menor
-rejeita o lote antes da primeira chamada; o offline não precisa de teto
-autorizado por não ter caminho de cobrança.
+rejeita o lote antes da primeira chamada. O preflight também reconstrói os
+payloads a partir do contrato fixado e rejeita qualquer parâmetro de
+requisição modificado depois do planejamento, inclusive `max_tokens`,
+`max_price`, roteamento, reasoning, schema e conteúdo. O offline não precisa
+de teto autorizado por não ter caminho de cobrança.
 
 Se houver autorização operacional específica no futuro: (1) confirmar a rota,
 o custo e o tratamento de dados no momento da execução; (2) fixar operador,
