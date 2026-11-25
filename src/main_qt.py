@@ -10,6 +10,11 @@ import logging
 # Garante que o diretório src/ esteja no path para imports relativos
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+if __name__ == "__main__" and sys.argv[1:] == ["--seagbh-instalar-atualizacao"]:
+    from core._instalador_atualizacao import executar_worker
+    sys.exit(executar_worker())
+
+
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtGui import QIcon
 from ui.main_window import MainWindow
@@ -103,7 +108,7 @@ def main():
         # Se iniciado após atualização, exibe mensagem e executa rotina pós-update
         if updated_flag:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.information(window, "Atualização Concluída", "O SEAGBH foi atualizado com sucesso!\n\nVocê está usando a versão mais recente.")
+            QMessageBox.information(window, "Atualização instalada", "O executável verificado foi instalado e o SEAGBH foi reiniciado.")
             # Aqui pode-se adicionar outras rotinas pós-atualização se necessário
 
     splash = SplashScreen(on_finished=on_splash_done, duration_ms=3600)

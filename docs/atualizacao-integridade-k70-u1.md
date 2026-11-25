@@ -1,0 +1,30 @@
+# K70-U1: integridade obrigatória e recuperação do atualizador Windows
+
+A [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70) continua aberta. Esta mudança local não altera Firebase, instalações, contas, segredos, artefatos ou permissões implantadas. O SHA-256 compara os bytes com o valor do manifesto, **não autentica quem o publicou**. Autenticidade e metadados assinados são uma [proposta separada](atualizacao-autenticidade-proposta.md).
+
+| Cenário | Antes | K70-U1 |
+| --- | --- | --- |
+| Consulta sem anúncio ou com versão não superior | Sem atualização | Sem atualização; valida o contrato de anúncio não nulo antes de compará-lo |
+| Erro de HTTP/rede ou JSON inválido | Podia parecer atualizado | Rede/HTTP, manifesto inválido e ausência de atualização têm estados e mensagens separados |
+| SHA ausente, vazio ou malformado | Podia baixar e instalar sem verificação | SHA-256 deve ser string de 64 caracteres hexadecimais ASCII. Não pede confirmação de download ou inicia o download do artefato com manifesto inválido |
+| Mesmo tamanho, bytes diferentes; truncamento; cancelamento | Hash opcional; reutilização do caminho por versão | Hash obrigatório independentemente do tamanho. Diretório privado, único por tentativa. Fracasso/cancelamento não fornece artefato instalável |
+| Hash calculado no Gerenciamento | O hash anterior podia permanecer após outro arquivo, erro ou cancelamento | Limpa o valor em toda tentativa, associa ao arquivo selecionado e recalcula antes do envio. Isso não prova que a URL digitada serve aquele arquivo |
+| Aplicação ou bloqueio de executável | Batch tentava copiar por cima; sucesso/reinício não dependiam de cópia verificada | Auxiliar congelado independente; snapshot novo no mesmo volume, trava por pasta de instalação, revalidação a cada tentativa, ReplaceFileW com backup e conferência antes de reiniciar. A UI distingue download verificado de instalação concluída |
+| Reabertura falha depois da troca | Sem recuperação explícita | Cópia anterior preservada, diagnóstico do worker quando possível, recuperação manual. Não tenta desfazer cegamente uma substituição |
+
+## Migração e instalação
+
+1. Antes de liberar o novo cliente, inventariar os manifestos relevantes. A versão deve ser comparável e a URL absoluta HTTPS. Obter o SHA-256 dos **bytes finais** por canal aprovado e validar o download sintético/isolado. Não atualizar regras, publicação ou manifesto real nesta missão. Um cliente K70-U1 recusará manifestos antigos que não cumpram o contrato; clientes instalados antigos não receberão a proteção retroativamente.
+2. Homologar primeiro o caminho de instalação e suas permissões: NTFS local, ancestrais e ACLs verificáveis, conta que possa criar uma área privada e substituir a instalação; sem elevação ou fallback de permissão. Pastas compartilhadas, volumes/ACLs incompatíveis, caminho redirecionado, execução não congelada ou instalação sem escrita devem usar atualização manual por canal autenticado. Staging e instalação não executam scripts baixados.
+3. Depois de fechar o banco, o Qt permanece responsivo enquanto uma thread prepara o instalador uma única vez. O worker é cópia do binário local atual, recebe só uma opção fixa, abre o pedido dentro da sua área e confere a identidade em bytes do binário anterior. O ambiente PyInstaller é reiniciado. O candidato baixado nunca é executado diretamente do diretório de download. A substituição usa o snapshot aprovado no mesmo volume e só considera sucesso após conferir os bytes do destino e backup. Apenas o executável da instalação é substituído; banco e configurações não entram nessa operação.
+4. A trava serializa instaladores cooperantes da mesma pasta. As áreas não protegem contra o próprio usuário da conta, administrador ou software com sua autoridade. O worker repete somente conflitos de compartilhamento reconhecidos, com limite; outras falhas não executam o candidato. Não há prova de disponibilidade do novo app apenas por Popen; o aviso de reinício aparece na própria instância aberta.
+
+## Recuperação e rollback
+
+- Se o helper recusar o pedido ou o diretório antes de validar seu contexto, ele mostra um aviso fixo de falha sem caminho, conteúdo externo ou gravação de diagnóstico na área não confiável.
+- Se o alvo ainda existir após falha de substituição, não o altere automaticamente. Uma exceção pode deixar arquivos em mais de um estado. O worker só tenta restabelecer automaticamente um destino **ausente** se houver backup correspondente ao SHA do executável anterior; a operação falha caso o nome de destino já exista. Não sobrescreve um alvo desconhecido.
+- Em falha de reinício ou saúde da aplicação, preserve a pasta de recuperação e encerre todos os processos da instalação. Use o pedido/diagnóstico e verifique o backup do executável anterior por canal confiável; restaure manualmente sob autorização, conservando cópia do alvo encontrado para investigar. Se não houver backup verificável, use a versão anterior obtida de uma fonte confiável. Nunca desative SHA para contornar uma falha, nem altere Firebase automaticamente.
+- A pasta da tentativa contém o worker e, quando disponível, o backup anterior e o diagnóstico. Ela é preservada mesmo após sucesso; não há poda automática. Se o processo cair e deixar `.seagbh-atualizacao.lock`, não remova a trava antes de confirmar que nenhum instalador está ativo e revisar o estado do alvo e backup. Recuperação após queda de energia e disponibilidade da versão instalada precisam de ensaio separado.
+- A homologação usa bytes inertes e lançamentos simulados. Não há prova por esta etapa de empacotamento, execução efetiva do helper congelado, retomada de serviço, atualização remota, compatibilidade de todo o parque ou operação em produção.
+
+Referências: [Microsoft: ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew) · [PyInstaller: reinício em processo independente](https://pyinstaller.org/en/stable/common-issues-and-pitfalls.html#using-sys-executable-to-spawn-subprocesses-that-outlive-the-application-process-implementing-application-restart).

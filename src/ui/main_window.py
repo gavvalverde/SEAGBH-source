@@ -29,20 +29,34 @@ from ui.dialogs_utils import (
 from core.versao import __version__
 from core.atualizacao import (
     verificar_atualizacao, baixar_atualizacao, validar_aplicacao_atualizacao,
-    aplicar_atualizacao,
+    aplicar_atualizacao, descartar_download, ErroAtualizacao,
 )
+
+
+class _ConsultaAtualizacaoThread(QThread):
+    manifesto = None
+    erro = None
+
+    def run(self):
+        try:
+            self.manifesto = verificar_atualizacao()
+        except ErroAtualizacao as exc:
+            self.erro = exc.codigo
+        except Exception:
+            logging.getLogger(__name__).error("Falha inesperada ao consultar atualização")
+            self.erro = "interno"
 
 
 class _DownloadThread(QThread):
     """Thread para baixar atualização sem travar a UI."""
-    progresso = pyqtSignal(int, int)  # recebido, total
+    progresso = pyqtSignal(int, int)
 
-    def __init__(self, url, destino, sha256_esperado, parent=None):
+    def __init__(self, url, sha256_esperado, parent=None):
         super().__init__(parent)
         self._url = url
-        self.destino = destino
         self._sha256 = sha256_esperado
-        self.sucesso = False
+        self.download = None
+        self.erro = None
         self.cancelado = False
 
     def cancelar(self):
@@ -51,14 +65,33 @@ class _DownloadThread(QThread):
 
     def run(self):
         try:
-            self.sucesso = baixar_atualizacao(
-                self._url, self.destino,
+            self.download = baixar_atualizacao(
+                self._url, self._sha256,
                 progresso_cb=lambda r, t: self.progresso.emit(r, t),
-                sha256_esperado=self._sha256,
                 cancelado=self.isInterruptionRequested,
             )
-        except BaseException:
+        except ErroAtualizacao as exc:
+            self.erro = exc.codigo
+        except Exception:
             logging.getLogger(__name__).error("Falha inesperada no download da atualização")
+            self.erro = "interno"
+
+
+class _AgendamentoAtualizacaoThread(QThread):
+    def __init__(self, download, parent=None):
+        super().__init__(parent)
+        self._download = download
+        self.erro = None
+
+    def run(self):
+        try:
+            aplicar_atualizacao(self._download)
+        except ErroAtualizacao as exc:
+            self.erro = exc.codigo
+        except Exception:
+            self.erro = "agendamento"
+        if self.erro is not None:
+            descartar_download(self._download)
 
 
 class _AtrasosThread(ConsultaDatabaseThread):
@@ -110,6 +143,9 @@ class MainWindow(QMainWindow):
         self._atualizacao_pendente = None
         self._backup_dialog = None
         self._dl_thread = None
+        self._consulta_atualizacao = None
+        self._agendamento_atualizacao = None
+        self._banco_fechado_para_saida = False
 
         self.db = self._abrir_banco()
         try:
@@ -587,63 +623,68 @@ class MainWindow(QMainWindow):
 
     # ── Atualização ───────────────────────────────────────────────────────
 
+    _ERROS_ATUALIZACAO = {
+        "manifesto": "Manifesto de atualização inválido: versão, URL ou SHA-256 ausente ou incorreto.",
+        "transporte": "Não foi possível se comunicar com o serviço de atualizações.",
+        "integridade": "A atualização foi recusada: o arquivo não passou na verificação de integridade.",
+        "armazenamento": "Não foi possível usar uma pasta protegida para a atualização.",
+        "plataforma": "A atualização automática requer o executável instalado (Windows).",
+        "interno": "Não foi possível concluir a operação de atualização.",
+        "agendamento": "Não foi possível iniciar o instalador.",
+    }
+
+    def _avisar_erro_atualizacao(self, codigo):
+        QMessageBox.warning(self, "Atualização", self._ERROS_ATUALIZACAO.get(
+            codigo, self._ERROS_ATUALIZACAO["interno"],
+        ))
+
     def _verificar_atualizacao(self):
-        """Consulta Firebase por nova versão e oferece download."""
-        if self._encerrando or self._dl_thread is not None:
+        if self._encerrando or self._dl_thread is not None or self._consulta_atualizacao is not None:
             return
         self.btn_atualizar.setEnabled(False)
-        self.btn_atualizar.setText("🔄  Verificando…")
-        QApplication.processEvents()
+        self.btn_atualizar.setText("Verificando atualização…")
+        self._consulta_atualizacao = _ConsultaAtualizacaoThread(self)
+        self._consulta_atualizacao.finished.connect(self._consulta_atualizacao_concluida)
+        self._consulta_atualizacao.start()
 
-        if self._encerrando:
+    @pyqtSlot()
+    def _consulta_atualizacao_concluida(self):
+        worker = self._consulta_atualizacao
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._consulta_atualizacao_concluida)
             return
-        try:
-            info = verificar_atualizacao()
-        except Exception as e:
-            import logging
-            logging.error(f"Erro ao verificar atualizações: {e}")
-            info = None
-        finally:
-            self.btn_atualizar.setEnabled(True)
-            self.btn_atualizar.setText("🔄  Atualizações")
-
+        self._consulta_atualizacao = None
+        worker.deleteLater()
+        if self._encerrando:
+            self._continuar_encerramento()
+            return
+        self.btn_atualizar.setEnabled(True)
+        self.btn_atualizar.setText("🔄  Atualizações")
+        if worker.erro:
+            self._avisar_erro_atualizacao(worker.erro)
+            return
+        info = worker.manifesto
         if info is None:
             QMessageBox.information(
-                self, "Atualizações",
-                f"Você já está na versão mais recente (v{__version__}).",
+                self, "Atualizações", f"Nenhuma atualização disponível (v{__version__}).",
             )
             return
 
-        versao = info.get("version", "?")
+        versao = info["version"]
         changelog = info.get("changelog", "Sem detalhes.")
         data = info.get("data", "")
-        url = info.get("url", "")
-        sha256 = info.get("sha256")  # ← Novo: recupera hash para validação
+        dialogo = QMessageBox(self)
+        dialogo.setWindowTitle("Nova Atualização Disponível")
+        dialogo.setTextFormat(Qt.TextFormat.PlainText)
+        dialogo.setText(f"Versão {versao}  ({data})\n\n{changelog}\n\nDeseja baixar e instalar agora?")
+        dialogo.setStandardButtons(QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        dialogo.setDefaultButton(QMessageBox.StandardButton.Yes)
+        if not self._encerrando and dialogo.exec() == QMessageBox.StandardButton.Yes and not self._encerrando:
+            self._iniciar_download(info["url"], versao, sha256=info["sha256"])
 
-        resposta = QMessageBox.question(
-            self,
-            "Nova Atualização Disponível",
-            f"Versão {versao}  ({data})\n\n"
-            f"{changelog}\n\n"
-            f"Deseja baixar e instalar agora?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.Yes,
-        )
-        if self._encerrando or resposta != QMessageBox.StandardButton.Yes:
-            return
-
-        if not url:
-            QMessageBox.warning(self, "Erro", "URL de download não disponível.")
-            return
-
-        self._iniciar_download(url, versao, sha256=sha256)  # ← Passa hash
-
-    def _iniciar_download(self, url: str, versao: str, sha256: str | None = None):
+    def _iniciar_download(self, url: str, versao: str, sha256: str):
         if self._encerrando or self._dl_thread is not None:
             return
-        import tempfile
-        destino = os.path.join(tempfile.gettempdir(), f"SEAGBH_v{versao}.exe")
-
         self._prog = QProgressDialog(
             f"Baixando SEAGBH v{versao}…", "Cancelar", 0, 100, self
         )
@@ -653,7 +694,7 @@ class MainWindow(QMainWindow):
         self._prog.setAutoReset(False)
         self._prog.show()
 
-        self._dl_thread = _DownloadThread(url, destino, sha256, self)
+        self._dl_thread = _DownloadThread(url, sha256, self)
         self._dl_thread.progresso.connect(self._atualizar_progresso)
         self._dl_thread.finished.connect(self._download_concluido)
         self._prog.canceled.connect(self._dl_thread.cancelar)
@@ -680,48 +721,33 @@ class MainWindow(QMainWindow):
         self._prog.deleteLater()
         self._dl_thread = None
         worker.deleteLater()
-        caminho = worker.destino
+        download = worker.download
 
         if self._encerrando or worker.cancelado:
-            if worker.sucesso:
-                self._limpar_download(caminho)
+            if download is not None:
+                descartar_download(download)
             self._continuar_encerramento()
             return
-        if not worker.sucesso:
-            QMessageBox.critical(
-                self, "Erro",
-                "Falha ao baixar a atualização.\n"
-                "Arquivo corrompido ou conexão perdida.\n"
-                "Verifique sua conexão e tente novamente.",
-            )
+        if worker.erro or download is None:
+            self._avisar_erro_atualizacao(worker.erro or "interno")
             return
 
         try:
-            validar_aplicacao_atualizacao(caminho)
-        except RuntimeError as exc:
-            self._limpar_download(caminho)
-            QMessageBox.warning(self, "Atualização", str(exc))
+            validar_aplicacao_atualizacao(download)
+        except ErroAtualizacao as exc:
+            descartar_download(download)
+            self._avisar_erro_atualizacao(exc.codigo)
             return
         QMessageBox.information(
-            self, "Download Concluído",
-            "O download foi concluído com sucesso.\n"
-            "O aplicativo será fechado e reiniciado automaticamente.",
+            self, "Download verificado",
+            "A integridade do download foi verificada. O aplicativo será fechado para tentar instalar a atualização.",
         )
 
         if self._encerrando:
-            self._limpar_download(caminho)
+            descartar_download(download)
             return
-        self._atualizacao_pendente = caminho
+        self._atualizacao_pendente = download
         self.solicitar_saida()
-
-    @staticmethod
-    def _limpar_download(caminho):
-        try:
-            os.remove(caminho)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            logging.getLogger(__name__).warning("Falha ao remover download temporário")
 
     # ── Fechamento limpo ──────────────────────────────────────────────────
 
@@ -780,7 +806,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _continuar_encerramento(self):
         if (not self._encerrando or self.encerramento_confirmado
-                or self._fechamento_principal_pendente):
+                or self._fechamento_principal_pendente or self._agendamento_atualizacao is not None):
             return
 
         # A árvore QObject inclui os diálogos filhos mesmo em janelas próprias.
@@ -792,25 +818,47 @@ class MainWindow(QMainWindow):
             return
 
         if (self._atrasos_thread is not None or self._dl_thread is not None
+                or self._consulta_atualizacao is not None
                 or self._backup_dialog is not None
                 or (self.tab_dashboard is not None and self.tab_dashboard.consultando)):
             return
-        try:
-            self.db.fechar_para_gui()
-        except BaseException:
-            self._fechamento_principal_pendente = True
-            logging.getLogger(__name__).error("Fechamento do banco principal pendente")
-            self._mostrar_fechamento_pendente()
-            return
+        if not self._banco_fechado_para_saida:
+            try:
+                self.db.fechar_para_gui()
+            except BaseException:
+                self._fechamento_principal_pendente = True
+                logging.getLogger(__name__).error("Fechamento do banco principal pendente")
+                self._mostrar_fechamento_pendente()
+                return
+            self._banco_fechado_para_saida = True
 
+        if self._atualizacao_pendente is not None:
+            download, self._atualizacao_pendente = self._atualizacao_pendente, None
+            self._agendamento_atualizacao = _AgendamentoAtualizacaoThread(download, self)
+            self._agendamento_atualizacao.finished.connect(self._agendamento_atualizacao_concluido)
+            self.statusBar().showMessage("Preparando a instalação da atualização…")
+            self._agendamento_atualizacao.start()
+            return
+        self._finalizar_encerramento()
+
+    @pyqtSlot()
+    def _agendamento_atualizacao_concluido(self):
+        worker = self._agendamento_atualizacao
+        if worker is None:
+            return
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._agendamento_atualizacao_concluido)
+            return
+        # Mantém a guarda durante a caixa modal: ela executa um loop próprio.
+        if worker.erro is not None:
+            self._avisar_erro_atualizacao(worker.erro)
+        self._agendamento_atualizacao = None
+        worker.deleteLater()
+        self._finalizar_encerramento()
+
+    def _finalizar_encerramento(self):
         self.encerramento_confirmado = True
         QApplication.instance().removeEventFilter(self)
-        if self._atualizacao_pendente is not None:
-            try:
-                aplicar_atualizacao(self._atualizacao_pendente)
-            except (OSError, RuntimeError):
-                self._limpar_download(self._atualizacao_pendente)
-                QMessageBox.warning(self, "Atualização", "Não foi possível iniciar o instalador.")
         self.close()
         if self._sair_da_aplicacao:
             QTimer.singleShot(0, QApplication.quit)

@@ -59,6 +59,7 @@ from core.firebase_auth import (
     sessao_administrativa_renovavel,
     token_firebase as _get_id_token,
 )
+from core.atualizacao import ErroAtualizacao, validar_manifesto, validar_sha256
 from core.historico_licencas import ErroHistorico, HistoricoLicencas
 from core.licenca import gerar_chave, validar_chave, PLANOS, FIREBASE_URL, DIAS_ALERTA
 
@@ -1632,8 +1633,13 @@ class GerenciamentoClientes(QWidget):
         btn_pub = QPushButton("Publicar no Firebase")
         lay.addWidget(btn_pub)
 
+        arquivo_homologado = None
+
         def _calcular_sha():
             """Abre diálogo para selecionar arquivo .exe e calcula SHA256."""
+            nonlocal arquivo_homologado
+            arquivo_homologado = None
+            edit_sha256.clear()
             arquivo, _ = QFileDialog.getOpenFileName(
                 dlg,
                 "Selecione o arquivo SEAGBH.exe",
@@ -1641,8 +1647,12 @@ class GerenciamentoClientes(QWidget):
                 "Executáveis (*.exe);;Todos os arquivos (*.*)"
             )
             if arquivo:
-                sha256 = _calcular_sha256_arquivo(arquivo)
+                try:
+                    sha256 = validar_sha256(_calcular_sha256_arquivo(arquivo))
+                except ErroAtualizacao:
+                    sha256 = ""
                 if sha256:
+                    arquivo_homologado = arquivo
                     edit_sha256.setText(sha256)
                     info_label.setText(f"SHA256 calculado: {sha256[:32]}...")
                     info_label.setStyleSheet("color: #86EFAC; background: transparent;")
@@ -1654,6 +1664,7 @@ class GerenciamentoClientes(QWidget):
                 info_label.setStyleSheet("color: #FCD34D; background: transparent;")
 
         def _publicar():
+            nonlocal arquivo_homologado
             versao = edit_versao.text().strip()
             url = edit_url.text().strip()
             changelog = edit_changelog.toPlainText().strip()
@@ -1661,6 +1672,17 @@ class GerenciamentoClientes(QWidget):
 
             if not versao or not url or not sha256:
                 info_label.setText("Versão, URL e SHA256 são obrigatórios.")
+                info_label.setStyleSheet("color: #F87171; background: transparent;")
+                return
+
+            try:
+                sha_atual = validar_sha256(_calcular_sha256_arquivo(arquivo_homologado)) if arquivo_homologado else None
+            except ErroAtualizacao:
+                sha_atual = None
+            if sha_atual != sha256:
+                arquivo_homologado = None
+                edit_sha256.clear()
+                info_label.setText("O arquivo selecionado mudou ou não está disponível. Calcule o SHA-256 novamente.")
                 info_label.setStyleSheet("color: #F87171; background: transparent;")
                 return
 
@@ -1673,6 +1695,12 @@ class GerenciamentoClientes(QWidget):
                 "obrigatoria": chk_obrigatoria.isChecked(),
             }
 
+            try:
+                dados = validar_manifesto(dados)
+            except ErroAtualizacao:
+                info_label.setText("Versão, URL HTTPS e SHA-256 válido são obrigatórios.")
+                info_label.setStyleSheet("color: #F87171; background: transparent;")
+                return
             ok = _firebase_put("updates/latest", dados)
             if ok:
                 dlg.accept()

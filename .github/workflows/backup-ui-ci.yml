@@ -16,6 +16,12 @@ on:
       - "src/ui/tab_manutencao.py"
       - "src/core/__init__.py"
       - "src/core/atualizacao.py"
+      - "src/core/_instalador_atualizacao.py"
+      - "src/core/_acl_historico_windows.py"
+      - "src/main_qt.py"
+      - "tools/gerador_chaves.py"
+      - "tests/unit/test_atualizacao_integridade.py"
+      - "tests/unit/test_firebase_auth.py"
       - "src/core/barreira_sqlite.py"
       - "src/core/conexao_sqlite_protegida.py"
       - "src/core/database.py"
@@ -137,7 +143,8 @@ jobs:
           subprocess.run([*comando, "-c", diagnostico], check=True, timeout=30, env=env)
           for modulos in (
               ["tests.unit.test_backup_ui", "tests.unit.test_restauracao_bloqueada_ui"],
-              ["tests.unit.test_encerramento_gui"],
+              ["tests.unit.test_encerramento_gui", "tests.unit.test_atualizacao_integridade",
+                 "tests.unit.test_firebase_auth.FirebaseAuthQtTests.test_publicacao_qt_descarta_hash_ao_reselecionar_falhar_ou_mudar_arquivo"],
               ["tests.unit.test_movimentacoes_ui"],
               ["tests.unit.test_backup_sqlite"],
           ):

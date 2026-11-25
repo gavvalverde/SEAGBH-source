@@ -2,6 +2,7 @@
 
 from http.client import HTTPResponse
 from io import BytesIO
+from hashlib import sha256
 import json
 import os
 from pathlib import Path
@@ -626,34 +627,73 @@ class EncerramentoGUI(unittest.TestCase):
         self.assertEqual(self._sondar_manutencao(), "livre")
 
     def test_download_cancelado_cooperativamente_descarta_dados_parciais(self):
-        caminho = self.raiz / "download-sintetico.exe"
         cancelado = Event()
-        resposta = BytesIO(b"x" * (64 * 1024 + 1))
-        resposta.headers = {"Content-Length": str(len(resposta.getbuffer()))}
-        with patch.object(atualizacao, "urlopen", return_value=resposta):
-            sucesso = atualizacao.baixar_atualizacao(
-                "https://example.invalid/update", str(caminho),
+        conteudo = b"x" * (64 * 1024 + 1)
+        resposta = BytesIO(conteudo)
+        resposta.headers = {"Content-Length": str(len(conteudo))}
+        with patch.object(atualizacao, "urlopen", return_value=resposta), \
+             patch.object(atualizacao, "_validar_ancestrais"), \
+             self.assertRaises(atualizacao.ErroAtualizacao) as erro:
+            atualizacao.baixar_atualizacao(
+                "https://example.invalid/update", sha256(conteudo).hexdigest(), pasta=self.raiz,
                 progresso_cb=lambda *_: cancelado.set(), cancelado=cancelado.is_set,
             )
-        self.assertFalse(sucesso)
+        self.assertEqual(erro.exception.codigo, "cancelado")
         self.assertTrue(cancelado.is_set())
         self.assertTrue(resposta.closed)
-        self.assertFalse(caminho.exists())
+        self.assertEqual(list(self.raiz.glob(".seagbh-atualizacao-*")), [])
 
-    def test_download_truncado_sem_hash_recusa_corpo_e_remove_arquivo(self):
-        caminho = self.raiz / "download-sintetico.exe"
-
+    def test_download_truncado_recusa_corpo_e_remove_arquivo(self):
         class SocketSintetico:
             def makefile(self, *_):
                 return BytesIO(b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nabc")
 
         resposta = HTTPResponse(SocketSintetico())
         resposta.begin()
-        with patch.object(atualizacao, "urlopen", return_value=resposta):
-            sucesso = atualizacao.baixar_atualizacao("https://example.invalid/update", str(caminho))
-        self.assertFalse(sucesso)
-        self.assertFalse(caminho.exists())
+        resposta.url = "https://example.invalid/update"
+        with patch.object(atualizacao, "urlopen", return_value=resposta), \
+             patch.object(atualizacao, "_validar_ancestrais"), \
+             self.assertRaises(atualizacao.ErroAtualizacao) as erro:
+            atualizacao.baixar_atualizacao(
+                "https://example.invalid/update", sha256(b"abcdef").hexdigest(), pasta=self.raiz,
+            )
+        self.assertEqual(erro.exception.codigo, "integridade")
+        self.assertEqual(list(self.raiz.glob(".seagbh-atualizacao-*")), [])
         self.assertTrue(resposta.closed)
+
+    def test_botao_atualizacoes_diferencia_manifesto_transporte_e_ausencia(self):
+        janela = self._janela()
+        avisos = [
+            (atualizacao.ErroAtualizacao("manifesto"), "Manifesto"),
+            (atualizacao.ErroAtualizacao("transporte"), "comunicar"),
+            (None, None),
+        ]
+        for resposta, mensagem in avisos:
+            with self.subTest(mensagem=mensagem):
+                self.avisar.reset_mock()
+                self.informar.reset_mock()
+                with patch.object(main_window, "verificar_atualizacao",
+                                  **({"side_effect": resposta} if resposta else {"return_value": None})), \
+                     patch.object(main_window, "baixar_atualizacao") as baixar:
+                    QTest.mouseClick(janela.btn_atualizar, Qt.MouseButton.LeftButton)
+                    self._aguardar(lambda: janela._consulta_atualizacao is None)
+                if mensagem:
+                    self.assertIn(mensagem, self.avisar.call_args.args[2])
+                    self.informar.assert_not_called()
+                else:
+                    self.assertIn("Nenhuma atualização", self.informar.call_args.args[2])
+                    self.avisar.assert_not_called()
+                baixar.assert_not_called()
+
+    def test_download_integridade_vai_para_mensagem_dedicada_sem_reiniciar(self):
+        janela = self._janela()
+        with patch.object(main_window, "baixar_atualizacao", side_effect=atualizacao.ErroAtualizacao("integridade")), \
+             patch.object(main_window, "aplicar_atualizacao") as instalar:
+            janela._iniciar_download("https://example.invalid/update", "999.0.0", "a" * 64)
+            self._aguardar(lambda: janela._dl_thread is None)
+            instalar.assert_not_called()
+        self.assertIn("integridade", self.avisar.call_args.args[2])
+        self.assertFalse(janela._encerrando)
 
     def test_atualizacao_aguarda_worker_e_sessao_principal_antes_de_aplicar(self):
         iniciou, liberar, bloquear = self._bloqueio()
@@ -662,15 +702,16 @@ class EncerramentoGUI(unittest.TestCase):
         self._aguardar(iniciou.is_set)
         estado = []
 
-        def aplicar(caminho):
-            estado.extend([Path(caminho).parent, janela._dl_thread,
+        def aplicar(download):
+            estado.extend([download.caminho.parent, janela._dl_thread,
                            janela.tab_dashboard.consultando, self.eventos[-1]])
 
         with patch.object(tempfile, "gettempdir", return_value=str(self.raiz)), \
-             patch.object(main_window, "baixar_atualizacao", return_value=True), \
+             patch.object(main_window, "baixar_atualizacao", return_value=atualizacao.Download(
+                 self.raiz / "arquivo.bin", "a" * 64)), \
              patch.object(main_window, "validar_aplicacao_atualizacao"), \
              patch.object(main_window, "aplicar_atualizacao", side_effect=aplicar) as instalar:
-            janela._iniciar_download("https://example.invalid/update", "sintetico")
+            janela._iniciar_download("https://example.invalid/update", "sintetico", "a" * 64)
             self._aguardar(lambda: janela._encerrando)
             instalar.assert_not_called()
             liberar.set()
@@ -678,6 +719,56 @@ class EncerramentoGUI(unittest.TestCase):
             instalar.assert_called_once()
             self._aguardar(lambda: self.sair.called)
         self.assertEqual(estado, [self.raiz, None, False, ("fechou", self.gui)])
+
+    def test_agendamento_lento_mantem_qt_ativo_e_fecha_apos_resultado(self):
+        iniciou, liberar, bloquear = self._bloqueio()
+        janela = self._janela()
+        download = atualizacao.Download(self.raiz / "arquivo.bin", "a" * 64)
+        threads = []
+
+        def agendar(_):
+            threads.append(get_ident())
+            bloquear()
+
+        with patch.object(main_window, "aplicar_atualizacao", side_effect=agendar) as chamada:
+            janela._atualizacao_pendente = download
+            janela.solicitar_saida()
+            try:
+                self._aguardar(iniciou.is_set)
+                responsivo = Event()
+                QTimer.singleShot(0, responsivo.set)
+                self._aguardar(responsivo.is_set)
+                self.assertFalse(janela.encerramento_confirmado)
+                self.sair.assert_not_called()
+                self.assertEqual(len(threads), 1)
+                self.assertNotEqual(threads[0], self.gui)
+                self.assertEqual(self.eventos, [("abriu", self.gui), ("fechou", self.gui)])
+                self.assertFalse(janela.close())
+                chamada.assert_called_once_with(download)
+            finally:
+                liberar.set()
+            self._aguardar(lambda: janela.encerramento_confirmado and self.sair.called)
+            chamada.assert_called_once_with(download)
+            self.assertEqual(self.eventos, [("abriu", self.gui), ("fechou", self.gui)])
+
+    def test_falha_de_agendamento_avisa_antes_de_sair_sem_refazer_trabalho(self):
+        janela = self._janela()
+        download = atualizacao.Download(self.raiz / "arquivo.bin", "a" * 64)
+        estados = []
+
+        def avisar(*_):
+            estados.append((janela.encerramento_confirmado, self.sair.called, get_ident()))
+            janela.solicitar_saida()
+            self.app.processEvents()
+
+        self.avisar.side_effect = avisar
+        with patch.object(main_window, "aplicar_atualizacao", side_effect=OSError) as chamada:
+            janela._atualizacao_pendente = download
+            janela.solicitar_saida()
+            self._aguardar(lambda: janela.encerramento_confirmado and self.sair.called)
+            chamada.assert_called_once_with(download)
+        self.assertEqual(estados, [(False, False, self.gui)])
+        self.assertEqual(self.eventos, [("abriu", self.gui), ("fechou", self.gui)])
 
     def test_database_legado_repete_fechamento_falho_sem_commit(self):
         db = database.Database.__new__(database.Database)
