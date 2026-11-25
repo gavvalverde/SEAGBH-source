@@ -6,7 +6,9 @@ Uso:
   python .github/ai-review/benchmarks/harness/run_bench.py --case off-001
   python .github/ai-review/benchmarks/harness/run_bench.py --filter security
 """
-import argparse, json, os, subprocess, sys, tempfile, time
+import argparse, json, math, os, subprocess, sys, tempfile, time
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
@@ -16,6 +18,7 @@ RESULTS_DIR = BASE.parent / "results"
 sys.path.insert(0, str(BASE))
 from prompt_builder import build_request, parse_response, MODEL, TEMPERATURE, MAX_TOKENS
 
+LEGACY_RESULT_VERSION = "2.0.0"
 MAX_AI_CALLS = 2
 MAX_CURL_TIMEOUT = 120
 LINE_TOLERANCE = 3
@@ -90,43 +93,124 @@ def _sanitize(obj):
     return obj
 
 
+def _strict_json(raw):
+    def unique(pairs):
+        obj = {}
+        for key, value in pairs:
+            if key in obj:
+                raise ValueError("duplicate JSON key")
+            obj[key] = value
+        return obj
+
+    def reject_constant(_):
+        raise ValueError("non-finite JSON constant")
+
+    def finite(raw_number):
+        value = float(raw_number)
+        if not math.isfinite(value):
+            reject_constant(raw_number)
+        return value
+
+    return json.loads(raw, object_pairs_hook=unique, parse_constant=reject_constant,
+                      parse_float=finite)
+
+
+def _completed_legacy_review(raw_body):
+    """Classify the manual legacy benchmark response, not the shared pilot parser."""
+    try:
+        data = _strict_json(raw_body)
+    except (ValueError, RecursionError):
+        return None, "invalid_json", None
+    if not isinstance(data, dict):
+        return None, "invalid_schema", None
+    usage = data.get("usage")
+    tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
+    if type(tokens) is not int or tokens < 0:
+        tokens = None
+    if "error" in data:
+        return None, "api_error", tokens
+    choices = data.get("choices")
+    if not isinstance(choices, list) or len(choices) != 1 or not isinstance(choices[0], dict):
+        return None, "invalid_schema", tokens
+    choice = choices[0]
+    if choice.get("finish_reason") != "stop":
+        return None, "incomplete", tokens
+    message = choice.get("message")
+    if not isinstance(message, dict) or not isinstance(message.get("content"), str):
+        return None, "invalid_schema", tokens
+    try:
+        review = _strict_json(message["content"])
+    except (ValueError, RecursionError):
+        return None, "invalid_json", tokens
+    if not isinstance(review, dict):
+        return None, "invalid_schema", tokens
+    if "analysis_status" in review and review["analysis_status"] != "complete":
+        return None, "incomplete", tokens
+    findings = review.get("findings")
+    summary = review.get("summary")
+    confidence = ("low", "medium", "high")
+    if (not isinstance(summary, str) or not summary.strip() or not isinstance(findings, list)
+            or ("confidence_overall" in review and review["confidence_overall"] not in confidence)):
+        return None, "invalid_schema", tokens
+    for item in findings:
+        if (not isinstance(item, dict)
+                or any(not isinstance(item.get(key), str) or not item[key].strip()
+                       for key in ("severity", "category", "path", "title", "body", "evidence"))
+                or item["severity"] not in ("informational", "minor", "important", "critical")
+                or ("confidence" in item and item["confidence"] not in confidence)
+                or ("line" in item and item["line"] is not None
+                    and (type(item["line"]) is not int or item["line"] < 1))):
+            return None, "invalid_schema", tokens
+    scope = review.get("reviewed_scope")
+    if scope is not None and not isinstance(scope, str):
+        return None, "invalid_schema", tokens
+    return _sanitize(review), None, tokens
+
+
 def call_openrouter(request):
-    req_path = Path(tempfile.mktemp(suffix=".json"))
-    req_path.write_text(json.dumps(request), encoding="utf-8")
-    t0 = time.time()
-    ai_calls = 0
-    http_code = raw_body = ""
-    while ai_calls < MAX_AI_CALLS:
-        ai_calls += 1
-        print(f"    Call {ai_calls}/{MAX_AI_CALLS}...")
-        cmd = ["curl", "-s", "-w", "\n%{http_code}", "--max-time", str(MAX_CURL_TIMEOUT),
-               "-X", "POST", "https://openrouter.ai/api/v1/chat/completions",
-               "-H", f"Authorization: Bearer {os.environ.get('OPENROUTER_API_KEY', '')}",
-               "-H", "Content-Type: application/json", "-d", f"@{req_path}"]
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=MAX_CURL_TIMEOUT + 10)
-        elapsed = round(time.time() - t0, 2)
-        lines = proc.stdout.strip().split("\n")
-        http_code = lines[-1] if lines else ""
-        raw_body = "\n".join(lines[:-1])
-        if http_code in ("429",) or (http_code.isdigit() and int(http_code) >= 500):
-            if ai_calls < MAX_AI_CALLS:
-                print(f"    HTTP {http_code}, retry in 5s...")
+    t0 = time.monotonic()
+    started = 0
+    encoded = json.dumps(request).encode("utf-8")
+
+    def result(review=None, code=None, tokens=None, error=None):
+        return {"parsed_review": review, "http_code": code, "ai_calls": started,
+                "elapsed": round(time.monotonic() - t0, 2),
+                "input_bytes": len(encoded), "output_tokens": tokens,
+                "error_reason": error}
+
+    with tempfile.TemporaryDirectory(prefix="legacy-review-") as root:
+        req_path = Path(root) / "request.json"
+        req_path.write_bytes(encoded)
+        while started < MAX_AI_CALLS:
+            started += 1
+            print(f"    Call {started}/{MAX_AI_CALLS}...")
+            cmd = ["curl", "-s", "-w", "\n%{http_code}", "--max-time", str(MAX_CURL_TIMEOUT),
+                   "-X", "POST", "https://openrouter.ai/api/v1/chat/completions",
+                   "-H", f"Authorization: Bearer {os.environ.get('OPENROUTER_API_KEY', '')}",
+                   "-H", "Content-Type: application/json", "-d", f"@{req_path}"]
+            try:
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=MAX_CURL_TIMEOUT + 10)
+            except subprocess.TimeoutExpired:
+                return result(error="timeout")
+            except (OSError, UnicodeError):
+                return result(error="transport_error")
+            if proc.returncode:
+                return result(error="timeout" if proc.returncode == 28 else "transport_error")
+            body, sep, code = proc.stdout.rpartition("\n")
+            if not sep or not _is_http_status(code):
+                return result(error="transport_error")
+            if (code == "429" or int(code) >= 500) and started < MAX_AI_CALLS:
+                print(f"    HTTP {code}, retry in 5s...")
                 time.sleep(5)
                 continue
-        break
-    resp_data = {}
-    try:
-        resp_data = json.loads(raw_body)
-    except json.JSONDecodeError:
-        pass
-    usage = resp_data.get("usage")
-    output_tokens = usage.get("completion_tokens") if isinstance(usage, dict) else None
-    return {"parsed_review": parse_response(resp_data), "http_code": http_code,
-            "ai_calls": ai_calls, "elapsed": elapsed,
-            "input_bytes": req_path.stat().st_size if req_path.exists() else 0,
-            "output_tokens": output_tokens,
-            "raw_response": _sanitize(resp_data) if resp_data else None,
-            "error_reason": _classify_error(http_code, resp_data, output_tokens)}
+            if code != "200":
+                return result(code=code, error="http_error")
+            review, error, tokens = _completed_legacy_review(body)
+            return result(review=review, code=code, tokens=tokens, error=error)
+
+
+def _is_http_status(code):
+    return len(code) == 3 and code.isascii() and code.isdecimal() and 100 <= int(code) <= 599
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -352,36 +436,84 @@ def one_to_one_match(findings, gt):
     return 1, len(findings) - 1, 0, [scored[0][2]]
 
 
-def match_findings_multi(findings, expected_gts):
-    """Match global: lista de findings vs lista de ground truths.
+@dataclass
+class _MatchEdge:
+    """A unit-capacity residual edge and the index of its reverse edge."""
 
-    Cada expected gt deve ter expected.find=True.
-    Atribuição gulosa um-para-um por score decrescente.
+    target: int
+    reverse: int
+    cost: int
+    available: bool = True
+
+
+def match_findings_multi(findings, expected_gts):
+    """Retorna (TP, FP, FN, findings associados) para gabaritos positivos.
+
+    Prefere cardinalidade máxima e depois soma máxima de match_score.
+    Empates são determinísticos pela ordem de entrada e percurso estável;
+    os findings associados são devolvidos na ordem original.
     """
-    if not expected_gts:
-        return len(findings), 0, 0, []
-    if not findings:
-        return 0, len(expected_gts), 0, []
-    pairs = []
-    for j, gt in enumerate(expected_gts):
-        for i, f in enumerate(findings):
-            s = match_score(f, gt)
-            if s >= 0:
-                pairs.append((s, i, j, f))
-    pairs.sort(key=lambda x: -x[0])
-    used_f = set()
-    used_g = set()
-    tp = 0
-    matched = []
-    for s, fi, gi, f in pairs:
-        if fi not in used_f and gi not in used_g:
-            tp += 1
-            used_f.add(fi)
-            used_g.add(gi)
-            matched.append(f)
-    fp = len(findings) - len(used_f)
-    fn = len(expected_gts) - len(used_g)
-    return tp, fp, fn, matched
+    nf, ng = len(findings), len(expected_gts)
+    if not nf or not ng:
+        return 0, nf, ng, []
+
+    # Bipartite unit flow: source -> findings -> truths -> sink.
+    # Minimize negative score at each flow size. Residual reverse edges let a
+    # later path move an existing pair to make room for another finding.
+    source, sink = nf + ng, nf + ng + 1
+    graph = [[] for _ in range(sink + 1)]
+
+    def add_edge(start, end, cost):
+        forward = _MatchEdge(end, len(graph[end]), cost)
+        graph[end].append(_MatchEdge(start, len(graph[start]), -cost, False))
+        graph[start].append(forward)
+        return forward
+
+    pairs = [[] for _ in findings]
+    for fi, finding in enumerate(findings):
+        add_edge(source, fi, 0)
+        for gi, truth in enumerate(expected_gts):
+            score = match_score(finding, truth)
+            if score >= 0:
+                pairs[fi].append(add_edge(fi, nf + gi, -score))
+    for gi in range(ng):
+        add_edge(nf + gi, sink, 0)
+
+    while True:
+        distances = [None] * len(graph)
+        predecessors = [None] * len(graph)
+        distances[source] = 0
+        # Bellman-Ford handles negative edges. A shortest augmentation keeps
+        # the flow minimum-cost for its new cardinality, hence no negative cycle.
+        for _ in range(len(graph) - 1):
+            updated = False
+            for node, edges in enumerate(graph):
+                if distances[node] is None:
+                    continue
+                for edge in edges:
+                    if not edge.available:
+                        continue
+                    distance = distances[node] + edge.cost
+                    previous = distances[edge.target]
+                    if previous is None or distance < previous:
+                        distances[edge.target] = distance
+                        predecessors[edge.target] = (node, edge)
+                        updated = True
+            if not updated:
+                break
+        if predecessors[sink] is None:
+            break  # No augmenting path remains: cardinality is maximal.
+        node = sink
+        while node != source:
+            previous, edge = predecessors[node]
+            edge.available = False
+            graph[node][edge.reverse].available = True
+            node = previous
+
+    matched = [finding for finding, edges in zip(findings, pairs)
+               if any(not edge.available for edge in edges)]
+    tp = len(matched)
+    return tp, nf - tp, ng - tp, matched
 
 
 # ═════════════════════════════════════════════════════════════════
@@ -446,6 +578,7 @@ def evaluate_review(review, gt):
 
 
 def evaluate_suite(results):
+    """Historical v1 summary contract; new runs use summarize_versioned_run."""
     n = len(results)
     if not n:
         return {}
@@ -523,6 +656,53 @@ def evaluate_suite(results):
     }
 
 
+def summarize_versioned_run(results):
+    """Summarize only cases with a valid outcome and usable oracle."""
+    evaluated = [row for row in results if row["status"] == "evaluated"]
+    metrics = evaluate_suite(evaluated)
+    # The old calibration and the placeholder duplicate rate aren't supported
+    # by the case-level data. Do not label either as a v2 quality measurement.
+    for key in ("confidence_calibration", "ECE", "duplicate_rate"):
+        metrics.pop(key, None)
+    tp, fp, fn = (metrics.get(key) for key in ("TP", "FP", "FN"))
+    precision = tp / (tp + fp) if tp is not None and tp + fp else None
+    recall = tp / (tp + fn) if tp is not None and tp + fn else None
+    f1 = 2 * tp / (2 * tp + fp + fn) if tp is not None and (2 * tp + fp + fn) else None
+    counts = Counter(row["status"] for row in results)
+    known_positives = sum(row["expected_find"] is True for row in results)
+    tokens = [row["output_tokens"] for row in results if row["output_tokens"] is not None]
+    elapsed = sum(row["elapsed"] for row in results)
+    return {
+        **metrics, "benchmark_version": LEGACY_RESULT_VERSION,
+        "date": time.strftime("%Y-%m-%d"),
+        "temperature": TEMPERATURE, "max_tokens": MAX_TOKENS,
+        "cases_run": len(results), "cases_evaluable": len(evaluated),
+        "cases_not_evaluable": len(results) - len(evaluated),
+        "status_counts": dict(sorted(counts.items())),
+        "positives_attempted": known_positives,
+        "positives_evaluated": (tp + fn) if tp is not None else 0,
+        "delivered_detections": tp if tp is not None else 0,
+        "TP": tp, "FP": fp, "FN": fn,
+        "precision": round(precision, 3) if precision is not None else None,
+        "recall": round(recall, 3) if recall is not None else None,
+        "F1": round(f1, 3) if f1 is not None else None,
+        "total_input_bytes": sum(row["input_bytes"] for row in results),
+        "total_output_tokens": sum(tokens) if tokens else None,
+        "avg_duration": round(elapsed / len(results), 2) if results else None,
+        "total_duration": round(elapsed, 2),
+    }
+
+
+def _oracle_expectation(gt):
+    expected = gt.get("expected") if isinstance(gt, dict) else None
+    find = expected.get("find") if isinstance(expected, dict) else None
+    return find if type(find) is bool else None
+
+
+def _display_metric(value):
+    return "não aplicável" if value is None else str(value)
+
+
 # ═════════════════════════════════════════════════════════════════
 #  RUN
 # ═════════════════════════════════════════════════════════════════
@@ -533,38 +713,52 @@ def run_suite(args):
         print("No cases found."); return
     active_model = getattr(args, "model", None) or MODEL
     print(f"Running {len(cases)} case(s) with {active_model}")
-    os.makedirs(RESULTS_DIR, exist_ok=True)
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    # Each invocation gets its own pair of artifacts, never overwriting others.
+    run_dir = Path(tempfile.mkdtemp(prefix="legacy-v2-", dir=RESULTS_DIR))
     results = []
     for case in cases:
         cid = case["id"]
         print(f"  [{cid}] {case.get('pr_title', '')[:60]}")
-        request = build_request(title=case.get("pr_title", ""), body=case.get("pr_body", ""),
-                                diff=case.get("diff", ""), context=case.get("context", ""),
-                                model=active_model)
-        output = call_openrouter(request)
-        review = output["parsed_review"]
         gt = load_ground_truth(cid)
-        m = evaluate_review(review, gt)
-        tok_str = str(output["output_tokens"]) if output["output_tokens"] is not None else "?"
-        err = output.get("error_reason")
-        result = {"case_id": cid, "type": gt.get("type") if gt else "unknown",
-                  "review": review, "match": m, "http_code": output["http_code"],
+        expected_find = _oracle_expectation(gt)
+        if expected_find is None:
+            output = {"parsed_review": None, "http_code": None, "ai_calls": 0,
+                      "elapsed": 0.0, "input_bytes": 0, "output_tokens": None,
+                      "error_reason": "no_ground_truth"}
+        else:
+            request = build_request(title=case.get("pr_title", ""), body=case.get("pr_body", ""),
+                                    diff=case.get("diff", ""), context=case.get("context", ""),
+                                    model=active_model)
+            output = call_openrouter(request)
+        review = output["parsed_review"]
+        status = output["error_reason"] or ("evaluated" if review is not None else "invalid_schema")
+        match = evaluate_review(review, gt) if status == "evaluated" else None
+        result = {"benchmark_version": LEGACY_RESULT_VERSION, "run_id": run_dir.name,
+                  "case_id": cid, "type": gt.get("type") if isinstance(gt, dict) else "unknown",
+                  "status": status, "expected_find": expected_find,
+                  "review": review, "match": match, "http_code": output["http_code"],
                   "ai_calls": output["ai_calls"], "elapsed": output["elapsed"],
                   "input_bytes": output["input_bytes"], "output_tokens": output["output_tokens"],
-                  "error_reason": err, "raw_response": output.get("raw_response")}
+                  "error_reason": None if status == "evaluated" else status}
         results.append(result)
-        s = "TP" if m["tp"] > 0 else ("FP" if m["fp"] > 0 else ("FN" if m["fn"] > 0 else "OK"))
-        tag = f" [{err}]" if err else ""
-        print(f"    -> {s} | calls={output['ai_calls']} | {output['elapsed']}s | {tok_str} tok{tag}")
-    agg = evaluate_suite(results)
-    agg["model"] = active_model
-    print(f"\n  TP={agg['TP']} FP={agg['FP']} FN={agg['FN']} P={agg['precision']:.3f} R={agg['recall']:.3f} F1={agg['F1']:.3f}")
-    out_path = RESULTS_DIR / f"run-{time.strftime('%Y-%m-%d')}-{active_model.replace('/', '-')}.jsonl"
-    with open(out_path, "w", encoding="utf-8") as f:
+        if match is None:
+            verdict = f"não aplicável ({status})"
+        else:
+            labels = [label.upper() for label in ("tp", "fp", "fn") if match[label]]
+            verdict = "/".join(labels) if labels else "OK"
+        print(f"    -> {verdict} | calls={output['ai_calls']} | {output['elapsed']}s")
+    agg = summarize_versioned_run(results)
+    agg.update(model=active_model, run_id=run_dir.name)
+    print("  " + " ".join(f"{key}={_display_metric(agg[key])}"
+                           for key in ("TP", "FP", "FN", "precision", "recall", "F1")))
+    out_path = run_dir / "results.jsonl"
+    with out_path.open("x", encoding="utf-8") as f:
         for res in results:
             f.write(json.dumps(res, ensure_ascii=False) + "\n")
-    sum_path = RESULTS_DIR / f"summary-{time.strftime('%Y-%m-%d')}.json"
-    sum_path.write_text(json.dumps(agg, indent=2, ensure_ascii=False), encoding="utf-8")
+    sum_path = run_dir / "summary.json"
+    with sum_path.open("x", encoding="utf-8") as f:
+        json.dump(agg, f, indent=2, ensure_ascii=False)
     print(f"  Results: {out_path}\n  Summary: {sum_path}")
 
 

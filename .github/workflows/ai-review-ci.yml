@@ -50,6 +50,8 @@ jobs:
           "$PY" -B .github/ai-review/production/test_planning_v2.py
           "$PY" -B .github/ai-review/production/test_production_v2.py
           "$PY" -B .github/ai-review/production/test_route_snapshot.py
+          "$PY" -B .github/ai-review/benchmarks/harness/test_legacy_evaluator.py
+          "$PY" -B .github/ai-review/benchmarks/harness/test_legacy_matching.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
           "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
 
@@ -94,5 +96,9 @@ jobs:
             'test_route_snapshot.py'
           )) {
             & $py -B (Join-Path '.github/ai-review/production' $test)
+            if ($LASTEXITCODE -ne 0) { throw "Offline test failed: $test" }
+          }
+          foreach ($test in @('test_legacy_evaluator.py', 'test_legacy_matching.py', 'leak_guard.py')) {
+            & $py -B (Join-Path '.github/ai-review/benchmarks/harness' $test)
             if ($LASTEXITCODE -ne 0) { throw "Offline test failed: $test" }
           }
