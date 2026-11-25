@@ -1,14 +1,22 @@
 """Regressão offline end-to-end do AI Reviewer v2. Rede e modelo sempre simulados."""
 import copy
+from contextlib import redirect_stderr, redirect_stdout
+import http.client
+from io import StringIO
 import json
+import os
+from pathlib import Path
+import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+from urllib.error import URLError
 
 import contract_v2 as contract
 import planning_v2 as planning
 import production_v2 as production
 import runner
 from test_runner import FakeGitHub, event, file
+from transport import HTTPS, HttpReply
 
 CLEAN = {
     "schema_version": 2, "summary": "Revisão sintética concluída",
@@ -85,6 +93,182 @@ class V2Offline(unittest.TestCase):
         gh = github or self.gh
         out = production.run_review_v2(event(), "true", gh, ai, version="test-v2")
         return out, gh, ai
+
+
+    def _run_entrypoint(self, responses, *, event_payload=None, github=None):
+        """Real main, real OpenRouter/HTTPS, fake sockets and GitHub by default."""
+        github = self.gh if github is None else github
+        fake_connections = []
+        requests = []
+
+        def factory(host, *, timeout):
+            self.assertEqual(host, "openrouter.ai")
+            request = Mock()
+            fake_connections.append(request)
+            if not responses:
+                self.fail("Unexpected extra model HTTP attempt")
+            expected = responses.pop(0)
+            if isinstance(expected, BaseException):
+                request.connect.side_effect = expected
+            else:
+                status, body = expected
+                response = request.getresponse.return_value
+                response.status = status
+                response.reason = "provider-reason-CANARY"
+                response.getheader.return_value = None if isinstance(body, BaseException) else str(len(body))
+                response.isclosed.side_effect = [False, True]
+                if isinstance(body, BaseException):
+                    response.read1.side_effect = body
+                else:
+                    response.read1.return_value = body
+                requests.append(request)
+            return request
+
+        payload = copy.deepcopy(event() if event_payload is None else event_payload)
+        payload["pull_request"].update(title="private-pr-title-CANARY", body="private-pr-body-CANARY")
+        trusted = "d" * 40
+        stdout = StringIO()
+        stderr = StringIO()
+        with tempfile.TemporaryDirectory() as root:
+            event_path = Path(root) / "event-path-CANARY"
+            event_path.write_text(json.dumps(payload), encoding="utf-8")
+            env = {
+                "AI_REVIEW_ENABLED": "true", "GITHUB_RUN_ATTEMPT": "1",
+                "AI_REVIEW_TRUSTED_SHA": trusted, "GITHUB_SHA": trusted,
+                "GITHUB_EVENT_NAME": "pull_request_target", "GITHUB_REPOSITORY": runner.REPOSITORY,
+                "GITHUB_EVENT_PATH": str(event_path),
+                "OPENROUTER_API_KEY": "model-token-CANARY", "GITHUB_TOKEN": "github-token-CANARY",
+            }
+            transport = HTTPS(factory=factory)
+            with (patch.dict(os.environ, env, clear=True),
+                  patch.object(production.subprocess, "check_output", return_value=trusted + "\n"),
+                  patch.object(runner, "GitHub", return_value=github),
+                  patch("transport.HTTPS", return_value=transport),
+                  redirect_stdout(stdout), redirect_stderr(stderr)):
+                result = production.main()
+        self.assertEqual(len(stdout.getvalue().splitlines()), 1)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertNotIn("CANARY", stdout.getvalue())
+        self.assertEqual(responses, [])
+        for conn in fake_connections:
+            conn.close.assert_called_once_with()
+        for conn in requests:
+            conn.getresponse.return_value.close.assert_called_once_with()
+            self.assertEqual(conn.getresponse.return_value.getheader.call_args_list[0].args,
+                             ("Content-Length",))
+            self.assertEqual(conn.getresponse.return_value.getheader.call_count, 1)
+        return result, json.loads(stdout.getvalue()), len(fake_connections)
+
+    def test_entrypoint_openrouter_http_status_is_sanitized_and_never_retried(self):
+        cases = {
+            400: "bad_request", 401: "unauthorized", 402: "payment_required",
+            403: "forbidden", 404: "not_found", 422: "unprocessable_content",
+            429: "rate_limited", 500: "server_error", 503: "server_error",
+            302: "other_http_error",
+        }
+        for status, category in cases.items():
+            with self.subTest(status=status):
+                result, diag, attempts = self._run_entrypoint([
+                    (status, b'{"error":{"message":"provider-body-CANARY"}}'),
+                ])
+                self.assertEqual(result, 1)
+                self.assertEqual(diag["code"], "authentication_error" if status in (401, 403) else "http_error")
+                self.assertEqual(diag["stage"], "model")
+                self.assertEqual(diag["http_status"], status)
+                self.assertEqual(diag["http_category"], category)
+                self.assertEqual(diag["http_service"], "openrouter")
+                self.assertEqual(diag["requested_model"], "moonshotai/kimi-k2.6")
+                self.assertEqual(diag["requested_provider"], "baidu")
+                self.assertEqual(diag["coverage"]["chunks_completed"], 0)
+                self.assertEqual((diag["model_calls_attempted"], attempts), (1, 1))
+                self.assertIs(diag["published"], False)
+                self.assertEqual(self.gh.posts, [])
+
+    def test_entrypoint_network_failure_has_no_guessed_numeric_status(self):
+        for error, code, category in (
+            (TimeoutError("socket-timeout-CANARY"), "network_timeout", "timeout"),
+            (ConnectionResetError("socket-reset-CANARY"), "network_error", "connection_error"),
+            (URLError("fixture-url-CANARY"), "network_error", "connection_error"),
+            (http.client.RemoteDisconnected("socket-disconnect-CANARY"), "network_error", "connection_error"),
+        ):
+            with self.subTest(code=code, kind=type(error)):
+                result, diag, attempts = self._run_entrypoint([error])
+                self.assertEqual((result, diag["code"], diag["http_category"]), (1, code, category))
+                self.assertEqual(diag["http_service"], "openrouter")
+                self.assertNotIn("http_status", diag)
+                self.assertEqual(diag["stage"], "model")
+                self.assertEqual((diag["model_calls_attempted"], attempts), (1, 1))
+                self.assertEqual(diag["coverage"]["chunks_completed"], 0)
+                self.assertIs(diag["published"], False)
+                self.assertEqual(self.gh.posts, [])
+
+    def test_entrypoint_read_timeout_preserves_observed_status_without_retry(self):
+        result, diag, attempts = self._run_entrypoint([
+            (429, TimeoutError("read-timeout-CANARY")),
+        ])
+        self.assertEqual((result, diag["code"], diag["http_category"]),
+                         (1, "network_timeout", "timeout"))
+        self.assertEqual((diag["http_service"], diag["http_status"]), ("openrouter", 429))
+        self.assertEqual((diag["model_calls_attempted"], attempts), (1, 1))
+        self.assertIs(diag["published"], False)
+        self.assertEqual(self.gh.posts, [])
+
+    def test_entrypoint_http_failure_during_refutation_preserves_discovery_count(self):
+        discovery = dict(CLEAN, findings=[one_finding(self.anchor)])
+        envelope = {
+            "choices": [{"finish_reason": "stop", "message": {
+                "role": "assistant", "content": json.dumps(discovery),
+            }}],
+            "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": 0}},
+        }
+        result, diag, attempts = self._run_entrypoint([
+            (200, json.dumps(envelope).encode()), (402, b"provider-body-CANARY"),
+        ])
+        self.assertEqual((result, diag["stage"], diag["http_status"]), (1, "refutation", 402))
+        self.assertEqual(diag["coverage"]["chunks_completed"], 1)
+        self.assertEqual((diag["model_calls_attempted"], attempts), (2, 2))
+        self.assertIs(diag["published"], False)
+        self.assertEqual(self.gh.posts, [])
+
+    def test_entrypoint_github_and_openrouter_failures_are_not_conflated(self):
+        # Instantiate the real GitHub client before the entrypoint patch substitutes it.
+        transport = Mock()
+        transport.send.return_value = HttpReply(403, b"github-body-CANARY")
+        github = runner.GitHub("github-token-CANARY", http=transport)
+        result, diag, attempts = self._run_entrypoint([], github=github)
+        self.assertEqual((result, diag["code"], diag["http_category"]),
+                         (1, "authentication_error", "forbidden"))
+        self.assertEqual((diag["http_service"], diag["http_status"]), ("github", 403))
+        self.assertEqual(diag["stage"], "identity")
+        self.assertEqual((diag["model_calls_attempted"], attempts), (0, 0))
+        self.assertNotIn("coverage", diag)
+        self.assertIs(diag["published"], False)
+        transport.send.assert_called_once()
+        self.assertEqual(transport.send.call_args.args[:2], ("api.github.com", "GET"))
+
+    def test_entrypoint_github_422_preserves_publication_failure_and_no_retry(self):
+        envelope = {
+            "choices": [{"finish_reason": "stop", "message": {
+                "role": "assistant", "content": json.dumps(CLEAN),
+            }}],
+            "usage": {"completion_tokens": 20, "completion_tokens_details": {"reasoning_tokens": 0}},
+        }
+        transport = Mock()
+        transport.send.return_value = HttpReply(422, b"github-422-body-CANARY")
+        client = runner.GitHub("github-token-CANARY", http=transport)
+        with patch.object(self.gh, "post", side_effect=client.post):
+            result, diag, attempts = self._run_entrypoint([
+                (200, json.dumps(envelope).encode()),
+            ])
+        self.assertEqual((result, diag["code"], diag["stage"]),
+                         (1, "v2_publication_error", "publication"))
+        self.assertEqual((diag["http_service"], diag["http_status"]), ("github", 422))
+        self.assertEqual(diag["http_category"], "unprocessable_content")
+        self.assertEqual(diag["coverage"]["chunks_completed"], 1)
+        self.assertEqual((diag["model_calls_attempted"], attempts), (1, 1))
+        self.assertIs(diag["published"], False)
+        transport.send.assert_called_once()
+        self.assertEqual(transport.send.call_args.args[:2], ("api.github.com", "POST"))
 
     def test_complete_empty_review_publishes_once_and_reports_coverage(self):
         out, gh, ai = self._run([CLEAN])

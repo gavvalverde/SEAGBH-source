@@ -49,6 +49,7 @@ jobs:
           "$PY" -B .github/ai-review/production/test_runner.py
           "$PY" -B .github/ai-review/production/test_planning_v2.py
           "$PY" -B .github/ai-review/production/test_production_v2.py
+          "$PY" -B .github/ai-review/production/test_route_snapshot.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
           "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
 
@@ -77,13 +78,21 @@ jobs:
           $py = Join-Path $venv 'Scripts/python.exe'
           & $py -B -m pip --isolated --disable-pip-version-check install --only-binary=:all: --index-url https://pypi.org/simple -r .github/ai-review/production/requirements-test.txt
           if ($LASTEXITCODE -ne 0) { throw 'dependencies failed' }
-      - name: Run v2 offline suites without real network
+      - name: Run transport, v1/v2, schema and routing offline suites
         shell: pwsh
         env:
           PYTHONDONTWRITEBYTECODE: '1'
         run: |
           $py = Join-Path (Join-Path $env:RUNNER_TEMP 'review-v2-venv') 'Scripts/python.exe'
-          & $py -B .github/ai-review/production/test_planning_v2.py
-          if ($LASTEXITCODE -ne 0) { throw 'planning v2 failed' }
-          & $py -B .github/ai-review/production/test_production_v2.py
-          if ($LASTEXITCODE -ne 0) { throw 'production v2 failed' }
+          foreach ($test in @(
+            'test_core.py',
+            'test_evidence.py',
+            'test_quality_gate.py',
+            'test_runner.py',
+            'test_planning_v2.py',
+            'test_production_v2.py',
+            'test_route_snapshot.py'
+          )) {
+            & $py -B (Join-Path '.github/ai-review/production' $test)
+            if ($LASTEXITCODE -ne 0) { throw "Offline test failed: $test" }
+          }

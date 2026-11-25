@@ -54,10 +54,12 @@ def run_review_v2(event, enabled, github, model, *, version):
     stage = "identity"
     coverage = None
     usage = None
+    model_calls_attempted = 0
 
     def finish(code, exit_code=0, **details):
         return runner.Outcome(code, exit_code, stage=stage, usage=usage,
-                              coverage=coverage, **details)
+                              coverage=coverage, model_calls_attempted=model_calls_attempted,
+                              **details)
 
     try:
         runner.ensure_current(github, pinned)
@@ -78,8 +80,10 @@ def run_review_v2(event, enabled, github, model, *, version):
 
         candidates = []
         for chunk, payload in zip(plan.chunks, payloads):
+            stage = "identity"
             runner.ensure_current(github, pinned)
             stage = "model"
+            model_calls_attempted += 1
             content = model.complete(payload)
             usage = _usage_sum(usage, getattr(model, "last_usage", None))
             if usage is not None and usage.get("cost_micro_usd", 0) > contract.MAX_TOTAL_USD * 1_000_000:
@@ -119,6 +123,7 @@ def run_review_v2(event, enabled, github, model, *, version):
             contract.worst_case_usd(payloads + [refute_payload],
                                     reserve_refutation=False)
             runner.ensure_current(github, pinned)
+            model_calls_attempted += 1
             content = model.complete(refute_payload)
             usage = _usage_sum(usage, getattr(model, "last_usage", None))
             if usage is not None and usage.get("cost_micro_usd", 0) > contract.MAX_TOTAL_USD * 1_000_000:
@@ -146,6 +151,7 @@ def run_review_v2(event, enabled, github, model, *, version):
                 seen.add(identity)
                 independent.append(finding)
 
+        stage = "deduplication"
         if runner.already_reviewed(github.reviews(pinned.number), pinned, bot_id, version):
             return finish("skip_duplicate")
         stage = "publication"
@@ -159,15 +165,17 @@ def run_review_v2(event, enabled, github, model, *, version):
             if error.status == 422:
                 runner.ensure_current(github, pinned)
             if error.status is not None and 400 <= error.status < 500:
-                raise Problem("v2_publication_error", error.status) from None
+                raise Problem("v2_publication_error", error.status,
+                              http_failure=error.http_failure) from None
             if runner.already_reviewed(github.reviews(pinned.number), pinned, bot_id, version):
-                return finish("published_reconciled", published=True)
-            raise Problem("v2_publication_uncertain") from None
+                return finish("published_reconciled", published=True, http_failure=error.http_failure)
+            raise Problem("v2_publication_uncertain", http_failure=error.http_failure) from None
         if not runner.already_reviewed([posted], pinned, bot_id, version):
             raise Problem("v2_publication_unconfirmed")
         return finish("published", published=True)
     except Problem as error:
-        return finish(error.code, 0 if error.code == "skip_closed" else 1)
+        return finish(error.code, 0 if error.code == "skip_closed" else 1,
+                      http_failure=error.http_failure)
     except Exception:
         return finish("v2_unexpected_execution_error", 1)
     finally:
@@ -217,11 +225,20 @@ def main():
         )
     except Problem as error:
         outcome = runner.Outcome(error.code,
-                                 0 if error.code.startswith("skip_") else 1)
+                                 0 if error.code.startswith("skip_") else 1,
+                                 http_failure=error.http_failure)
     except Exception:
         outcome = runner.Outcome("v2_unexpected_execution_error", 1)
     diag = {"code": outcome.code, "stage": outcome.stage,
-            "published": outcome.published}
+            "published": outcome.published,
+            "model_calls_attempted": outcome.model_calls_attempted,
+            "requested_model": runner.PRODUCTION_MODEL,
+            "requested_provider": runner.PRODUCTION_PROVIDER}
+    if outcome.http_failure is not None:
+        diag["http_service"] = outcome.http_failure.service
+        diag["http_category"] = outcome.http_failure.category
+        if outcome.http_failure.status is not None:
+            diag["http_status"] = outcome.http_failure.status
     if outcome.coverage is not None:
         diag["coverage"] = outcome.coverage
     if outcome.usage is not None:
