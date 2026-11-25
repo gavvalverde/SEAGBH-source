@@ -391,7 +391,7 @@ class FirebaseAuthTests(unittest.TestCase):
 try:
     from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QSignalSpy, QTest
-    from PyQt6.QtWidgets import QApplication, QDialog, QListWidget, QPushButton
+    from PyQt6.QtWidgets import QApplication, QDialog, QLineEdit, QListWidget, QPushButton
 except ImportError:
     QApplication = None
 
@@ -454,6 +454,52 @@ class FirebaseAuthQtTests(unittest.TestCase):
                 return
             QTest.qWait(10)
         self.fail("O worker do histórico não concluiu")
+
+    def test_publicacao_qt_descarta_hash_ao_reselecionar_falhar_ou_mudar_arquivo(self):
+        from hashlib import sha256
+        janela = self._janela_autenticada()
+        pasta = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        primeiro, segundo = pasta / "primeiro.bin", pasta / "segundo.bin"
+        primeiro.write_bytes(b"fixture A")
+        segundo.write_bytes(b"fixture B")
+        arquivo_ausente = pasta / "ausente.bin"
+        selecoes = [(str(p), "") for p in (primeiro, segundo, arquivo_ausente, primeiro)]
+        selecoes += [("", ""), (str(segundo), "")]
+        dig_a = sha256(b"fixture A").hexdigest()
+        dig_b = sha256(b"fixture B").hexdigest()
+
+        def interagir(dlg):
+            edits = dlg.findChildren(QLineEdit)
+            edit_version, edit_url, edit_sha = edits
+            edit_version.setText("999.0.0")
+            edit_url.setText("https://example.invalid/arquivo")
+            botoes = {botao.text(): botao for botao in dlg.findChildren(QPushButton)}
+            calcular, publicar = botoes["Calcular"], botoes["Publicar no Firebase"]
+            calcular.click()
+            self.assertEqual(edit_sha.text(), dig_a)
+            calcular.click()
+            self.assertEqual(edit_sha.text(), dig_b)
+            calcular.click()
+            self.assertEqual(edit_sha.text(), "")
+            publicar.click()
+            envio.assert_not_called()
+            calcular.click()
+            self.assertEqual(edit_sha.text(), dig_a)
+            calcular.click()
+            self.assertEqual(edit_sha.text(), "")
+            calcular.click()
+            self.assertEqual(edit_sha.text(), dig_b)
+            segundo.write_bytes(b"fixture C")
+            publicar.click()
+            self.assertEqual(edit_sha.text(), "")
+            envio.assert_not_called()
+            return 0
+
+        with (patch.object(self.ui.QDialog, "exec", new=interagir),
+              patch.object(self.ui.QFileDialog, "getOpenFileName", side_effect=selecoes),
+              patch.object(self.ui, "_firebase_put") as envio):
+            janela._on_publicar_atualizacao()
+        self.transporte_database.assert_not_called()
 
     def test_janela_privada_sem_sessao_ou_migracao_recusa_e_nao_le_legado(self):
         historico = self._armazenamento_sintetico()

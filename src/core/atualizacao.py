@@ -1,141 +1,266 @@
-"""
-Sistema de auto-atualização — SEAGBH
-
-Verifica versão remota no Firebase (/updates/latest),
-baixa o novo .exe do GitHub Releases e aplica via script .bat.
-"""
-
+"""Consulta, valida e prepara downloads de atualizações, sem confiar no tamanho."""
+from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
+import http.client
 import json
+import logging
 import os
+import re
+import secrets
+import stat
 import sys
-import subprocess
 import tempfile
 import time
-from urllib.request import urlopen, Request
 from urllib.error import URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 from core.versao import __version__
-from core.licenca import FIREBASE_URL
+
+logger = logging.getLogger(__name__)
+_CHUNK = 64 * 1024
+_MAX_MANIFESTO = 64 * 1024
+_MAX_ARQUIVO = 1024 * 1024 * 1024
+_PREFIXO = ".seagbh-atualizacao-"
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Consulta ao Firebase
-# ══════════════════════════════════════════════════════════════════════════════
+class ErroAtualizacao(RuntimeError):
+    def __init__(self, codigo):
+        super().__init__(codigo)
+        self.codigo = codigo
 
-def verificar_atualizacao() -> dict | None:
-    """
-    Consulta /updates/latest no Firebase.
 
-    Retorna dict com {version, url, changelog, data, obrigatoria}
-    se houver versão mais recente, ou None se estiver atualizado.
-    """
+@dataclass(frozen=True)
+class Download:
+    caminho: Path
+    digest: str
+
+
+def validar_sha256(valor):
+    if not isinstance(valor, str) or re.fullmatch(r"[0-9a-fA-F]{64}", valor) is None:
+        raise ErroAtualizacao("manifesto")
+    return valor.lower()
+
+
+def _versao(valor):
+    if not isinstance(valor, str) or re.fullmatch(r"[0-9]{1,9}(?:\.[0-9]{1,9}){0,4}(?:-[A-Za-z0-9._-]{1,32})?", valor) is None:
+        raise ErroAtualizacao("manifesto")
+    return tuple(int(n) for n in valor.split("-")[0].split("."))
+
+
+def _url_https(valor):
+    if not isinstance(valor, str) or any(ord(c) <= 32 or ord(c) == 127 for c in valor):
+        raise ErroAtualizacao("manifesto")
     try:
-        url = f"{FIREBASE_URL}/updates/latest.json"
-        req = Request(url, method="GET")
-        req.add_header("Accept", "application/json")
-        with urlopen(req, timeout=120) as resp:  # ← Timeout consistente com download
-            dados = json.loads(resp.read().decode())
-    except (URLError, OSError, json.JSONDecodeError):
-        return None
+        partes = urlsplit(valor)
+        if (partes.scheme != "https" or not partes.hostname or partes.username is not None
+                or partes.password is not None or partes.fragment or "\\" in valor):
+            raise ValueError
+        _ = partes.port
+    except ValueError:
+        raise ErroAtualizacao("manifesto") from None
+    return valor
 
+
+def validar_manifesto(dados):
     if not isinstance(dados, dict):
-        return None
+        raise ErroAtualizacao("manifesto")
+    _versao(dados.get("version"))
+    resultado = dict(dados, url=_url_https(dados.get("url")), sha256=validar_sha256(dados.get("sha256")))
+    for campo in ("changelog", "data"):
+        if campo in resultado and not isinstance(resultado[campo], str):
+            raise ErroAtualizacao("manifesto")
+    if "obrigatoria" in resultado and type(resultado["obrigatoria"]) is not bool:
+        raise ErroAtualizacao("manifesto")
+    return resultado
 
-    versao_remota = dados.get("version", "")
-    if not versao_remota:
-        return None
 
-    # Comparação de versão: extrai apenas números, ignora sufixos (beta, rc, alpha, etc)
-    def _parse_version(v: str) -> tuple:
-        """Extrai apenas números inteiros da versão, ignorando sufixos."""
+def verificar_atualizacao():
+    """None para ausência real; falhas de transporte e de contrato são distintas."""
+    # O worker de instalação não usa nem carrega Firebase/licenciamento.
+    from core.licenca import FIREBASE_URL
+    try:
+        req = Request(f"{FIREBASE_URL}/updates/latest.json", headers={"Accept": "application/json"})
+        with urlopen(req, timeout=15) as resposta:
+            bruto = resposta.read(_MAX_MANIFESTO + 1)
+    except (URLError, OSError, http.client.HTTPException):
+        raise ErroAtualizacao("transporte") from None
+    if len(bruto) > _MAX_MANIFESTO:
+        raise ErroAtualizacao("manifesto")
+    try:
+        dados = json.loads(bruto)
+    except (ValueError, UnicodeError, RecursionError):
+        raise ErroAtualizacao("manifesto") from None
+    if dados is None:
+        return None
+    info = validar_manifesto(dados)
+    return info if _versao(info["version"]) > _versao(__version__) else None
+
+
+def _sem_link(caminho):
+    st = caminho.lstat()
+    atributos = getattr(st, "st_file_attributes", 0)
+    if stat.S_ISLNK(st.st_mode) or atributos & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0):
+        raise PermissionError("caminho_indireto")
+    return st
+
+
+def _validar_ancestrais(pasta):
+    if os.name == "nt":
+        from core import _acl_historico_windows as acl
+        acl.validar_volume(pasta.anchor)
+        sid = acl.operador()
+        for ancestral in (*reversed(pasta.parents), pasta):
+            _sem_link(ancestral)
+            acl.validar_acl(ancestral, sid, privado=False, diretorio=True)
+    else:
+        _sem_link(pasta)
+
+
+def _criar_area(pai):
+    pai = Path(os.path.abspath(pai))
+    _validar_ancestrais(pai)
+    if os.name != "nt":
+        caminho = pai / (_PREFIXO + secrets.token_hex(16))
+        caminho.mkdir(mode=0o700)
+        return caminho
+    from core import _acl_historico_windows as acl
+    caminho = pai / (_PREFIXO + secrets.token_hex(16))
+    sid = acl.operador()
+    acl.criar_privado(caminho, sid)
+    _sem_link(caminho)
+    acl.validar_acl(caminho, sid, privado=True, diretorio=True)
+    return caminho
+
+
+def _validar_area(pasta):
+    if not re.fullmatch(re.escape(_PREFIXO) + r"[0-9a-f]{32}", pasta.name):
+        raise PermissionError("area_invalida")
+    _validar_ancestrais(pasta.parent)
+    if not stat.S_ISDIR(_sem_link(pasta).st_mode):
+        raise PermissionError("area_invalida")
+    if os.name == "nt":
+        from core import _acl_historico_windows as acl
+        acl.validar_acl(pasta, acl.operador(), privado=True, diretorio=True)
+
+
+def descartar_download(download):
+    """Só remove a área privada específica, nunca pesquisa por arquivos no temp."""
+    caminho = download.caminho
+    if caminho.name != "arquivo.bin" or not caminho.parent.name.startswith(_PREFIXO):
+        return
+    try:
+        _validar_area(caminho.parent)
+        caminho.unlink(missing_ok=True)
+        caminho.parent.rmdir()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        logger.warning("Não foi possível remover a área de download")
+
+
+def _hash_stream(arquivo):
+    digest = sha256()
+    total = 0
+    while bloco := arquivo.read(_CHUNK):
+        total += len(bloco)
+        if total > _MAX_ARQUIVO:
+            raise ErroAtualizacao("integridade")
+        digest.update(bloco)
+    if total == 0:
+        raise ErroAtualizacao("integridade")
+    return digest.hexdigest()
+
+
+def baixar_atualizacao(url, sha256_esperado, progresso_cb=None, *, cancelado=None, pasta=None):
+    """Retorna Download apenas após verificação obrigatória; falhas são tipadas."""
+    digest = validar_sha256(sha256_esperado)
+    _url_https(url)
+
+    def verificar_cancelamento():
+        if cancelado is not None and cancelado():
+            raise ErroAtualizacao("cancelado")
+
+    verificar_cancelamento()
+    try:
+        area = _criar_area(pasta if pasta is not None else tempfile.gettempdir())
+    except OSError:
+        raise ErroAtualizacao("armazenamento") from None
+    download = Download(area / "arquivo.bin", digest)
+    concluido = False
+    try:
         try:
-            # Remove sufixos como -beta, -rc, -alpha
-            base = v.split("-")[0]  # "2.0.1-beta" → "2.0.1"
-            return tuple(int(x) for x in base.split("."))
-        except (ValueError, AttributeError):
-            return (0,)  # Fallback para versão inválida
-
-    try:
-        local = _parse_version(__version__)
-        remota = _parse_version(versao_remota)
-    except Exception:
-        return None
-
-    if remota > local:
-        return dados
-    return None
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-#  Download com callback de progresso
-# ══════════════════════════════════════════════════════════════════════════════
-
-def baixar_atualizacao(url: str, destino: str,
-                       progresso_cb=None, sha256_esperado: str | None = None,
-                       *, cancelado=None) -> bool:
-    """
-    Baixa o arquivo de *url* para *destino* com validação de integridade.
-
-    progresso_cb(recebido, total) é chamado a cada chunk.
-    sha256_esperado: hash SHA256 esperado (opcional, para validação).
-    Retorna True se o download foi concluído E validado com sucesso.
-    """
-    import hashlib
-    
-    iniciou_escrita = concluido = False
-    try:
-        if cancelado and cancelado():
-            return False
-        req = Request(url, method="GET")
-        with urlopen(req, timeout=120) as resp:  # ← Timeout aumentado para 120s (internet lenta)
-            total = int(resp.headers.get("Content-Length", 0))
+            resposta = urlopen(Request(url, method="GET"), timeout=120)
+        except (URLError, OSError, http.client.HTTPException):
+            raise ErroAtualizacao("transporte") from None
+        with resposta:
+            if hasattr(resposta, "geturl"):
+                try:
+                    _url_https(resposta.geturl() or url)
+                except ErroAtualizacao:
+                    raise ErroAtualizacao("transporte") from None
+            tamanho = resposta.headers.get("Content-Length")
+            if tamanho is None:
+                total = 0
+            elif not isinstance(tamanho, str) or not re.fullmatch(r"[0-9]{1,10}", tamanho):
+                raise ErroAtualizacao("integridade")
+            else:
+                total = int(tamanho)
+                if not 0 < total <= _MAX_ARQUIVO:
+                    raise ErroAtualizacao("integridade")
             recebido = 0
-            chunk_size = 64 * 1024  # 64 KB
-            sha256_hash = hashlib.sha256() if sha256_esperado else None
-
-            if cancelado and cancelado():
-                return False
-            with open(destino, "wb") as f:
-                iniciou_escrita = True
+            hash_atual = sha256()
+            with download.caminho.open("xb") as destino:
                 while True:
-                    if cancelado and cancelado():
-                        return False
-                    chunk = resp.read(chunk_size)
-                    if not chunk:
+                    verificar_cancelamento()
+                    try:
+                        bloco = resposta.read(_CHUNK)
+                    except http.client.IncompleteRead:
+                        raise ErroAtualizacao("integridade") from None
+                    except (URLError, OSError, http.client.HTTPException):
+                        raise ErroAtualizacao("transporte") from None
+                    if not bloco:
                         break
-                    f.write(chunk)
-                    recebido += len(chunk)
-                    if sha256_hash:
-                        sha256_hash.update(chunk)
+                    recebido += len(bloco)
+                    if recebido > (total or _MAX_ARQUIVO):
+                        raise ErroAtualizacao("integridade")
+                    destino.write(bloco)
+                    hash_atual.update(bloco)
                     if progresso_cb:
                         progresso_cb(recebido, total)
-
-        if total > 0 and recebido != total:
-            return False
-
-        # ── Validação de integridade ────────────────────────────────────────
-        if sha256_esperado and sha256_hash:
-            hash_calculado = sha256_hash.hexdigest().lower()
-            if hash_calculado != sha256_esperado.lower():
-                # Hash não corresponde → arquivo corrompido!
-                return False
-
-        concluido = not (cancelado and cancelado())
-        return concluido
-    except (URLError, OSError):
-        return False
+                destino.flush()
+                os.fsync(destino.fileno())
+        verificar_cancelamento()
+        if not recebido or (total and recebido != total) or hash_atual.hexdigest() != digest:
+            raise ErroAtualizacao("integridade")
+        concluido = True
+        return download
+    except OSError:
+        raise ErroAtualizacao("armazenamento") from None
     finally:
-        if iniciou_escrita and not concluido:
-            try:
-                os.remove(destino)
-            except OSError:
-                pass
+        if not concluido:
+            descartar_download(download)
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-#  Cleanup de arquivos temporários
-# ══════════════════════════════════════════════════════════════════════════════
+def validar_aplicacao_atualizacao(download):
+    if not getattr(sys, "frozen", False) or os.name != "nt":
+        raise ErroAtualizacao("plataforma")
+    validar_sha256(download.digest)
+    try:
+        if not stat.S_ISREG(_sem_link(download.caminho).st_mode):
+            raise ErroAtualizacao("integridade")
+    except OSError:
+        raise ErroAtualizacao("integridade") from None
 
+
+def aplicar_atualizacao(download):
+    validar_aplicacao_atualizacao(download)
+    from core import _instalador_atualizacao
+    return _instalador_atualizacao.agendar(download)
+
+
+# Somente o utilitário de manutenção legado chama a limpeza legada.
 def limpar_arquivos_temporarios():
     """Remove arquivos de atualização temporários/orfãos."""
     import glob
@@ -166,70 +291,3 @@ def limpar_arquivos_temporarios():
                 logger.debug(f"Não foi possível remover {arquivo}: {e}")
     except Exception as e:
         logger.warning(f"Erro ao limpar arquivos temporários: {e}")
-
-def validar_aplicacao_atualizacao(novo_exe: str):
-    # Segurança: só permite auto-update quando executando binário congelado
-    # (PyInstaller). Em modo desenvolvimento, sys.executable aponta para
-    # python.exe e nunca deve ser sobrescrito.
-    if not getattr(sys, "frozen", False):
-        raise RuntimeError(
-            "Atualização automática disponível apenas no executável instalado. "
-            "No modo desenvolvimento, atualize manualmente."
-        )
-
-    if not os.path.isfile(novo_exe):
-        raise RuntimeError("Arquivo da atualização não encontrado.")
-
-
-def aplicar_atualizacao(novo_exe: str):
-    """Inicia o atualizador, que aguarda a saída do processo antes de substituir o executável."""
-    validar_aplicacao_atualizacao(novo_exe)
-    exe_atual = sys.executable  # Caminho do .exe em execução (PyInstaller)
-
-    # .bat robusto: espera o .exe ser liberado antes de iniciar o novo app
-    bat_content = f"""@echo off
-setlocal enableextensions
-set "EXE_PATH={exe_atual}"
-set "NEW_EXE={novo_exe}"
-
-REM Aguarda o processo antigo liberar o arquivo (max 60 tentativas ~60s)
-set /a _wait=0
-:waitloop
-if exist "%EXE_PATH%" (
-    >nul 2>&1 (>>"%EXE_PATH%" (call )) && goto unlocked || (
-        set /a _wait+=1
-        if %_wait% geq 60 goto timeout
-        timeout /t 1 /nobreak >nul
-        goto waitloop
-    )
-)
-:unlocked
-copy /Y "%NEW_EXE%" "%EXE_PATH%"
-del "%NEW_EXE%"
-start "" "%EXE_PATH%" --updated
-del "%~f0"
-goto end
-:timeout
-echo Falha ao aguardar o SEAGBH fechar. Atualização não aplicada.
-timeout /t 5 >nul
-:end
-endlocal
-"""
-    bat_path = os.path.join(tempfile.gettempdir(), f"seagbh_update_{os.getpid()}.bat")
-    with open(bat_path, "w", encoding="cp1252" if os.name == "nt" else "utf-8") as f:
-        f.write(bat_content)
-
-    # Lança o .bat desacoplado do processo atual
-    subprocess.Popen(
-        ["cmd.exe", "/c", bat_path],
-        creationflags=subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS,
-        close_fds=True,
-    )
-    
-    # Log de informação para debugging
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.info(f"Script de atualização iniciado: {bat_path}")
-    
-    # Retorna o caminho do batch para limpeza futura se necessário
-    return bat_path
