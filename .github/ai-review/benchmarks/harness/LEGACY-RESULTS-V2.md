@@ -21,7 +21,10 @@ do parser histórico, a revisão de produção ou resultados já gravados.
   a um positivo continua sendo FN. O resumo separa `cases_run` (casos
   selecionados), `cases_evaluable`, motivos, positivos selecionados e
   positivos avaliados para distinguir cobertura de qualidade condicional.
-  Sem denominador, as taxas são `null` (não aplicável), não zero.
+  Sem denominador, as taxas são `null` (não aplicável), não zero,
+  inclusive precisão/recall/F1 e taxas auxiliares de severidade, categoria,
+  localização, injeção, escopo parcial e findings inválidos. Zero só é
+  representado quando há população efetivamente medida.
   Estatísticas históricas de calibração/ECE e o placeholder de duplicação
   não são reproduzidos no novo resumo por não medirem o que seus nomes indicam.
 - `compare.py` mantém a leitura v1 e aceita v2, mas recusa comparação
