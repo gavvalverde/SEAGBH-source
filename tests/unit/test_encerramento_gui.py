@@ -16,7 +16,8 @@ from unittest.mock import Mock, patch
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 try:
-    from PyQt6.QtCore import QCoreApplication, QEvent, QTimer
+    from PyQt6.QtCore import QCoreApplication, QEvent, QObject, Qt, QTimer, pyqtSignal
+    from PyQt6.QtGui import QAction
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QDialog
 except ImportError:
@@ -193,6 +194,109 @@ class EncerramentoGUI(unittest.TestCase):
         self._aguardar(lambda: janela._atrasos_thread is None)
         self.avisar.assert_called_once()
         self.assertEqual([e for e, _ in self.eventos], ["abriu", "abriu", "fechou", "abriu", "fechou"])
+
+    def test_badge_atualiza_com_o_mesmo_resultado_do_dialogo_manual(self):
+        janela = self._janela()
+        badge = janela._btn_alerta_atrasos
+        checar = next(acao for acao in janela.findChildren(QAction)
+                      if "Checar Atrasos Agora" in acao.text())
+        um = (7, "Primeiro evento", "01/01/2000", 2)
+        dois = (8, "Segundo evento", "01/01/2000", 1)
+        invalido = (9, "Data inválida", "31/02/2000", 1)
+        chamadas = []
+
+        def consultar(banco):
+            banco._verificar_dono()
+            chamadas.append(banco.dono)
+            resultado = resultados.pop(0)
+            if isinstance(resultado, Exception):
+                raise resultado
+            return resultado
+
+        resultados = [([um, dois], [invalido]), ([um], []), ([], []),
+                      ([], [invalido]), ([dois], [invalido]), RuntimeError("detalhe privado"),
+                      ([dois], [])]
+        with patch.object(BancoSintetico, "classificar_eventos_com_pendencias", consultar):
+            janela._timer_atrasos.timeout.emit()
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            self.assertTrue(badge.isVisible())
+            self.assertEqual(badge.text(), "⚠️ 2 atraso(s) e 1 data(s) a revisar")
+            self.assertIn("2 atraso(s)", janela.statusBar().currentMessage())
+            self.avisar.assert_not_called()
+
+            QTest.mouseClick(badge, Qt.MouseButton.LeftButton)
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            mensagem = self.avisar.call_args.args[2]
+            self.assertIn("Primeiro evento", mensagem)
+            self.assertNotIn("Segundo evento", mensagem)
+            self.assertNotIn("Data inválida", mensagem)
+            self.assertEqual(badge.text(), "⚠️ 1 atraso(s)")
+            self.assertEqual(janela.statusBar().currentMessage(), "")
+
+            janela.statusBar().showMessage("Mensagem de outra operação.")
+            QTest.mouseClick(badge, Qt.MouseButton.LeftButton)
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            self.assertFalse(badge.isVisible())
+            self.assertEqual(janela.statusBar().currentMessage(), "Mensagem de outra operação.")
+            self.assertEqual(badge.text(), "⚠️ Atrasos")
+            self.assertEqual(self.avisar.call_count, 1)
+            self.informar.assert_not_called()
+
+            checar.trigger()
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            self.assertTrue(badge.isVisible())
+            self.assertEqual(badge.text(), "⚠️ 1 data(s) a revisar")
+            self.assertIn("Datas a revisar", self.avisar.call_args.args[2])
+            self.assertNotIn("Eventos vencidos", self.avisar.call_args.args[2])
+
+            checar.trigger()
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            self.assertEqual(badge.text(), "⚠️ 1 atraso(s) e 1 data(s) a revisar")
+            self.assertIn("Segundo evento", self.avisar.call_args.args[2])
+            self.assertIn("Data inválida", self.avisar.call_args.args[2])
+
+            checar.trigger()
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            self.assertEqual(self.avisar.call_count, 3)
+            self.assertEqual(badge.text(), "⚠️ 1 atraso(s) e 1 data(s) a revisar")
+            self.assertTrue(badge.isVisible())
+            self.assertEqual(janela.statusBar().currentMessage(), "Não foi possível consultar os atrasos.")
+
+            checar.trigger()
+            self._aguardar(lambda: janela._atrasos_thread is None)
+            self.assertEqual(badge.text(), "⚠️ 1 atraso(s)")
+            self.assertEqual(janela.statusBar().currentMessage(), "")
+            self.assertEqual(self.avisar.call_count, 4)
+
+        self.assertEqual(resultados, [])
+        self.assertEqual(len(chamadas), 7)
+        self.assertNotIn(self.gui, chamadas)
+        self.assertEqual([e for e, _ in self.eventos], ["abriu"] + ["abriu", "fechou"] * 7)
+
+    def test_badge_ignora_sinal_de_outro_worker_e_resultado_durante_saida(self):
+        class SinalObsoleto(QObject):
+            pronto = pyqtSignal(object)
+
+        iniciou, liberar, bloquear = self._bloqueio()
+        janela = self._janela(consulta=bloquear)
+        badge = janela._btn_alerta_atrasos
+        janela._checar_atrasos()
+        self._aguardar(iniciou.is_set)
+        obsoleto = SinalObsoleto()
+        obsoleto.pronto.connect(janela._mostrar_atrasos, Qt.ConnectionType.QueuedConnection)
+        obsoleto.pronto.emit(([(17, "Sinal atrasado", "01/01/2000", 1)], []))
+        self.app.processEvents()
+        self.assertFalse(badge.isVisible())
+        self.avisar.assert_not_called()
+
+        worker = janela._atrasos_thread
+        self.assertFalse(janela.close())
+        worker.pronto.emit(([(18, "Sinal no fechamento", "01/01/2000", 1)], []))
+        self.app.processEvents()
+        self.assertFalse(badge.isVisible())
+        self.avisar.assert_not_called()
+        liberar.set()
+        self._aguardar(lambda: janela.encerramento_confirmado)
 
     def test_um_worker_retarda_fechamento_e_ignora_resultado_enfileirado(self):
         iniciou, liberar, bloquear = self._bloqueio()

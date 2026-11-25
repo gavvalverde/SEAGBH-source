@@ -75,6 +75,9 @@ def _resource(filename: str) -> str:
 class MainWindow(QMainWindow):
     """Janela principal do SEAGBH — versão PyQt6 com sidebar."""
 
+    _ORIENTACAO_ATRASOS = "Menu: Utilitários > Checar Atrasos Agora."
+    _FALHA_ATRASOS = "Não foi possível consultar os atrasos."
+
     _PAGINAS = [
         ("🏠  Painel",        0),
         ("📋  Eventos",       1),
@@ -440,12 +443,15 @@ class MainWindow(QMainWindow):
             return
         atrasados, datas_invalidas = resultado
         self._ultimo_atrasados = atrasados
-        if not atrasados and not datas_invalidas:
-            self._btn_alerta_atrasos.setVisible(False)
+        resumo = self._atualizar_badge_atrasos(len(atrasados), len(datas_invalidas))
+        barra = self.statusBar()
+        if resumo and self._ultimo_modo_checar_atrasos == "auto":
+            barra.showMessage(f"⚠️ {resumo}. {self._ORIENTACAO_ATRASOS}", 12000)
             return
-
-        if self._ultimo_modo_checar_atrasos == "auto":
-            self._mostrar_aviso_atrasos_discreto(len(atrasados), len(datas_invalidas))
+        mensagem = barra.currentMessage()
+        if mensagem == self._FALHA_ATRASOS or mensagem.endswith(self._ORIENTACAO_ATRASOS):
+            barra.clearMessage()
+        if not resumo:
             return
 
         secoes = []
@@ -460,23 +466,23 @@ class MainWindow(QMainWindow):
                                       for eid, nome, _, pend in datas_invalidas))
         QMessageBox.warning(self, "⚠️ Atrasos e datas de eventos", "\n\n".join(secoes))
 
-    def _mostrar_aviso_atrasos_discreto(self, total_atrasados: int, total_datas_invalidas: int = 0):
-        """Mostra de forma não bloqueante atrasos e datas sem classificação."""
+    def _atualizar_badge_atrasos(self, total_atrasados: int, total_datas_invalidas: int) -> str:
+        """Sincroniza o botão com a última consulta bem-sucedida."""
         rotulos = []
         if total_atrasados:
             rotulos.append(f"{total_atrasados} atraso(s)")
         if total_datas_invalidas:
             rotulos.append(f"{total_datas_invalidas} data(s) a revisar")
         resumo = " e ".join(rotulos)
-        self._btn_alerta_atrasos.setText(f"⚠️ {resumo}")
+        self._btn_alerta_atrasos.setText(f"⚠️ {resumo}" if resumo else "⚠️ Atrasos")
         self._btn_alerta_atrasos.setToolTip("Clique para conferir atrasos e datas pendentes de revisão.")
-        self._btn_alerta_atrasos.setVisible(True)
-        self.statusBar().showMessage(f"⚠️ {resumo}. Menu: Utilitários > Checar Atrasos Agora.", 12000)
+        self._btn_alerta_atrasos.setVisible(bool(resumo))
+        return resumo
 
     @pyqtSlot()
     def _on_erro_checar_atrasos(self):
         if not self._encerrando and self.sender() is self._atrasos_thread:
-            self.statusBar().showMessage("Não foi possível consultar os atrasos.", 12000)
+            self.statusBar().showMessage(self._FALHA_ATRASOS, 12000)
 
     # ── Alerta de vencimento de licença ──────────────────────────────
 
