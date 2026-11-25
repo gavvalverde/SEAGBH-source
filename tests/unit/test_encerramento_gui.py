@@ -720,6 +720,56 @@ class EncerramentoGUI(unittest.TestCase):
             self._aguardar(lambda: self.sair.called)
         self.assertEqual(estado, [self.raiz, None, False, ("fechou", self.gui)])
 
+    def test_agendamento_lento_mantem_qt_ativo_e_fecha_apos_resultado(self):
+        iniciou, liberar, bloquear = self._bloqueio()
+        janela = self._janela()
+        download = atualizacao.Download(self.raiz / "arquivo.bin", "a" * 64)
+        threads = []
+
+        def agendar(_):
+            threads.append(get_ident())
+            bloquear()
+
+        with patch.object(main_window, "aplicar_atualizacao", side_effect=agendar) as chamada:
+            janela._atualizacao_pendente = download
+            janela.solicitar_saida()
+            try:
+                self._aguardar(iniciou.is_set)
+                responsivo = Event()
+                QTimer.singleShot(0, responsivo.set)
+                self._aguardar(responsivo.is_set)
+                self.assertFalse(janela.encerramento_confirmado)
+                self.sair.assert_not_called()
+                self.assertEqual(len(threads), 1)
+                self.assertNotEqual(threads[0], self.gui)
+                self.assertEqual(self.eventos, [("abriu", self.gui), ("fechou", self.gui)])
+                self.assertFalse(janela.close())
+                chamada.assert_called_once_with(download)
+            finally:
+                liberar.set()
+            self._aguardar(lambda: janela.encerramento_confirmado and self.sair.called)
+            chamada.assert_called_once_with(download)
+            self.assertEqual(self.eventos, [("abriu", self.gui), ("fechou", self.gui)])
+
+    def test_falha_de_agendamento_avisa_antes_de_sair_sem_refazer_trabalho(self):
+        janela = self._janela()
+        download = atualizacao.Download(self.raiz / "arquivo.bin", "a" * 64)
+        estados = []
+
+        def avisar(*_):
+            estados.append((janela.encerramento_confirmado, self.sair.called, get_ident()))
+            janela.solicitar_saida()
+            self.app.processEvents()
+
+        self.avisar.side_effect = avisar
+        with patch.object(main_window, "aplicar_atualizacao", side_effect=OSError) as chamada:
+            janela._atualizacao_pendente = download
+            janela.solicitar_saida()
+            self._aguardar(lambda: janela.encerramento_confirmado and self.sair.called)
+            chamada.assert_called_once_with(download)
+        self.assertEqual(estados, [(False, False, self.gui)])
+        self.assertEqual(self.eventos, [("abriu", self.gui), ("fechou", self.gui)])
+
     def test_database_legado_repete_fechamento_falho_sem_commit(self):
         db = database.Database.__new__(database.Database)
         db._sqlite_protegido = False

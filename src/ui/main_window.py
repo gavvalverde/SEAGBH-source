@@ -77,6 +77,23 @@ class _DownloadThread(QThread):
             self.erro = "interno"
 
 
+class _AgendamentoAtualizacaoThread(QThread):
+    def __init__(self, download, parent=None):
+        super().__init__(parent)
+        self._download = download
+        self.erro = None
+
+    def run(self):
+        try:
+            aplicar_atualizacao(self._download)
+        except ErroAtualizacao as exc:
+            self.erro = exc.codigo
+        except Exception:
+            self.erro = "agendamento"
+        if self.erro is not None:
+            descartar_download(self._download)
+
+
 class _AtrasosThread(ConsultaDatabaseThread):
     """Thread para verificar atrasos sem bloquear a interface."""
     def consultar(self, db):
@@ -127,6 +144,8 @@ class MainWindow(QMainWindow):
         self._backup_dialog = None
         self._dl_thread = None
         self._consulta_atualizacao = None
+        self._agendamento_atualizacao = None
+        self._banco_fechado_para_saida = False
 
         self.db = self._abrir_banco()
         try:
@@ -611,6 +630,7 @@ class MainWindow(QMainWindow):
         "armazenamento": "Não foi possível usar uma pasta protegida para a atualização.",
         "plataforma": "A atualização automática requer o executável instalado (Windows).",
         "interno": "Não foi possível concluir a operação de atualização.",
+        "agendamento": "Não foi possível iniciar o instalador.",
     }
 
     def _avisar_erro_atualizacao(self, codigo):
@@ -786,7 +806,7 @@ class MainWindow(QMainWindow):
     @pyqtSlot()
     def _continuar_encerramento(self):
         if (not self._encerrando or self.encerramento_confirmado
-                or self._fechamento_principal_pendente):
+                or self._fechamento_principal_pendente or self._agendamento_atualizacao is not None):
             return
 
         # A árvore QObject inclui os diálogos filhos mesmo em janelas próprias.
@@ -802,25 +822,43 @@ class MainWindow(QMainWindow):
                 or self._backup_dialog is not None
                 or (self.tab_dashboard is not None and self.tab_dashboard.consultando)):
             return
-        try:
-            self.db.fechar_para_gui()
-        except BaseException:
-            self._fechamento_principal_pendente = True
-            logging.getLogger(__name__).error("Fechamento do banco principal pendente")
-            self._mostrar_fechamento_pendente()
-            return
+        if not self._banco_fechado_para_saida:
+            try:
+                self.db.fechar_para_gui()
+            except BaseException:
+                self._fechamento_principal_pendente = True
+                logging.getLogger(__name__).error("Fechamento do banco principal pendente")
+                self._mostrar_fechamento_pendente()
+                return
+            self._banco_fechado_para_saida = True
 
+        if self._atualizacao_pendente is not None:
+            download, self._atualizacao_pendente = self._atualizacao_pendente, None
+            self._agendamento_atualizacao = _AgendamentoAtualizacaoThread(download, self)
+            self._agendamento_atualizacao.finished.connect(self._agendamento_atualizacao_concluido)
+            self.statusBar().showMessage("Preparando a instalação da atualização…")
+            self._agendamento_atualizacao.start()
+            return
+        self._finalizar_encerramento()
+
+    @pyqtSlot()
+    def _agendamento_atualizacao_concluido(self):
+        worker = self._agendamento_atualizacao
+        if worker is None:
+            return
+        if not worker.wait(0):
+            QTimer.singleShot(10, self._agendamento_atualizacao_concluido)
+            return
+        # Mantém a guarda durante a caixa modal: ela executa um loop próprio.
+        if worker.erro is not None:
+            self._avisar_erro_atualizacao(worker.erro)
+        self._agendamento_atualizacao = None
+        worker.deleteLater()
+        self._finalizar_encerramento()
+
+    def _finalizar_encerramento(self):
         self.encerramento_confirmado = True
         QApplication.instance().removeEventFilter(self)
-        if self._atualizacao_pendente is not None:
-            try:
-                aplicar_atualizacao(self._atualizacao_pendente)
-            except ErroAtualizacao as exc:
-                descartar_download(self._atualizacao_pendente)
-                self._avisar_erro_atualizacao(exc.codigo)
-            except OSError:
-                descartar_download(self._atualizacao_pendente)
-                QMessageBox.warning(self, "Atualização", "Não foi possível iniciar o instalador.")
         self.close()
         if self._sair_da_aplicacao:
             QTimer.singleShot(0, QApplication.quit)

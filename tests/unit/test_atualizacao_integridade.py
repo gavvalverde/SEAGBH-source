@@ -239,5 +239,50 @@ class InstalacaoTest(unittest.TestCase):
         self.lancar.assert_called_once_with(self.alvo, "--updated")
 
 
+@unittest.skipUnless(os.name == "nt", "Modo worker suportado exclusivamente no Windows")
+class InicioWorkerTest(unittest.TestCase):
+    def test_pedidos_e_areas_invalidos_avisam_sem_efeito_e_sem_vazar_detalhes(self):
+        casos = ("area", "executavel", "ausente", "json", "tamanho", "formato", "digest",
+                 "identidade", "ancestral")
+        with tempfile.TemporaryDirectory() as raiz:
+            area = Path(raiz)
+            for caso in casos:
+                with self.subTest(caso=caso):
+                    worker = area / ("CANARY.exe" if caso == "executavel" else "worker.exe")
+                    worker.write_bytes(BINARIO_ANTIGO)
+                    pedido = area / "pedido.json"
+                    pedido.unlink(missing_ok=True)
+                    dados = {"nome": "SEAGBH.exe", "esperado": ESPERADO, "anterior": ANTERIOR}
+                    if caso == "digest":
+                        dados["esperado"] = "CANARY"
+                    if caso == "identidade":
+                        dados["anterior"] = ESPERADO
+                    if caso == "formato":
+                        dados["nome"] = "CANARY/CAMINHO.exe"
+                    if caso == "json":
+                        pedido.write_bytes(b"{CANARY")
+                    elif caso == "tamanho":
+                        pedido.write_bytes(json.dumps(dados).encode() + b" " * 2049)
+                    elif caso != "ausente":
+                        pedido.write_text(json.dumps(dados), encoding="utf8")
+                    with (
+                        patch.object(sys, "frozen", True, create=True),
+                        patch.object(sys, "executable", str(worker)),
+                        patch.object(instalador, "_validar_area",
+                                     side_effect=PermissionError("CANARY") if caso == "area" else None),
+                        patch.object(instalador, "_validar_ancestrais",
+                                     side_effect=PermissionError("CANARY") if caso == "ancestral" else None),
+                        patch.object(instalador, "_instalar") as aplicar,
+                        patch.object(instalador, "_mostrar_mensagem", create=True) as mensagem,
+                    ):
+                        self.assertEqual(instalador.executar_worker(), 1)
+                    aplicar.assert_not_called()
+                    mensagem.assert_called_once()
+                    self.assertIn("Nenhum executável foi substituído", mensagem.call_args.args[0])
+                    self.assertNotIn("CANARY", mensagem.call_args.args[0])
+                    self.assertNotIn(str(area), mensagem.call_args.args[0])
+                    self.assertFalse((area / "resultado.json").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

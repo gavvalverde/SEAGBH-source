@@ -164,16 +164,29 @@ def _mensagem_falha(area, codigo):
             json.dump({"estado": codigo}, f)
     except OSError:
         pass
+    _mostrar_mensagem(
+        f"A atualização não foi concluída ({codigo}).\n"
+        "Não apague os arquivos de recuperação. Consulte o suporte.\n"
+        f"Pasta de diagnóstico: {area}",
+    )
+
+
+def _mostrar_mensagem(mensagem):
     import ctypes
     from ctypes.wintypes import HWND, LPCWSTR, UINT
     exibir = ctypes.WinDLL("user32").MessageBoxW
     exibir.argtypes = [HWND, LPCWSTR, LPCWSTR, UINT]
     exibir.restype = ctypes.c_int
-    exibir(
-        None, f"A atualização não foi concluída ({codigo}).\n"
-        "Não apague os arquivos de recuperação. Consulte o suporte.\n"
-        f"Pasta de diagnóstico: {area}", "Atualização SEAGBH", 0x10,
+    exibir(None, mensagem, "Atualização SEAGBH", 0x10)
+
+
+def _falha_inicio_worker():
+    # Nenhum caminho, erro externo ou pedido não validado é exibido ou gravado.
+    _mostrar_mensagem(
+        "A atualização não pôde ser iniciada. Nenhum executável foi substituído. "
+        "Abra o SEAGBH novamente ou consulte o suporte.",
     )
+    return 1
 
 
 def executar_worker():
@@ -184,20 +197,23 @@ def executar_worker():
     try:
         _validar_area(area)
         if worker.name != "worker.exe" or not stat.S_ISREG(_sem_link(area / "pedido.json").st_mode):
-            return 1
+            return _falha_inicio_worker()
         with (area / "pedido.json").open("rb") as pedido:
-            dados = json.loads(pedido.read(2049))
+            bruto = pedido.read(2049)
+        if len(bruto) > 2048:
+            return _falha_inicio_worker()
+        dados = json.loads(bruto)
         if (not isinstance(dados, dict) or set(dados) != {"nome", "anterior", "esperado"}
                 or not isinstance(dados["nome"], str)
                 or not re.fullmatch(r'[^/\\:*?"<>|\x00-\x1f]{1,200}\.exe', dados["nome"], flags=re.I)):
-            return 1
+            return _falha_inicio_worker()
         anterior = validar_sha256(dados["anterior"])
         esperado = validar_sha256(dados["esperado"])
         if _hash(worker) != anterior:
-            return 1
+            return _falha_inicio_worker()
         _validar_ancestrais(area.parent)
-    except (OSError, ValueError, ErroAtualizacao):
-        return 1
+    except (OSError, ValueError, RecursionError, ErroAtualizacao):
+        return _falha_inicio_worker()
     try:
         _instalar(area, area.parent / dados["nome"], esperado, anterior)
     except (OSError, ErroAtualizacao) as exc:
