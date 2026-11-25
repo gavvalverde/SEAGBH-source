@@ -11,6 +11,9 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
 from core.database import Database, ErroMovimentacao
+from core.datas_eventos import (
+    ErroPeriodoEvento, ORIENTACAO_DATA_EVENTO, problema_periodo_evento, validar_periodo_evento,
+)
 from ui.dialogs import (
     CriarEventoDialog, RetornoDialog, EditarEventoDialog,
     HistoricoDialog, LocalizacaoDialog,
@@ -48,8 +51,11 @@ class TabEventos(QWidget):
         self.entry_nome   = QLineEdit();  form.addRow("Nome do Evento:", self.entry_nome)
         self.entry_local  = QLineEdit();  form.addRow("Local do Evento:", self.entry_local)
         self.entry_resp   = QLineEdit();  form.addRow("Responsável:", self.entry_resp)
-        self.entry_inicio = QLineEdit();  form.addRow("Data Início (DD/MM/AAAA):", self.entry_inicio)
-        self.entry_fim    = QLineEdit();  form.addRow("Data Fim (DD/MM/AAAA):", self.entry_fim)
+        self.entry_inicio = QLineEdit();  form.addRow("Data Início:", self.entry_inicio)
+        self.entry_fim    = QLineEdit();  form.addRow("Data Fim:", self.entry_fim)
+        for campo in (self.entry_inicio, self.entry_fim):
+            campo.setPlaceholderText("DD/MM/AAAA [HH:MM[:SS]]")
+            campo.setToolTip(ORIENTACAO_DATA_EVENTO)
 
         root.addLayout(form)
 
@@ -127,7 +133,15 @@ class TabEventos(QWidget):
                 self.tabela.setItem(row, col, item)
 
             status = row_data[6]
-            if self._is_tema_escuro():
+            problema = problema_periodo_evento(row_data[4], row_data[5])
+            if problema:
+                item_status = self.tabela.item(row, 6)
+                item_status.setText("Datas a revisar")
+                item_status.setToolTip(f"{problema} Status registrado: {status}.")
+                bg, fg = (("#39260E", "#FFCD7A") if self._is_tema_escuro()
+                          else ("#FFF3D6", "#77420C"))
+                self._colorir_linha(row, bg, fg)
+            elif self._is_tema_escuro():
                 if status == "Concluído":
                     self._colorir_linha(row, "#0D2E1A", "#00C86F")
                 elif status == "Agendado":
@@ -176,6 +190,12 @@ class TabEventos(QWidget):
 
         if not all([nome, local, resp, inicio, fim]):
             QMessageBox.critical(self, "Erro", "Preencha todos os campos do evento!")
+            return
+
+        try:
+            validar_periodo_evento(inicio, fim)
+        except ErroPeriodoEvento as erro:
+            QMessageBox.warning(self, "Datas do evento", str(erro))
             return
 
         dlg = CriarEventoDialog(self.db, nome, local, resp, inicio, fim, parent=self)

@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor, QBrush
 
 from core.database import Database, ErroMovimentacao
+from core.datas_eventos import ErroPeriodoEvento, ORIENTACAO_DATA_EVENTO, problema_periodo_evento
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -177,7 +178,7 @@ class CriarEventoDialog(QDialog):
                 self._nome, self._local, self._resp,
                 self._inicio, self._fim, ids, self._conteudo_notas,
             )
-        except ErroMovimentacao as erro:
+        except (ErroMovimentacao, ErroPeriodoEvento) as erro:
             QMessageBox.warning(self, "Evento não criado", str(erro))
             return
         except Exception as e:
@@ -335,13 +336,16 @@ class EditarEventoDialog(QDialog):
         self.entry_nome = QLineEdit(dados["nome_evento"])
         self.entry_local = QLineEdit(dados["local_evento"])
         self.entry_resp = QLineEdit(dados["responsavel"])
-        self.entry_inicio = QLineEdit(dados["data_inicio"])
-        self.entry_fim = QLineEdit(dados["data_fim"])
+        self.entry_inicio = QLineEdit(str(dados["data_inicio"] or ""))
+        self.entry_fim = QLineEdit(str(dados["data_fim"] or ""))
         form.addRow("Nome do Evento:", self.entry_nome)
         form.addRow("Local do Evento:", self.entry_local)
         form.addRow("Responsável:", self.entry_resp)
-        form.addRow("Data Início (DD/MM/AAAA):", self.entry_inicio)
-        form.addRow("Data Fim (DD/MM/AAAA):", self.entry_fim)
+        form.addRow("Data Início:", self.entry_inicio)
+        form.addRow("Data Fim:", self.entry_fim)
+        for campo in (self.entry_inicio, self.entry_fim):
+            campo.setPlaceholderText("DD/MM/AAAA [HH:MM[:SS]]")
+            campo.setToolTip(ORIENTACAO_DATA_EVENTO)
         root.addLayout(form)
 
         # Tabela de equipamentos
@@ -431,6 +435,8 @@ class EditarEventoDialog(QDialog):
             )
             QMessageBox.information(self, "Sucesso", "Alterações salvas com sucesso!")
             self.accept()
+        except ErroPeriodoEvento as erro:
+            QMessageBox.warning(self, "Datas do evento", str(erro))
         except Exception as e:
             QMessageBox.critical(self, "Erro", f"Falha ao salvar: {e}")
 
@@ -586,7 +592,15 @@ class HistoricoDialog(QDialog):
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 self.tabela.setItem(row, col, item)
             status = row_data[6]
-            if self._is_tema_escuro():
+            problema = problema_periodo_evento(row_data[4], row_data[5])
+            if problema:
+                item_status = self.tabela.item(row, 6)
+                item_status.setText("Datas a revisar")
+                item_status.setToolTip(f"{problema} Status registrado: {status}.")
+                bg, fg = (("#39260E", "#FFCD7A") if self._is_tema_escuro()
+                          else ("#FFF3D6", "#77420C"))
+                self._colorir_linha(row, bg, fg)
+            elif self._is_tema_escuro():
                 if status == "Concluído":
                     self._colorir_linha(row, "#0D2E1A", "#00C86F")
                 elif status == "Agendado":
@@ -653,7 +667,10 @@ class DetalhesEventoDialog(QDialog):
             f"Período: {dados['data_inicio']} a {dados['data_fim']}\n"
             f"Status: {dados['status']}"
         )
+        if problema := problema_periodo_evento(dados["data_inicio"], dados["data_fim"]):
+            info += f" (registrado)\nDatas a revisar: {problema}"
         lbl_info = QLabel(info)
+        lbl_info.setTextFormat(Qt.TextFormat.PlainText)
         lbl_info.setStyleSheet("font-size: 13px;")
         root.addWidget(lbl_info)
 

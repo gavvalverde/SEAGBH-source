@@ -7,6 +7,7 @@ inventário e manutenção.
 import os
 import re
 from datetime import datetime
+from html import escape
 from collections import Counter
 
 from PyQt6.QtWidgets import (
@@ -25,6 +26,7 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 
 from core.database import Database, APP_DIR
+from core.datas_eventos import problema_periodo_evento
 
 # Cores padrão do cabeçalho PDF
 _AZUL = "#2A5A78"
@@ -112,7 +114,11 @@ class TabRelatorios(QWidget):
             elementos.append(Spacer(1, 15))
 
             cabecalho = ["ID", "Evento", "Responsável", "Início", "Término"]
-            dados_tabela = [cabecalho] + [list(r) for r in dados]
+            dados_tabela = [cabecalho]
+            for eid, nome, responsavel, inicio, fim in dados:
+                if problema_periodo_evento(inicio, fim):
+                    fim = f"{fim}\nDatas a revisar"
+                dados_tabela.append([eid, nome, responsavel, inicio, fim])
 
             tabela = Table(dados_tabela, colWidths=[1.2 * cm, 6 * cm, 4 * cm, 3 * cm, 3 * cm])
             tabela.setStyle(_estilo_tabela_padrao())
@@ -184,7 +190,9 @@ class TabRelatorios(QWidget):
                 elementos.append(Spacer(1, 6))
                 elementos.append(Paragraph(f"• Responsável: {ev['responsavel']}", body))
                 elementos.append(Paragraph(
-                    f"• Período: {ev['data_inicio']} a {ev['data_fim']}", body))
+                    f"• Período: {escape(str(ev['data_inicio']))} a {escape(str(ev['data_fim']))}", body))
+                if problema_periodo_evento(ev["data_inicio"], ev["data_fim"]):
+                    elementos.append(Paragraph("Datas a revisar: período não confirmado.", body))
                 elementos.append(Spacer(1, 12))
 
                 elementos.append(Paragraph("Resumo de Equipamentos:", estilos["Heading3"]))

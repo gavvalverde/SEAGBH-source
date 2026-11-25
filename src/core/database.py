@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .conexao_sqlite_protegida import FechamentoPendente
+from .datas_eventos import ErroPeriodoEvento, validar_periodo_evento
 
 try:
     import psycopg  # type: ignore
@@ -591,6 +592,7 @@ class Database:
         Cria evento + movimentações de saída em uma única transação.
         Retorna o ID do novo evento.
         """
+        validar_periodo_evento(inicio, fim)
         with self._transacao_movimentacao():
             ids = self._equipamentos_para_saida(equipamentos_ids)
             if self.backend == "postgres":
@@ -633,12 +635,17 @@ class Database:
         return dict(zip(keys, row))
 
     def atualizar_evento(self, evento_id, nome, local, resp, inicio, fim):
-        self.cursor.execute(
-            """UPDATE eventos SET nome_evento=?, local_evento=?,
-               responsavel=?, data_inicio=?, data_fim=? WHERE id=?""",
-            (nome, local, resp, inicio, fim, evento_id),
-        )
-        self.conn.commit()
+        validar_periodo_evento(inicio, fim)
+        try:
+            self.cursor.execute(
+                """UPDATE eventos SET nome_evento=?, local_evento=?,
+                   responsavel=?, data_inicio=?, data_fim=? WHERE id=?""",
+                (nome, local, resp, inicio, fim, evento_id),
+            )
+            self.conn.commit()
+        except BaseException as erro:
+            self._reverter_operacao_composta(erro)
+            raise
 
     def remover_evento(self, evento_id):
         with self._transacao_movimentacao():
@@ -788,8 +795,14 @@ class Database:
     # ── Eventos atrasados ─────────────────────────────────────────────────
 
     def eventos_atrasados(self) -> list:
+        """Retorna somente atrasos com período válido e saída pendente."""
+        atrasados, _ = self.classificar_eventos_com_pendencias()
+        return atrasados
+
+    def classificar_eventos_com_pendencias(self) -> tuple[list, list]:
+        """Retorna atrasos confirmados e períodos ilegíveis em listas separadas."""
         self.cursor.execute("""
-            SELECT e.id, e.nome_evento, e.data_fim, COUNT(*)
+            SELECT e.id, e.nome_evento, e.data_fim, COUNT(*), e.data_inicio
             FROM eventos e
             JOIN movimentacoes m ON m.evento_id = e.id AND m.tipo = 'saida'
             WHERE e.status = 'Agendado'
@@ -800,23 +813,21 @@ class Database:
                     AND r.equipamento_id = m.equipamento_id
                     AND r.tipo = 'retorno'
               )
-            GROUP BY e.id, e.nome_evento, e.data_fim
+            GROUP BY e.id, e.nome_evento, e.data_fim, e.data_inicio
+            ORDER BY e.id
         """)
-        rows = self.cursor.fetchall()
-        hoje = datetime.now().date()
-        atrasados = []
-        for row in rows:
-            data_fim_raw = str(row[2] or "").strip()
-            data_evento = None
-            for fmt in ("%d/%m/%Y", "%d/%m/%Y %H:%M", "%d/%m/%Y %H:%M:%S"):
-                try:
-                    data_evento = datetime.strptime(data_fim_raw, fmt).date()
-                    break
-                except ValueError:
-                    continue
-            if data_evento and data_evento < hoje:
-                atrasados.append(row)
-        return atrasados
+        agora = datetime.now()
+        atrasados, invalidos = [], []
+        for *resumo, inicio in self.cursor.fetchall():
+            linha = tuple(resumo)
+            try:
+                periodo = validar_periodo_evento(inicio, linha[2])
+            except ErroPeriodoEvento:
+                invalidos.append(linha)
+                continue
+            if periodo.vencido_em(agora):
+                atrasados.append(linha)
+        return atrasados, invalidos
 
     # ── Auditoria ─────────────────────────────────────────────────────────
 

@@ -1,4 +1,6 @@
 """Regressões M1 no caminho Database usado pelas telas, com SQLite inventado."""
+from datetime import datetime
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -247,3 +249,101 @@ class TestIntegridadeEstoqueM1(TestCase):
         assert _movimentos(caminho) == antes == [
             (evento, outro, "saida"), (evento, item, "retorno"), (evento, item, "saida"),
         ]
+
+
+class TestDatasEventos(TestCase):
+    def setUp(self):
+        self.caminho = Path(self.enterContext(TemporaryDirectory())) / "datas-sinteticas.db"
+        self.enterContext(patch.object(database, "_load_env_file"))
+        self.enterContext(patch.object(database, "get_db_path", return_value=str(self.caminho)))
+        self.enterContext(patch.dict(os.environ, {"SEAGBH_DB_ENGINE": "sqlite"}))
+        self.db = database.Database()
+        self.addCleanup(self.db.fechar)
+        self.db.cadastrar_equipamento("0001", "Mesa", "", "")
+        self.item = self.db.obter_id_por_codigo("0001")
+
+    def criar(self, inicio, fim, item=None):
+        ids = [] if item is None else [item]
+        return self.db.criar_evento("Evento", "Sala", "Equipe", inicio, fim, ids)
+
+    def _movimentos(self):
+        conn = sqlite3.connect(self.caminho)
+        try:
+            return conn.execute("SELECT evento_id, equipamento_id, tipo FROM movimentacoes").fetchall()
+        finally:
+            conn.close()
+
+    def test_criar_recusa_data_impossivel_nao_bissexta_ou_periodo_invertido(self):
+        for inicio, fim in (("31/02/2026", "01/03/2026"),
+                            ("28/02/2025", "29/02/2025"),
+                            ("02/03/2026", "01/03/2026"),
+                            ("01/03/2026 17:01", "01/03/2026 17:00"),
+                            ("01/03/2026", "01/03/2026 24:00")):
+            with self.subTest(inicio=inicio, fim=fim):
+                with self.assertRaises(ValueError):
+                    self.criar(inicio, fim, self.item)
+                self.assertEqual(self.db.listar_eventos(), [])
+                self.assertEqual(self._movimentos(), [])
+
+    def test_bissexto_e_horarios_validos_nao_mudam_semantica_da_saida(self):
+        evento = self.criar("29/02/2028 13:00", "29/02/2028 13:00:05", self.item)
+        self.assertEqual(self.db.obter_evento(evento)["data_fim"], "29/02/2028 13:00:05")
+        self.assertEqual(self._movimentos(), [(evento, self.item, "saida")])
+        self.assertTrue(self.db.registrar_retorno(evento, "0001").evento_concluido)
+        self.assertEqual(self.db.eventos_atrasados(), [])
+
+    def test_editar_invalido_nao_altera_nenhum_campo_ou_movimento(self):
+        evento = self.criar("29/02/2028 12:00", "29/02/2028", self.item)
+        antes = self.db.obter_evento(evento)
+        with self.assertRaises(ValueError):
+            self.db.atualizar_evento(evento, "Outro", "Outro", "Outra",
+                                     "29/02/2028", "31/02/2028")
+        self.assertEqual(self.db.obter_evento(evento), antes)
+        self.assertEqual(self._movimentos(), [(evento, self.item, "saida")])
+        self.db.atualizar_evento(evento, "Outro", "Outro", "Outra",
+                                 "01/03/2028", "01/03/2028 01:00")
+        self.assertEqual(self.db.obter_evento(evento)["nome_evento"], "Outro")
+        self.assertEqual(self._movimentos(), [(evento, self.item, "saida")])
+
+    def test_edicao_reverte_falha_sqlite_depois_da_escrita(self):
+        evento = self.criar("01/08/2026", "02/08/2026", self.item)
+        antes = self.db.obter_evento(evento)
+        self.db.cursor.execute("""
+            CREATE TRIGGER falha_apos_edicao AFTER UPDATE OF data_fim ON eventos
+            BEGIN SELECT RAISE(FAIL, 'falha sintética na edição'); END
+        """)
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "falha sintética na edição"):
+            self.db.atualizar_evento(evento, "Outro", "Outro", "Outra",
+                                     "01/08/2026", "03/08/2026")
+        self.assertEqual(self.db.obter_evento(evento), antes)
+        self.assertEqual(self._movimentos(), [(evento, self.item, "saida")])
+
+    def test_atraso_por_hora_e_por_dia_com_pendencia(self):
+        self.db.cadastrar_equipamento("0002", "Caixa", "", "")
+        segundo = self.db.obter_id_por_codigo("0002")
+        com_hora = self.criar("01/08/2026", "01/08/2026 12:00", self.item)
+        sem_hora = self.criar("01/08/2026", "01/08/2026", segundo)
+        self.criar("01/07/2026", "01/07/2026")  # não tem saída pendente
+        with patch.object(database, "datetime", wraps=datetime) as relogio:
+            relogio.now.return_value = datetime(2026, 8, 1, 12)
+            self.assertEqual(self.db.eventos_atrasados(), [])
+            relogio.now.return_value = datetime(2026, 8, 1, 12, 0, 1)
+            self.assertEqual([r[0] for r in self.db.eventos_atrasados()], [com_hora])
+            relogio.now.return_value = datetime(2026, 8, 2)
+            self.assertEqual({r[0] for r in self.db.eventos_atrasados()}, {com_hora, sem_hora})
+            self.db.registrar_retorno(com_hora, "0001")
+            self.assertEqual([r[0] for r in self.db.eventos_atrasados()], [sem_hora])
+
+    def test_legado_invalido_e_sinalizado_sem_regravar(self):
+        evento = self.criar("01/08/2026", "02/08/2026", self.item)
+        self.db.cursor.execute("UPDATE eventos SET data_inicio = ? WHERE id = ?", ("31/02/2026", evento))
+        self.db.conn.commit()
+        antes = self.db.obter_evento(evento)
+        with patch.object(database, "datetime", wraps=datetime) as relogio:
+            relogio.now.return_value = datetime(2026, 8, 3)
+            self.assertEqual(self.db.eventos_atrasados(), [])
+            atrasados, invalidos = self.db.classificar_eventos_com_pendencias()
+        self.assertEqual(atrasados, [])
+        self.assertEqual(invalidos, [(evento, "Evento", "02/08/2026", 1)])
+        self.assertEqual(self.db.obter_evento(evento), antes)
+        self.assertEqual(self._movimentos(), [(evento, self.item, "saida")])
