@@ -507,7 +507,10 @@ class Database:
                     SELECT m.equipamento_id, m.evento_id,
                            SUM(CASE WHEN m.tipo = 'saida' THEN 1 ELSE 0 END) AS saidas,
                            SUM(CASE WHEN m.tipo = 'retorno' THEN 1 ELSE 0 END) AS retornos,
-                           SUM(CASE WHEN m.tipo IN ('saida', 'retorno') THEN 0 ELSE 1 END) AS invalidos
+                           SUM(CASE WHEN m.tipo IN ('saida', 'retorno') THEN 0 ELSE 1 END)
+                           + CASE WHEN MIN(CASE WHEN m.tipo = 'retorno' THEN m.id END)
+                                     < MIN(CASE WHEN m.tipo = 'saida' THEN m.id END)
+                                  THEN 1 ELSE 0 END AS invalidos
                     FROM movimentacoes m JOIN itens i ON i.id = m.equipamento_id
                     GROUP BY m.equipamento_id, m.evento_id
                 ), ativos AS (
@@ -638,7 +641,9 @@ class Database:
                GROUP BY equipamento_id
                HAVING SUM(CASE WHEN tipo = 'saida' THEN 1 ELSE 0 END) <> 1
                    OR SUM(CASE WHEN tipo = 'retorno' THEN 1 ELSE 0 END) <> 1
-                   OR SUM(CASE WHEN tipo IN ('saida', 'retorno') THEN 0 ELSE 1 END) > 0""",
+                   OR SUM(CASE WHEN tipo IN ('saida', 'retorno') THEN 0 ELSE 1 END) > 0
+                   OR MIN(CASE WHEN tipo = 'retorno' THEN id END)
+                    < MIN(CASE WHEN tipo = 'saida' THEN id END)""",
             (evento_id,),
         )
         if self.cursor.fetchone() is not None:

@@ -220,3 +220,30 @@ class TestIntegridadeEstoqueM1(TestCase):
         assert _movimentos(caminho) == [
             (primeiro, item, "saida"), (primeiro, item, "retorno"), (segundo, item, "saida"),
         ]
+
+    def test_legado_com_retorno_anterior_a_saida_nao_libera_equipamento(self):
+        db, caminho = self.db, self.caminho
+        item = _equip(db, "0001")
+        outro = _equip(db, "0002")
+        evento = _evento(db, "Evento", outro)
+        for tipo in ("retorno", "saida"):
+            _sql(
+                caminho,
+                "INSERT INTO movimentacoes (evento_id, equipamento_id, data_movimentacao, tipo)"
+                " VALUES (?, ?, '01/12/2026 09:00', ?)",
+                (evento, item, tipo),
+            )
+        antes = _movimentos(caminho)
+        assert item not in {e[0] for e in db.listar_equipamentos_disponiveis()}
+        with self.assertRaises(ValueError) as erro:
+            db.localizar_equipamento("0001")
+        assert erro.exception.codigo == "estado_legado_inconsistente"
+        with self.assertRaises(ValueError):
+            _evento(db, "Não libera a saída", item)
+        with self.assertRaises(ValueError) as erro_conclusao:
+            db.registrar_retorno(evento, "0002")
+        assert erro_conclusao.exception.codigo == "estado_legado_inconsistente"
+        assert db.obter_evento(evento)["status"] == "Agendado"
+        assert _movimentos(caminho) == antes == [
+            (evento, outro, "saida"), (evento, item, "retorno"), (evento, item, "saida"),
+        ]
