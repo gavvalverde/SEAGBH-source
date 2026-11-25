@@ -1,4 +1,5 @@
 """K68-E offline contracts. The responses here are mocks, not Kimi evidence."""
+from copy import deepcopy
 from dataclasses import replace
 from decimal import Decimal
 import json
@@ -115,6 +116,36 @@ class OfflinePilot(unittest.TestCase):
         summary = pilot.summarize([pilot.grade(pilot.CASES[0], report, {})])
         self.assertEqual(summary["cases_evaluable"], 0)
         self.assertTrue(all(summary[k] is None for k in ("TP", "FP", "FN", "precision", "recall", "F1")))
+
+    def test_preflight_rejects_mutated_wire_parameters_before_approval(self):
+        # The locked contract's fixed output token limit must not be replaced
+        # by a larger request after planning while retaining its cheap budget.
+        plan = pilot.make_plan(pilot.CASES[0])
+        plan.discovery[0]["max_tokens"] = 1_000_000
+        plans = [plan, *self.plans[1:]]
+        with self.assertRaisesRegex(ValueError, "payload contract drift"):
+            pilot.preflight(plans, ceiling=Decimal("0.45"))
+
+        # No other price, provider, reasoning or schema field may drift either.
+        def mutated(change):
+            wire = deepcopy(self.plans[0].discovery[0])
+            change(wire)
+            return [replace(self.plans[0], discovery=(wire,)), *self.plans[1:]]
+
+        for label, modification in (
+            ("input_price", lambda p: p["provider"]["max_price"].update(prompt=0.01)),
+            ("output_price", lambda p: p["provider"]["max_price"].update(completion=0.01)),
+            ("provider", lambda p: p["provider"].update(only=["other/provider"])),
+            ("fallback", lambda p: p["provider"].update(allow_fallbacks=True)),
+            ("reasoning", lambda p: p["reasoning"].update(enabled=True)),
+            ("temperature", lambda p: p.update(temperature=0.5)),
+            ("schema", lambda p: p["response_format"].update(type="json_object")),
+            ("model", lambda p: p.update(model="other/model")),
+            ("messages", lambda p: p["messages"][1].update(content="modified")),
+        ):
+            with self.subTest(change=label):
+                with self.assertRaisesRegex(ValueError, "payload contract drift"):
+                    pilot.preflight(mutated(modification), ceiling=Decimal("0.45"))
 
     def test_financial_and_call_caps_hold_before_any_mock(self):
         bound = pilot.preflight(self.plans)
