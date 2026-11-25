@@ -55,6 +55,8 @@ jobs:
           "$PY" -B .github/ai-review/benchmarks/harness/test_legacy_matching.py
           "$PY" -B .github/ai-review/benchmarks/harness/test_bench.py
           "$PY" -B .github/ai-review/benchmarks/harness/leak_guard.py
+          "$PY" -B .github/ai-review/synthetic-pilot/pilot_offline.py
+          "$PY" -B .github/ai-review/synthetic-pilot/test_pilot_offline.py
 
   offline-windows-v2:
     name: AI Reviewer v2 offline (Windows, Python 3.12)
@@ -104,3 +106,7 @@ jobs:
             & $py -B (Join-Path '.github/ai-review/benchmarks/harness' $test)
             if ($LASTEXITCODE -ne 0) { throw "Offline test failed: $test" }
           }
+          & $py -B '.github/ai-review/synthetic-pilot/pilot_offline.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Offline synthetic pilot preflight failed' }
+          & $py -B '.github/ai-review/synthetic-pilot/test_pilot_offline.py'
+          if ($LASTEXITCODE -ne 0) { throw 'Offline synthetic pilot tests failed' }
