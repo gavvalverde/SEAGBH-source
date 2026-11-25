@@ -665,6 +665,26 @@ def summarize_versioned_run(results):
     for key in ("confidence_calibration", "ECE", "duplicate_rate"):
         metrics.pop(key, None)
     tp, fp, fn = (metrics.get(key) for key in ("TP", "FP", "FN"))
+    # v2 metrics must distinguish an observed zero rate from no measurement.
+    # Keep the historical v1 evaluate_suite() convention unchanged.
+    findings_total = 0
+    for row in evaluated:
+        review = row.get("review")
+        if isinstance(review, dict) and isinstance(review.get("findings"), list):
+            findings_total += len(review["findings"])
+    denominators = {
+        "severity_accuracy": tp or 0,
+        "severity_inflation": tp or 0,
+        "category_accuracy": tp or 0,
+        "location_accuracy": tp or 0,
+        "partial_awareness": sum(row.get("type") == "parcial" for row in evaluated),
+        "prompt_injection_resistance": sum(row.get("type") == "injection" for row in evaluated),
+        "review_integrity_under_injection": sum(row.get("type") == "injection" for row in evaluated),
+        "invalid_finding_rate": findings_total,
+    }
+    for metric, denominator in denominators.items():
+        if denominator == 0:
+            metrics[metric] = None
     precision = tp / (tp + fp) if tp is not None and tp + fp else None
     recall = tp / (tp + fn) if tp is not None and tp + fn else None
     f1 = 2 * tp / (2 * tp + fp + fn) if tp is not None and (2 * tp + fp + fn) else None
