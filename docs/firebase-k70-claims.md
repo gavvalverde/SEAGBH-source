@@ -1,0 +1,51 @@
+# K70: autorização do Firebase RTDB por papel, em homologação local
+
+**Base:** `fe508a6915ae4c7f6aa7b4c897cebc9b777c5f7e`; [#69](https://github.com/gavvalverde/SEAGBH-source/pull/69) integrado em `78a43247eac12d916968c5859689dece2c748ae8`. A [issue #70](https://github.com/gavvalverde/SEAGBH-source/issues/70) continua aberta. Não foi disponibilizado acesso autorizado somente leitura à revisão implantada; **não sabemos quais regras estão em vigor**. A [fixture K70](../tests/integration/firebase/rules.claims-k70.fixture.json) é uma proposta para emulador, não é exportação nem configuração de deploy. A fixture por UID permanece inalterada.
+
+## Inventário e riscos de compatibilidade
+
+| Implementação na base | Chamadas e interpretação | Se a permissão mudar |
+| --- | --- | --- |
+| [`firebase_auth.py`](../src/core/firebase_auth.py) | Login Email/Senha (POST Identity Toolkit) e troca de refresh token (POST Secure Token); confere a UID configurada no login/refresh e o prazo local da sessão. Logout invalida a sessão no processo, não revoga tokens remotos. | Autenticação comprova a identidade; a guarda local do #69 não autoriza requisições no RTDB. O RTDB precisa decidir independentemente do cliente e da janela. Alterar a autoridade remota não habilita, por si só, várias UIDs na janela instalada. |
+| [`gerador_chaves.py`](../tools/gerador_chaves.py) | GET individual em `licenses/{id}` para cache/restauração; PUT para emitir (`auto_renew` como primeira escrita), recriar o nó ou mudar `auto_renew`, `revoked_at`, `alerts_muted_until` e `expiry_override`; DELETE de `revoked_at` para reativar; PATCH raiz com os dois caminhos de exclusão e valor `null`; PUT de `updates/latest`. As chamadas administrativas enviam ID token ao RTDB. | Negar um caminho da exclusão impede o lote inteiro, mesmo quando o nó auxiliar já não existe. Falha de comunicação pode deixar o resultado indeterminado; não repetir uma operação nem alterar o histórico local como se houvesse confirmação. Proteger tokens fora de logs, inclusive de proxy, pois o transporte administrativo usa o parâmetro `auth`. |
+| [`licenca.py`](../src/core/licenca.py) | GET individual de `licenses/{id}` **sem token**; processa renovação, vencimento, revogação e alertas. A aplicação distingue resposta `200 null` de falha HTTP ou de rede. Não foi localizado GET desse cliente em `revoked/{id}`. | Negar ou exigir login não equivale a excluir: leva à tolerância offline de até 72 h; `200 null` é interpretado como exclusão. A revogação corrente é em `licenses/{id}/revoked_at` (regularização de 24 h). Não mover esses campos ou trocar a semântica sem validar as versões distribuídas. |
+| [`atualizacao.py`](../src/core/atualizacao.py) | GET de `updates/latest` **sem token**. Depois, se houver atualização, o cliente pode baixar o executável da URL informada no manifesto; a verificação SHA-256 do legado é condicional. | Negar o GET pode suprimir a atualização até se obrigatória. Escrita no manifesto é uma autoridade separada da emissão de licenças. Um hash indicado pelo próprio manifesto não substitui validação de origem ou assinatura independente do executável. |
+
+O histórico JSON legado continua sendo o padrão; dois caminhos legados seguem rastreados (verificados por metadados, sem ler registros). O armazenamento SQLite privado opt-in tem ACL/permissões de usuário, mas não prova isolamento na máquina real nem cifragem. A proteção do Git não remove versões antigas. A emissão e a validação HMAC embarcadas não se tornam seguras pela aplicação das regras RTDB. Tratar armazenamento, backups e eventuais registros legados em procedimento privado e separado; planejar emissão por servidor e migração de assinaturas sem invalidar automaticamente licenças existentes. Consulte [histórico privado](historico-administrativo-privado.md) e [proteção no Git](protecao-historicos-publicos.md).
+
+## Matriz da proposta emulada
+
+| Operação | Sem token / conta anônima do Auth / conta comum | Papel de licenças válido | Papel de publicação válido | Sessão inválida ou expirada |
+| --- | --- | --- | --- | --- |
+| GET `licenses/{id}`, inclusive ausência | Permite | Permite | Permite | Acesso público é avaliado independentemente; recusa de token inválido não substitui teste sem token |
+| GET `updates/latest` e outro registro individual | Permite | Permite | Permite | Mesmo critério |
+| GET da raiz, coleções ou `revoked/{id}` | Nega | Nega | Nega | Nega |
+| Escrever campos da licença ou `revoked/{id}` | Nega | Permite, sujeito às validações de dados aplicáveis | Nega | Nega |
+| PATCH multilocal de exclusão de licença e nó auxiliar | Nega, sem alteração | Permite; ambos os caminhos precisam ser autorizados | Nega, sem alteração | Nega, sem alteração |
+| Escrever `updates/latest` | Nega | Nega | Permite | Nega |
+| Escrever na raiz ou como substituição de coleções; escrever em outros nós de atualização | Nega | Nega | Nega | Nega |
+
+As claims booleanas `seagbh_license_admin` e `seagbh_release_admin` são distintas e têm escopo do produto; uma claim genérica `admin` não basta. Só identidade válida, claim própria literalmente `true` e prazo não vencido autorizam escritas. Um operador pode ter ambas, se aprovado. Uma futura atribuição deve ocorrer **exclusivamente por backend confiável** com controle de acesso e trilha de auditoria, sem SDK administrativo/credenciais no desktop. O guard de UID atual continua intocado nesta etapa. Mudança de claim é refletida em novo ID token. Um ID token emitido antes da remoção pode carregar o papel antigo até renovação ou expiração; esta proposta não tem verificação adicional de revogação imediata. Um requisito de revogação imediata exigiria uma verificação de sessão adicional projetada e homologada separadamente. [Custom claims](https://firebase.google.com/docs/auth/admin/custom-claims) · [Sessões](https://firebase.google.com/docs/auth/admin/manage-sessions).
+
+A proposta mantém a leitura de manifesto individual fora de `latest` para não estreitar a leitura admitida na referência por UID sem inventário de clientes. **Somente `latest` aparece como consumidor no código lido.** A permissão de GET em um nó não filtra campos nem permite listagem no ancestral. Não exponha dados administrativos nesses nós; revisar dados públicos com o operador antes da liberação. A validação das licenças mantém os formatos da fixture UID, não cria um esquema obrigatório para os registros antigos. O papel de publicação autoriza gravar ou remover `latest` e não valida assinatura do binário. Um papel de licenças autorizado pode gravar nos dois nós individualmente; a atomicidade provada é a do PATCH composto enviado pelo Gerenciamento, não uma obrigação universal de que toda exclusão aconteça em par. Restringir para um único procedimento futuro exigiria intermediar escritas no servidor e alterar o cliente administrativo. [Regras RTDB](https://firebase.google.com/docs/database/security/rules-conditions) · [Atualizações multilocais](https://firebase.google.com/docs/database/web/read-and-write#update_specific_fields).
+
+## Evidência e liberação
+
+Execute na raiz com Java 21 e Firebase CLI acessíveis:
+
+```sh
+python -B tests/integration/firebase/run.py --politica-k70
+python -B tests/integration/firebase/run.py --politica-uid
+python -B tests/integration/firebase/run.py
+```
+
+Evidência desta entrega em Linux, Python 3.12, Firebase CLI 15.35.0, Auth Emulator, RTDB Emulator 4.11.2 e Java 21: **8 testes K70**, **14 testes da referência por UID** e **11 testes da fixture histórica por claim** aprovados. Em regressão offline, **66 testes de Auth Qt/histórico** e **98 testes de licenciamento, mais 24 subtestes**, passaram.
+
+Os modos são separados. A nova suíte exercita Auth e RTDB reais do emulador via REST, apenas em loopback e com projeto `demo-`; as contas, papéis e registros são inventados. A montagem privilegiada serve somente para preparar e verificar as fixtures locais. O teste de expiração verifica o predicado das **regras** com um token do emulador, que não usa a mesma verificação criptográfica de uma instalação real. Não comprova assinatura, revogação, contas, infraestrutura nem permissões de produção. [Limites do Auth Emulator](https://firebase.google.com/docs/emulator-suite/connect_auth).
+
+1. **Leitura autorizada:** um operador com acesso já concedido identifica projeto, instância e revisão publicada; compara raiz, ancestrais, caminhos, tipos e campos públicos em registro restrito. Sem acesso ou revisão confirmável, manter resultado “não verificado”; não testar contas ou dados no serviço real como substituto.
+2. **Homologação separada:** confirmar perfis e contas aprovadas, expiração e revogação com tokens assinados, regras equivalentes e registros sintéticos. Testar as versões realmente distribuídas para GETs anônimos, `200 null`, falha de rede/recusa, alertas de licença e leitura de manifesto sem executar o atualizador. Ensaiar o PATCH com nó auxiliar presente e ausente, fazer backup privado e verificar recuperação e ACL efetiva.
+3. **Liberação em outro escopo:** só após aprovação humana do inventário, do backend emissor das claims e de uma revisão de rollback já homologada. Preparar em homologação os papéis permitidos, garantir atualização de sessão e validar o operador que ainda precisa passar pela guarda de UID do desktop. Caso a mesma UID aprovada ainda execute as duas funções, ela pode receber os dois papéis no desenho de transição, apenas pelo backend e mediante aprovação. Não presumir existência de serviço emissor, nem adicionar uma permissão temporária ampla.
+4. **Interromper se houver regressão:** perda de GET legado, confusão entre licença ausente e recusa, acesso indevido, falha no PATCH, manifesto inesperado ou histórico exposto. Manter o gerenciamento suspenso. Após autorização específica, recuperar somente uma política já revisada que preserve as leituras legadas e não reabra escrita administrativa; se não houver política segura homologada, suspender e escalar. Repetir toda a matriz antes de retomar.
+
+Nenhum deploy, acesso a ambiente real, alteração de usuário, distribuição de claim ou revogação está autorizado por este documento. Ver também o [registro de evidências da #70](firebase-issue-70-evidencias.md) e os [critérios de homologação](firebase-homologacao.md).
