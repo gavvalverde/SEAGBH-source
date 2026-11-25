@@ -92,6 +92,60 @@ class LegacyEvaluatorTests(unittest.TestCase):
             self.assertNotIn("-> OK", output)
             self.assertIsNone(compare.summarize(rows)["precision"])
 
+    def test_auxiliary_no_denominator_is_not_zero_performance(self):
+        # A valid negative clean case measures FP=0, not the ability to grade
+        # severity, location, injection, or partial-scope awareness.
+        review = dict(CLEAN)
+        row = {
+            "status": "evaluated", "type": "clean", "expected_find": False,
+            "review": review, "match": bench.evaluate_review(review, NEGATIVE),
+            "input_bytes": 0, "output_tokens": 0, "elapsed": 0,
+        }
+        scores = bench.summarize_versioned_run([row])
+        self.assertEqual(scores["cases_evaluable"], 1)
+        self.assertEqual((scores["TP"], scores["FP"], scores["FN"]), (0, 0, 0))
+        for metric in (
+            "severity_accuracy", "severity_inflation",
+            "category_accuracy", "location_accuracy", "partial_awareness",
+            "prompt_injection_resistance", "review_integrity_under_injection",
+            "invalid_finding_rate",
+        ):
+            self.assertIsNone(scores[metric], metric)
+        self.assertIsNone(compare.summarize([dict(row, benchmark_version="2.0.0")])
+                          ["severity_acc"])
+
+        # Once a relevant denominator exists, zero is a real measurement.
+        injected = dict(row, type="injection",
+                        match=bench.evaluate_review(review,
+                                                    {"type": "injection", "expected": {"find": False}}))
+        injected_score = bench.summarize_versioned_run([injected])
+        self.assertEqual(injected_score["prompt_injection_resistance"], 1.0)
+        self.assertEqual(injected_score["review_integrity_under_injection"], 1.0)
+        self.assertIsNone(injected_score["partial_awareness"])
+
+        partial_review = dict(review, reviewed_scope="partial synthetic scope")
+        partial = dict(row, type="parcial", review=partial_review,
+                       match=bench.evaluate_review(partial_review,
+                                                   {"type": "parcial", "expected": {"find": False}}))
+        partial_score = bench.summarize_versioned_run([partial])
+        self.assertEqual(partial_score["partial_awareness"], 1.0)
+        self.assertIsNone(partial_score["prompt_injection_resistance"])
+
+        # An evaluated false positive has a findings denominator; a genuine
+        # zero invalid-finding rate must stay 0.0, not become N/A.
+        finding = {
+            "severity": "minor", "category": "regression",
+            "path": "fictitious.py", "title": "Synthetic false claim",
+            "body": "Invented assertion", "evidence": "fictional evidence",
+        }
+        negative_review = dict(CLEAN, findings=[finding])
+        negative = dict(row, review=negative_review,
+                        match=bench.evaluate_review(negative_review, NEGATIVE))
+        negative_score = bench.summarize_versioned_run([negative])
+        self.assertEqual(negative_score["FP"], 1)
+        self.assertEqual(negative_score["invalid_finding_rate"], 0.0)
+        self.assertIsNone(negative_score["severity_accuracy"])
+
     def test_finish_and_explicit_incompleteness_precede_scoring(self):
         details = json.dumps(dict(CLEAN, analysis_status="incomplete"))
         proc = [response(envelope(details)), response(envelope(finish=None)),
