@@ -166,8 +166,13 @@ class _AcessoSQLiteProtegido:
         self._lastrowid = None
         try:
             return acao(*args)
-        except BaseException:
-            self._reverter_ou_fechar()
+        except BaseException as erro:
+            try:
+                self._reverter_ou_fechar()
+            except BaseException as falha:
+                if isinstance(erro, Exception):
+                    raise  # Mantém o contrato de erro encadeado do adaptador protegido.
+                erro.add_note(f"Recuperação SQLite protegida falhou ({type(falha).__name__}).")
             raise
 
     def execute(self, query, params=None):
@@ -213,6 +218,14 @@ class _AcessoSQLiteProtegido:
         self._sessao.fechar()
 
 
+class _AcessoLegadoBloqueado:
+    def __getattr__(self, atributo):
+        raise RuntimeError("Conexão indisponível após falha de rollback; feche e reabra o banco.")
+
+
+_ACESSO_LEGADO_BLOQUEADO = _AcessoLegadoBloqueado()
+
+
 class Database:
     """Wrapper de dados com suporte a SQLite e PostgreSQL."""
 
@@ -226,7 +239,8 @@ class Database:
         """
         self._sqlite_protegido = banco_sqlite_protegido is not None
         self.banco_backup_protegido: Path | None = None
-        self._fechamento_gui_iniciado = False
+        self._cursor_pendente = None
+        self._conexao_pendente = None
         if self._sqlite_protegido:
             self._inicializar_sqlite_protegido(banco_sqlite_protegido)
             return
@@ -449,6 +463,8 @@ class Database:
     @contextmanager
     def _transacao_movimentacao(self):
         """Serializa escritas SQLite; no PostgreSQL, use os locks de linha abaixo."""
+        if self.conn is _ACESSO_LEGADO_BLOQUEADO:
+            raise RuntimeError("Conexão indisponível após falha de rollback; feche e reabra o banco.")
         try:
             if self.backend == "sqlite":
                 # Reserva a vez de escrever ANTES de consultar disponibilidade.
@@ -1117,36 +1133,64 @@ class Database:
 
     def _reverter_operacao_composta(self, erro: BaseException) -> None:
         if self._sqlite_protegido:
-            self.conn.recuperar()
-        elif isinstance(erro, Exception):
+            try:
+                self.conn.recuperar()
+            except BaseException as falha:
+                erro.add_note(f"Recuperação SQLite protegida falhou ({type(falha).__name__}).")
+            return
+
+        try:
             self.conn.rollback()
+        except BaseException as falha:
+            erro.add_note(f"Rollback falhou; conexão bloqueada ({type(falha).__name__}).")
+            # Retira imediatamente os recursos dos caminhos normais de escrita.
+            # Se o close falhar, só o fechamento pode acessar os objetos pendentes.
+            self._cursor_pendente, self._conexao_pendente = self.cursor, self.conn
+            self.cursor = self.conn = _ACESSO_LEGADO_BLOQUEADO
+            try:
+                self.fechar_para_gui(confirmar=False)
+            except BaseException as fechamento:
+                erro.add_note(f"Fechamento pendente ({type(fechamento).__name__}); tente fechar novamente.")
 
     def fechar(self):
         if self._sqlite_protegido:
-            self.conn.close()  # SQLite reverte a transação pendente no fechamento.
+            self.conn.close()  # Mantém a concessão se o fechamento falhar.
             return
-        try:
-            self.conn.commit()
-            self.conn.close()
-        except Exception:
-            pass
+        self.fechar_para_gui(confirmar=False)
 
     def fechar_para_gui(self, *, confirmar=True):
-        """Confirma a limpeza na thread dona e permite repetir um close falho."""
+        """Libera recursos sem confirmar escritas, mesmo em uma nova tentativa.
+
+        O argumento confirmar é preservado para chamadas existentes. Os métodos
+        de escrita são responsáveis por seu próprio commit.
+        """
         if self._sqlite_protegido:
             self.fechar()
             return
-        primeira_tentativa = not self._fechamento_gui_iniciado
-        self._fechamento_gui_iniciado = True
-        if confirmar and primeira_tentativa and self.conn is not None:
+
+        if self.conn is not _ACESSO_LEGADO_BLOQUEADO:
+            if self.cursor is not None:
+                self._cursor_pendente, self.cursor = self.cursor, None
+            if self.conn is not None:
+                self._conexao_pendente, self.conn = self.conn, None
+
+        erro_cursor = None
+        if self._cursor_pendente is not None:
             try:
-                self.conn.commit()
-            except Exception:
-                # O driver reverte dados pendentes no close. Não repetir commit.
-                logging.getLogger(__name__).error("Falha no commit final da GUI; encerrando conexão")
-        if self.cursor is not None:
-            self.cursor.close()
-            self.cursor = None
-        if self.conn is not None:
-            self.conn.close()
-            self.conn = None
+                self._cursor_pendente.close()
+            except BaseException as erro:
+                erro_cursor = erro
+            else:
+                self._cursor_pendente = None
+
+        if self._conexao_pendente is not None:
+            try:
+                self._conexao_pendente.close()
+            except BaseException as erro:
+                if erro_cursor is not None:
+                    raise erro from erro_cursor
+                raise
+            else:
+                self._conexao_pendente = self._cursor_pendente = None
+        if erro_cursor is not None:
+            raise erro_cursor

@@ -9,7 +9,7 @@ from unittest.mock import Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
-    from PyQt6.QtCore import Qt
+    from PyQt6.QtCore import Qt, QTimer
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QPushButton
 except ImportError:
@@ -208,6 +208,118 @@ class MovimentacoesUiTest(unittest.TestCase):
         self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted.value)
         self.assertEqual(db.obter_evento(evento)["status"], "Concluído")
         self.assertEqual([c.args[1] for c in info.call_args_list], ["Retorno já registrado", "Concluído"])
+
+    def _banco_cadastro(self):
+        raiz = Path(self.enterContext(TemporaryDirectory()))
+        self.enterContext(patch.object(database, "_load_env_file"))
+        self.enterContext(patch.object(database, "get_db_path", return_value=str(raiz / "cadastro.sqlite3")))
+        self.enterContext(patch.dict(os.environ, {"SEAGBH_DB_ENGINE": "sqlite"}))
+        db = database.Database()
+        self.addCleanup(db.fechar)
+        for codigo in ("007", "7", "008"):
+            db.cadastrar_equipamento(codigo, f"Equipamento {codigo}", "", "Estoque")
+        return db
+
+    def _botao_equipamentos(self, aba, texto):
+        botoes = {b.text(): b for b in aba.findChildren(QPushButton)}
+        self.assertIn(texto, botoes)
+        return botoes[texto]
+
+    def _aceitar_edicao_equipamento(self, botao, *, nome, local):
+        visto = []
+
+        def preencher():
+            dlg = self.app.activeModalWidget()
+            if isinstance(dlg, QDialog) and hasattr(dlg, "e_nome"):
+                visto.append(dlg.e_nome.text())
+                dlg.e_nome.setText(nome)
+                dlg.e_desc.setText("Descrição editada")
+                dlg.e_local.setText(local)
+                salvar = next(b for b in dlg.findChildren(QPushButton) if "SALVAR" in b.text())
+                QTest.mouseClick(salvar, Qt.MouseButton.LeftButton)
+
+        QTimer.singleShot(0, preencher)
+        with patch.object(QMessageBox, "information"):
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+        return visto
+
+    def test_edicao_cadastral_por_codigo_exato_independe_da_linha_e_da_disponibilidade(self):
+        db = self._banco_cadastro()
+        id_ocupado = db.obter_id_por_codigo("007")
+        id_sem_zero = db.obter_id_por_codigo("7")
+        id_oficina = db.obter_id_por_codigo("008")
+        evento = db.criar_evento("Evento", "Galpão do evento", "Equipe", "01/08/2026", "02/08/2026", [id_ocupado])
+        db.cadastrar_saida_manutencao(id_oficina, "Oficina")
+        aba = self._mostrar(TabEquipamentos(db))
+        self.assertEqual(aba.tabela.rowCount(), 1)
+        self.assertEqual(aba.tabela.item(0, 1).text(), "7")
+        aba.tabela.selectRow(0)
+
+        botao = self._botao_equipamentos(aba, "Editar por código")
+        for codigo in ("007", "008"):
+            with self.subTest(codigo=codigo):
+                aba.entry_codigo.setText(codigo)
+                visto = self._aceitar_edicao_equipamento(botao, nome=f"Editado {codigo}", local="Depósito cadastral")
+                self.assertEqual(visto, [f"Equipamento {codigo}"])
+
+        self.assertEqual(db.obter_equipamento(id_ocupado)[2:5], ("Editado 007", "Descrição editada", "Depósito cadastral"))
+        self.assertEqual(db.obter_equipamento(id_oficina)[2:5], ("Editado 008", "Descrição editada", "Depósito cadastral"))
+        self.assertEqual(db.obter_equipamento(id_sem_zero)[2], "Equipamento 7")
+        self.assertEqual(db.contar_pendentes(evento), 1)
+        self.assertEqual(db.localizar_equipamento("007")["local_evento"], "Galpão do evento")
+        self.assertEqual(db.localizar_equipamento("008")["tipo"], "manutencao")
+        self.assertEqual(aba.tabela.rowCount(), 1)
+        self.assertEqual(aba.tabela.item(0, 1).text(), "7")
+
+    def test_edicao_cadastral_da_linha_selecionada_permanece(self):
+        db = self._banco_cadastro()
+        alvo = db.obter_id_por_codigo("007")
+        aba = self._mostrar(TabEquipamentos(db))
+        linha = next(r for r in range(aba.tabela.rowCount()) if aba.tabela.item(r, 1).text() == "007")
+        aba.tabela.selectRow(linha)
+        aba.entry_codigo.setText("7")
+        botao = self._botao_equipamentos(aba, "Editar selecionado")
+        visto = self._aceitar_edicao_equipamento(botao, nome="Editado 007", local="Depósito")
+        self.assertEqual(visto, ["Equipamento 007"])
+        self.assertEqual(db.obter_equipamento(alvo)[2], "Editado 007")
+        self.assertEqual(db.obter_equipamento(db.obter_id_por_codigo("7"))[2], "Equipamento 7")
+
+    def test_codigo_inexistente_ou_vazio_nao_recai_na_linha_selecionada(self):
+        db = self._banco_cadastro()
+        aba = self._mostrar(TabEquipamentos(db))
+        aba.tabela.selectRow(0)
+        botao = self._botao_equipamentos(aba, "Editar por código")
+        with patch.object(QMessageBox, "warning") as vazio:
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+        vazio.assert_called_once()
+        aba.entry_codigo.setText("0007")
+        with patch.object(QMessageBox, "information") as inexistente:
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+        self.assertIn("Código não encontrado", inexistente.call_args.args[2])
+        self.assertEqual(db.obter_equipamento(db.obter_id_por_codigo("007"))[2], "Equipamento 007")
+
+    def test_edicao_por_codigo_preserva_validacao_de_nome_obrigatorio(self):
+        db = self._banco_cadastro()
+        aba = self._mostrar(TabEquipamentos(db))
+        aba.entry_codigo.setText("007")
+        botao = self._botao_equipamentos(aba, "Editar por código")
+        ficou_aberto = []
+
+        def tentar_salvar():
+            dlg = self.app.activeModalWidget()
+            if isinstance(dlg, QDialog) and hasattr(dlg, "e_nome"):
+                dlg.e_nome.setText("  ")
+                salvar = next(b for b in dlg.findChildren(QPushButton) if "SALVAR" in b.text())
+                QTest.mouseClick(salvar, Qt.MouseButton.LeftButton)
+                ficou_aberto.append(dlg.isVisible())
+                dlg.reject()
+
+        QTimer.singleShot(0, tentar_salvar)
+        with patch.object(QMessageBox, "critical") as validacao:
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+        self.assertEqual(ficou_aberto, [True])
+        self.assertEqual(validacao.call_args.args[2], "Nome é obrigatório!")
+        self.assertEqual(db.obter_equipamento(db.obter_id_por_codigo("007"))[2], "Equipamento 007")
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ from datetime import datetime
 class TabEquipamentos(QWidget):
     """Widget completo da aba Equipamentos."""
 
-    COLUNAS = ("ID", "Código", "Nome", "Localização", "Data")
+    COLUNAS = ("ID", "Código", "Nome", "Localização cadastrada", "Data")
 
     def __init__(self, db: Database, parent=None):
         super().__init__(parent)
@@ -46,10 +46,16 @@ class TabEquipamentos(QWidget):
         self.entry_nome = QLineEdit()
         self.entry_descricao = QLineEdit()
         self.entry_localizacao = QLineEdit()
-        form.addRow("Código de Barras:", self.entry_codigo)
+        codigo_bar = QHBoxLayout()
+        codigo_bar.addWidget(self.entry_codigo, stretch=1)
+        btn_editar_codigo = QPushButton("Editar por código")
+        btn_editar_codigo.setToolTip("Abre o cadastro pelo código exato, mesmo se o item estiver indisponível.")
+        btn_editar_codigo.clicked.connect(self._on_editar_codigo)
+        codigo_bar.addWidget(btn_editar_codigo)
+        form.addRow("Código de Barras:", codigo_bar)
         form.addRow("Nome do Equipamento:", self.entry_nome)
         form.addRow("Descrição:", self.entry_descricao)
-        form.addRow("Localização:", self.entry_localizacao)
+        form.addRow("Localização cadastrada:", self.entry_localizacao)
         root.addLayout(form)
 
         # ── Barra de botões ───────────────────────────────────────────────
@@ -60,7 +66,7 @@ class TabEquipamentos(QWidget):
             ("Cadastrar",    "primary", self._on_cadastrar),
             ("Consultar",    None,      self._on_consultar),
             ("Listar Disponíveis", None, self.listar_todos),
-            ("Editar",       None,      self._on_editar),
+            ("Editar selecionado", None, self._on_editar),
             ("Remover",      "danger",  self._on_remover),
         ]
         for texto, cls, slot in botoes:
@@ -76,7 +82,7 @@ class TabEquipamentos(QWidget):
         search_bar = QHBoxLayout()
         search_bar.addWidget(QLabel("Buscar:"))
         self.entry_search = QLineEdit()
-        self.entry_search.setPlaceholderText("Buscar disponíveis por código, nome ou localização…")
+        self.entry_search.setPlaceholderText("Buscar disponíveis por código, nome ou localização cadastrada…")
         self.entry_search.returnPressed.connect(self._on_filtrar)
         search_bar.addWidget(self.entry_search, stretch=1)
         btn_search = QPushButton("🔍")
@@ -213,7 +219,7 @@ class TabEquipamentos(QWidget):
             QMessageBox.information(self, "Info", "Item não encontrado!")
             return
 
-        labels = ["ID", "Código", "Nome", "Descrição", "Localização", "Data"]
+        labels = ["ID", "Código", "Nome", "Descrição", "Localização cadastrada", "Data"]
         texto = "\n".join(f"{l}: {v}" for l, v in zip(labels, equip))
         QMessageBox.information(self, f"Equipamento #{equip[0]}", texto)
 
@@ -221,24 +227,63 @@ class TabEquipamentos(QWidget):
 
     def _on_editar(self):
         equip_id = self._linha_selecionada()
-        if equip_id is None:
+        if equip_id is not None:
+            self._editar_cadastro(equip_id)
+
+    def _on_editar_codigo(self):
+        codigo = self.entry_codigo.text().strip()
+        if not codigo:
+            QMessageBox.warning(self, "Aviso", "Digite o código de barras exato do equipamento.")
+            self.entry_codigo.setFocus()
             return
 
-        equip = self.db.obter_equipamento(equip_id)
+        try:
+            equip_id = self.db.obter_id_por_codigo(codigo)
+        except Exception:
+            QMessageBox.critical(self, "Erro", "Não foi possível consultar o código do equipamento.")
+            return
+        if equip_id is None:
+            QMessageBox.information(self, "Aviso", "Código não encontrado. Confira os zeros à esquerda.")
+            return
+
+        self._editar_cadastro(equip_id)
+
+    def _editar_cadastro(self, equip_id: int):
+        try:
+            equip = self.db.obter_equipamento(equip_id)
+        except Exception:
+            QMessageBox.critical(self, "Erro", "Não foi possível consultar o cadastro do equipamento.")
+            return
         if not equip:
+            QMessageBox.information(self, "Aviso", "Cadastro do equipamento não encontrado.")
             return
 
         dlg = _EditarEquipDialog(equip, parent=self)
-        if dlg.exec() == QDialog.DialogCode.Accepted:
-            try:
-                self.db.editar_equipamento(equip_id, dlg.nome, dlg.descricao, dlg.localizacao)
-                self.db.registrar_auditoria(
-                    "equipamentos", equip_id, "EDIÇÃO",
-                    f"Nome: {dlg.nome} | Local: {dlg.localizacao}")
-                QMessageBox.information(self, "Sucesso", "Alterações salvas!")
-                self.listar_todos()
-            except Exception as e:
-                QMessageBox.critical(self, "Erro", f"Falha: {e}")
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        try:
+            self.db.editar_equipamento(equip_id, dlg.nome, dlg.descricao, dlg.localizacao)
+        except Exception:
+            QMessageBox.critical(self, "Erro", "Não foi possível confirmar a alteração cadastral.")
+            return
+
+        avisos = []
+        try:
+            self.db.registrar_auditoria(
+                "equipamentos", equip_id, "EDIÇÃO",
+                f"Nome: {dlg.nome} | Local: {dlg.localizacao}",
+            )
+        except Exception:
+            avisos.append("Não foi possível confirmar o registro na auditoria.")
+        try:
+            self.atualizar_disponibilidade()
+        except Exception:
+            avisos.append("Não foi possível atualizar a lista de disponíveis.")
+        if avisos:
+            QMessageBox.warning(self, "Cadastro alterado", " ".join(avisos))
+        else:
+            QMessageBox.information(self, "Sucesso", "Alterações cadastrais salvas!")
 
     # ── Remover ───────────────────────────────────────────────────────────
 
@@ -278,7 +323,7 @@ class TabEquipamentos(QWidget):
 class _EditarEquipDialog(QDialog):
     def __init__(self, equip: tuple, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Editar Equipamento")
+        self.setWindowTitle("Editar cadastro do equipamento")
         self.resize(600, 300)
         self.setModal(True)
 
@@ -296,10 +341,20 @@ class _EditarEquipDialog(QDialog):
         self.e_nome = QLineEdit(self.nome)
         self.e_desc = QLineEdit(self.descricao)
         self.e_local = QLineEdit(self.localizacao)
+        codigo = QLabel(str(equip[1]))
+        codigo.setTextFormat(Qt.TextFormat.PlainText)
+        form.addRow("Código de barras:", codigo)
         form.addRow("Nome:", self.e_nome)
         form.addRow("Descrição:", self.e_desc)
-        form.addRow("Localização:", self.e_local)
+        form.addRow("Localização cadastrada:", self.e_local)
         root.addLayout(form)
+
+        nota = QLabel(
+            "A localização cadastrada não altera a posição atual do item em evento ou manutenção. "
+            "Consulte a localização operacional na aba Eventos."
+        )
+        nota.setWordWrap(True)
+        root.addWidget(nota)
 
         bar = QHBoxLayout()
         bar.addStretch()

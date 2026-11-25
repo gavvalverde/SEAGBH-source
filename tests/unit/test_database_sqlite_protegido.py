@@ -342,6 +342,54 @@ class DatabaseSQLiteProtegidoTests(unittest.TestCase):
         self.assertEqual(self.query_externa("SELECT id FROM equipamentos"), [])
         self.assertEqual(self.sondar(), "livre")
 
+    def test_interrupcao_adaptador_protegido_preserva_erro_e_fechar_retoma_lock(self):
+        interrupcao = KeyboardInterrupt("interrupção sintética")
+
+        class Cursor(sqlite3.Cursor):
+            def execute(self, sql, parametros=()):
+                if self.connection.falhar and "UPDATE eventos SET status" in sql:
+                    raise interrupcao
+                return super().execute(sql, parametros)
+
+        class Conexao(sqlite3.Connection):
+            falhar = False
+
+            def cursor(self):
+                return super().cursor(factory=Cursor)
+
+            def rollback(self):
+                if self.falhar:
+                    raise sqlite3.OperationalError("rollback sintético")
+                return super().rollback()
+
+            def close(self):
+                if self.falhar:
+                    raise sqlite3.OperationalError("close sintético")
+                return super().close()
+
+        with self.injetar_conexao(Conexao):
+            db = self.abrir()
+        db.cadastrar_equipamento("EQ1", "Mesa", "", "")
+        item = db.obter_id_por_codigo("EQ1")
+        evento = self.criar_evento(db, [item])
+        Conexao.falhar = True
+        try:
+            with self.assertRaises(KeyboardInterrupt) as capturada:
+                db.registrar_retorno(evento, "EQ1")
+            self.assertIs(capturada.exception, interrupcao)
+            self.assertEqual(self.sondar(), "ocupado")
+            with self.assertRaisesRegex(RuntimeError, "conexao_protegida_encerrada"):
+                db.cadastrar_equipamento("EQ2", "Não grava", "", "")
+            with self.assertRaisesRegex(sqlite3.OperationalError, "close sintético"):
+                db.fechar_para_gui()
+        finally:
+            Conexao.falhar = False
+        db.fechar_para_gui()
+        self.assertEqual(self.sondar(), "livre")
+        self.assertEqual(self.query_externa("SELECT status FROM eventos"), [("Agendado",)])
+        self.assertEqual(self.query_externa("SELECT tipo FROM movimentacoes"), [("saida",)])
+        self.assertEqual(self.query_externa("SELECT codigo_barras FROM equipamentos"), [("EQ1",)])
+
     def test_resultados_destacados_nao_retem_leitura_wal_ate_fechar(self):
         db = self.abrir()
         self.criar_evento(db)
@@ -449,6 +497,166 @@ class DatabasePostgresTests(unittest.TestCase):
             db.fechar()
         driver.connect.assert_called_once()
         conexao.close.assert_called_once_with()
-        self.assertEqual(conexao.commit.call_count, 4)
+        self.assertEqual(conexao.commit.call_count, 3)
         fabrica.assert_not_called()
         sqlite_connect.assert_not_called()
+
+
+_CONECTAR = sqlite3.connect
+
+
+class _ConexaoObservada(sqlite3.Connection):
+    interromper_saida = None
+    falhar_rollback = False
+    falhar_fechamento = False
+    commits = 0
+    reversoes = 0
+    insercoes = 0
+
+    def cursor(self):
+        return super().cursor(factory=_CursorObservado)
+
+    def commit(self):
+        self.commits += 1
+        return super().commit()
+
+    def rollback(self):
+        self.reversoes += 1
+        if self.falhar_rollback:
+            raise sqlite3.OperationalError("rollback sintético")
+        return super().rollback()
+
+    def close(self):
+        if self.falhar_fechamento:
+            raise sqlite3.OperationalError("fechamento sintético")
+        return super().close()
+
+
+class _CursorObservado(sqlite3.Cursor):
+    def execute(self, sql, parametros=()):
+        conn = self.connection
+        if conn.interromper_saida is not None and "INSERT INTO movimentacoes" in sql:
+            conn.insercoes += 1
+            if conn.insercoes == 2:
+                raise conn.interromper_saida
+        return super().execute(sql, parametros)
+
+
+class TestCicloTransacaoMovimentacao(unittest.TestCase):
+    def setUp(self):
+        pasta = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.banco = pasta / "movimentacoes-sinteticas.sqlite3"
+        self.enterContext(patch.object(database, "get_db_path", return_value=str(self.banco)))
+        self.enterContext(patch.object(database, "_load_env_file"))
+        self.enterContext(patch.dict("os.environ", {"SEAGBH_DB_ENGINE": "sqlite"}))
+        with patch.object(sqlite3, "connect", side_effect=self._conectar):
+            self.db = database.Database()
+        self.conn = self.db.conn
+        self.addCleanup(self._limpar)
+
+    @staticmethod
+    def _conectar(*args, **kwargs):
+        return _CONECTAR(*args, factory=_ConexaoObservada, **kwargs)
+
+    def _limpar(self):
+        self.conn.falhar_rollback = self.conn.falhar_fechamento = False
+        self.db.fechar()
+
+    def _equipamento(self, codigo):
+        self.db.cadastrar_equipamento(codigo, codigo, "", "")
+        return self.db.obter_id_por_codigo(codigo)
+
+    def _evento(self, *itens):
+        return self.db.criar_evento("Evento", "Local", "Equipe", "25/11/2026", "25/11/2026", itens)
+
+    def _ler(self, sql):
+        conn = _CONECTAR(self.banco)
+        try:
+            return conn.execute(sql).fetchall()
+        finally:
+            conn.close()
+
+    def _registros(self):
+        return (
+            self._ler("SELECT id, status FROM eventos ORDER BY id"),
+            self._ler("SELECT evento_id, equipamento_id, tipo FROM movimentacoes ORDER BY id"),
+        )
+
+    def _interromper_ultimo_retorno(self, evento, interrupcao):
+        with patch.object(self.db, "_concluir_evento_validado", side_effect=interrupcao):
+            with self.assertRaises(type(interrupcao)) as capturada:
+                self.db.registrar_retorno(evento, "0001")
+        self.assertIs(capturada.exception, interrupcao)
+
+    def test_keyboardinterrupt_final_reverte_retorno_e_preserva_status_apos_fechar(self):
+        item = self._equipamento("0001")
+        evento = self._evento(item)
+        commits = self.conn.commits
+        self._interromper_ultimo_retorno(evento, KeyboardInterrupt("interrupção sintética"))
+        self.db.fechar()
+        self.assertEqual(self.conn.reversoes, 1)
+        self.assertEqual(self.conn.commits, commits)
+        self.assertEqual(self._registros(), ([(evento, "Agendado")], [(evento, item, "saida")]))
+
+    def test_systemexit_reverte_evento_e_primeira_saida_apos_fechar_gui(self):
+        primeiro = self._equipamento("0001")
+        segundo = self._equipamento("0002")
+        interrupcao = SystemExit(23)
+        self.conn.interromper_saida = interrupcao
+        commits = self.conn.commits
+        with self.assertRaises(SystemExit) as capturada:
+            self._evento(primeiro, segundo)
+        self.assertIs(capturada.exception, interrupcao)
+        self.db.fechar_para_gui()
+        self.assertEqual(self.conn.insercoes, 2)
+        self.assertEqual(self.conn.reversoes, 1)
+        self.assertEqual(self.conn.commits, commits)
+        self.assertEqual(self._registros(), ([], []))
+
+    def test_excecao_comum_reverte_sem_inutilizar_conexao(self):
+        item = self._equipamento("0001")
+        evento = self._evento(item)
+        self._interromper_ultimo_retorno(evento, RuntimeError("falha sintética"))
+        self.assertEqual(self._registros(), ([(evento, "Agendado")], [(evento, item, "saida")]))
+        self.assertTrue(self.db.registrar_retorno(evento, "0001").evento_concluido)
+        self.assertEqual(self._registros(), (
+            [(evento, "Concluído")], [(evento, item, "saida"), (evento, item, "retorno")],
+        ))
+
+    def test_rollback_falho_bloqueia_novas_escritas_e_fecha_sem_commit(self):
+        item = self._equipamento("0001")
+        evento = self._evento(item)
+        interrupcao = KeyboardInterrupt("interrupção sintética")
+        self.conn.falhar_rollback = True
+        commits = self.conn.commits
+        self._interromper_ultimo_retorno(evento, interrupcao)
+        with self.assertRaises(RuntimeError):
+            self.db.cadastrar_equipamento("0002", "Não grava", "", "")
+        self.db.fechar_para_gui()
+        self.assertEqual(self.conn.reversoes, 1)
+        self.assertEqual(self.conn.commits, commits)
+        self.assertEqual(self._registros(), ([(evento, "Agendado")], [(evento, item, "saida")]))
+        self.assertEqual(self._ler("SELECT codigo_barras FROM equipamentos ORDER BY id"), [("0001",)])
+
+    def test_fechamento_falho_e_visivel_e_pode_ser_repetido_sem_commit(self):
+        item = self._equipamento("0001")
+        evento = self._evento(item)
+        commits = self.conn.commits
+        self.conn.falhar_rollback = self.conn.falhar_fechamento = True
+        self._interromper_ultimo_retorno(evento, KeyboardInterrupt("interrupção sintética"))
+        with self.assertRaisesRegex(sqlite3.OperationalError, "fechamento sintético"):
+            self.db.fechar_para_gui()
+        self.conn.falhar_fechamento = False
+        self.db.fechar_para_gui()
+        self.assertEqual(self.conn.commits, commits)
+        self.assertEqual(self._registros(), ([(evento, "Agendado")], [(evento, item, "saida")]))
+
+    def test_fechamento_normal_nao_confirma_sql_pendente(self):
+        self.db.cursor.execute(
+            "INSERT INTO equipamentos (codigo_barras, nome, data_cadastro) VALUES (?, ?, ?)",
+            ("0001", "Mesa", "25/11/2026"),
+        )
+        commits = self.conn.commits
+        self.db.fechar()
+        self.assertEqual(self.conn.commits, commits)
+        self.assertEqual(self._ler("SELECT codigo_barras FROM equipamentos"), [])
