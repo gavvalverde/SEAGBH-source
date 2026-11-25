@@ -153,6 +153,11 @@ class V2Offline(unittest.TestCase):
         for conn in fake_connections:
             conn.close.assert_called_once_with()
         for conn in requests:
+            method, path = conn.request.call_args.args
+            body = conn.request.call_args.kwargs["body"]
+            self.assertEqual((method, path), ("POST", "/api/v1/chat/completions"))
+            payload = json.loads(body)
+            self.assert_route_contract(payload)
             conn.getresponse.return_value.close.assert_called_once_with()
             self.assertEqual(conn.getresponse.return_value.getheader.call_args_list[0].args,
                              ("Content-Length",))
@@ -178,7 +183,7 @@ class V2Offline(unittest.TestCase):
                 self.assertEqual(diag["http_category"], category)
                 self.assertEqual(diag["http_service"], "openrouter")
                 self.assertEqual(diag["requested_model"], "moonshotai/kimi-k2.6")
-                self.assertEqual(diag["requested_provider"], "baidu")
+                self.assertEqual(diag["requested_provider"], "chutes/int4")
                 self.assertEqual(diag["coverage"]["chunks_completed"], 0)
                 self.assertEqual((diag["model_calls_attempted"], attempts), (1, 1))
                 self.assertIs(diag["published"], False)
@@ -591,9 +596,39 @@ class V2Offline(unittest.TestCase):
         self.assertTrue(data["other_chunks_analyzed_separately"])
         self.assertNotIn("IGNORE ALL", payload["messages"][0]["content"])
         self.assertIn("IGNORE ALL", payload["messages"][1]["content"])
-        self.assertEqual(payload["provider"]["only"], ["baidu"])
+        self.assert_route_contract(payload)
+        self.assertEqual(payload["response_format"]["json_schema"]["name"], "seagbh_review_v2")
+        refute_payload = contract.make_payload(pinned, pl, production._adjudication_chunk(pl), candidates=[])
+        self.assert_route_contract(refute_payload)
+        self.assertEqual(refute_payload["response_format"]["json_schema"]["name"], "seagbh_refutation_v2")
+
+    def assert_route_contract(self, payload):
+        self.assertEqual(payload["model"], "moonshotai/kimi-k2.6")
+        self.assertEqual(payload["provider"], {
+            "only": ["chutes/int4"], "allow_fallbacks": False,
+            "require_parameters": True,
+            "max_price": {"prompt": 0.42, "completion": 1.80},
+        })
         self.assertEqual(payload["reasoning"], {"enabled": False})
+        self.assertEqual(payload["temperature"], 0.0)
+        self.assertEqual(payload["max_tokens"], 4096)
+        self.assertEqual(payload["response_format"]["type"], "json_schema")
         self.assertIs(payload["response_format"]["json_schema"]["strict"], False)
+
+    def test_chutes_cost_preflight_keeps_aggregate_ceiling(self):
+        # Three legal-sized discovery payloads plus the conservative refutation
+        # reserve. The larger plan fit with USD 1.75/M but not USD 1.80/M.
+        def payload_of_size(size):
+            return {"text": "x" * (size - contract.wire_bytes({"text": ""}))}
+
+        sizes = (68657, 68658, 68658)
+        good = [payload_of_size(size) for size in sizes]
+        larger = [*good[:-1], payload_of_size(sizes[-1] + 1)]
+        self.assertEqual(sum(map(contract.wire_bytes, good)), 205973)
+        self.assertEqual(contract.MAX_TOTAL_USD, 0.20)
+        self.assertAlmostEqual(contract.worst_case_usd(good), 0.19999986, places=8)
+        with self.assertRaisesRegex(contract.Problem, "v2_total_budget"):
+            contract.worst_case_usd(larger)
 
     def test_budget_supports_eight_chunks_plus_one_refutation(self):
         # The ninth request is permitted only after the original eight
