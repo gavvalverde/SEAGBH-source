@@ -1,0 +1,13 @@
+# Qt shared with backup-ui; PDF wheels for CPython 3.12 Linux/Windows x86_64.
+-r requirements-backup-ui.txt
+
+reportlab==5.1.1 \
+    --hash=sha256:43af899b836179032807f68aa83b410182e8e6b1221e4339560c5ec44da843ab
+pypdf==6.21.4 \
+    --hash=sha256:33e4fb41ca352810eb4e9838aa0d82d6888a5f8bf682f43e99cce5faa666255c
+pillow==13.0.0 \
+    --hash=sha256:42d63be3af4f9b951b199b0a9d23365d37ab14687e6d77b74940432c8515c4ca \
+    --hash=sha256:ff3fe9eb621fbb9db4c4be33ab946f6bac5f98ab50ca8d3260503653656c961b
+charset-normalizer==3.5.3 \
+    --hash=sha256:e5e4785d8a0adeadfbdf75f4efc357911842674651cbafd7e97f69b11ec3cbc6 \
+    --hash=sha256:40b2ba91f0851aa864994b3c7022e4d96d09026717e6a72e44410d6fb3a74a13

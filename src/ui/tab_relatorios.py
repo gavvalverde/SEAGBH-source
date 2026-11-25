@@ -186,9 +186,9 @@ class TabRelatorios(QWidget):
                                            ParagraphStyle("TF", parent=estilos["Title"],
                                                           alignment=TA_CENTER)))
                 elementos.append(Spacer(1, 6))
-                elementos.append(Paragraph(ev["nome_evento"], estilos["Heading2"]))
+                elementos.append(Paragraph(escape(str(ev["nome_evento"])), estilos["Heading2"]))
                 elementos.append(Spacer(1, 6))
-                elementos.append(Paragraph(f"• Responsável: {ev['responsavel']}", body))
+                elementos.append(Paragraph(f"• Responsável: {escape(str(ev['responsavel']))}", body))
                 elementos.append(Paragraph(
                     f"• Período: {escape(str(ev['data_inicio']))} a {escape(str(ev['data_fim']))}", body))
                 if problema_periodo_evento(ev["data_inicio"], ev["data_fim"]):
@@ -197,25 +197,31 @@ class TabRelatorios(QWidget):
 
                 elementos.append(Paragraph("Resumo de Equipamentos:", estilos["Heading3"]))
                 for cat, cnt in resumo.items():
-                    elementos.append(Paragraph(f"• {cnt} {cat}", body))
+                    elementos.append(Paragraph(f"• {cnt} {escape(cat)}", body))
                 elementos.append(Spacer(1, 12))
 
                 # Lista em 3 colunas
                 elementos.append(Paragraph("Equipamentos Detalhados:", estilos["Heading3"]))
-                cells = [Paragraph(f"• {nome} ({cod})", body) for cod, nome in equips]
-                rows = [cells[i:i + 3] for i in range(0, len(cells), 3)]
-                for row in rows:
-                    while len(row) < 3:
-                        row.append(Paragraph("", body))
-                tbl = Table(rows, colWidths=[6 * cm] * 3, hAlign="LEFT")
-                tbl.setStyle(TableStyle([
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]))
-                elementos.append(tbl)
+                cells = [
+                    Paragraph(f"• {escape(str(nome))} ({escape(str(cod))})", body)
+                    for cod, nome in equips
+                ]
+                if not cells:
+                    elementos.append(Paragraph("Nenhum equipamento vinculado a este evento.", body))
+                else:
+                    rows = [cells[i:i + 3] for i in range(0, len(cells), 3)]
+                    for row in rows:
+                        while len(row) < 3:
+                            row.append(Paragraph("", body))
+                    tbl = Table(rows, colWidths=[6 * cm] * 3, hAlign="LEFT")
+                    tbl.setStyle(TableStyle([
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                        ("TOPPADDING", (0, 0), (-1, -1), 2),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                    ]))
+                    elementos.append(tbl)
 
                 doc.build(elementos)
                 gerados += 1

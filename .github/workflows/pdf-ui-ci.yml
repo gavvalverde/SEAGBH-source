@@ -1,0 +1,102 @@
+name: Event PDF Qt Regression
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/ui/tab_relatorios.py"
+      - "src/core/database.py"
+      - "src/core/datas_eventos.py"
+      - "tests/unit/test_relatorios_ui.py"
+      - "tests/requirements-pdf-ui.txt"
+      - "tests/requirements-backup-ui.txt"
+      - ".github/workflows/pdf-ui-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  pdf-ui:
+    name: PDF Qt offscreen (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022]
+    timeout-minutes: 10
+    env:
+      QT_QPA_PLATFORM: offscreen
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONNOUSERSITE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - name: Checkout without persisted credentials
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+          check-latest: false
+
+      - name: Install Linux Qt runtime libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends libegl1 libopengl0
+
+      - name: Run real PDF regressions and reject any skip
+        shell: python
+        run: |
+          import os
+          from pathlib import Path
+          import subprocess
+          import venv
+
+          raiz = Path(os.environ["RUNNER_TEMP"])
+          ambiente = raiz / "pdf-ui-venv"
+          temporario = raiz / "pdf-ui-tmp"
+          temporario.mkdir(mode=0o700)
+          env = dict(os.environ, TMPDIR=str(temporario), TEMP=str(temporario), TMP=str(temporario))
+          if os.name != "nt":
+              runtime = raiz / "pdf-ui-runtime"
+              runtime.mkdir(mode=0o700)
+              env["XDG_RUNTIME_DIR"] = str(runtime)
+
+          venv.EnvBuilder(with_pip=True).create(ambiente)
+          python = ambiente / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+          pip = [str(python), "-B", "-m", "pip", "--isolated", "--disable-pip-version-check"]
+          subprocess.run([*pip, "--no-cache-dir", "--no-input", "install", "--only-binary=:all:",
+                          "--require-hashes", "--index-url", "https://pypi.org/simple",
+                          "-r", "tests/requirements-pdf-ui.txt"], check=True, timeout=240, env=env)
+          subprocess.run([*pip, "check"], check=True, timeout=30, env=env)
+
+          executar = """
+          import sys
+          import unittest
+          from importlib.metadata import version
+          from PyQt6.QtWidgets import QApplication
+          from reportlab.platypus import SimpleDocTemplate
+          from pypdf import PdfReader
+
+          if sys.version_info[:2] != (3, 12) or sys.prefix == sys.base_prefix:
+              raise SystemExit("Python 3.12 in an isolated venv is required")
+          app = QApplication([])
+          if app.platformName() != "offscreen":
+              raise SystemExit("Qt offscreen is required")
+          for pacote in ("PyQt6", "reportlab", "pypdf"):
+              print(f"{pacote} {version(pacote)}", flush=True)
+          suite = unittest.defaultTestLoader.loadTestsFromName("tests.unit.test_relatorios_ui")
+          total = suite.countTestCases()
+          resultado = unittest.TextTestRunner(verbosity=2).run(suite)
+          if (total < 2 or resultado.testsRun != total or not resultado.wasSuccessful()
+                  or resultado.skipped or resultado.expectedFailures):
+              raise SystemExit("PDF regressions must all run and pass without skips")
+          print(f"PDF regressions: {resultado.testsRun} passed, 0 skipped", flush=True)
+          """
+          subprocess.run([str(python), "-B", "-W", "error::ResourceWarning", "-c", executar],
+                         check=True, timeout=120, env=env)
