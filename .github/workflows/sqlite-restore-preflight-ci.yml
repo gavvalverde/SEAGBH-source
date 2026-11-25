@@ -7,6 +7,9 @@ on:
       - "src/core/restauracao_sqlite.py"
       - "src/core/backup_sqlite.py"
       - "tests/unit/test_restauracao_sqlite.py"
+      - "tests/unit/test_inspecao_manutencao_sqlite.py"
+      - "tools/inspecionar_manutencao_sqlite.py"
+      - "docs/auditoria-cobertura-barreira-sqlite.md"
       - "tests/unit/test_backup_sqlite.py"
       - "docs/restauracao-sqlite-manutencao.md"
       - ".github/workflows/sqlite-restore-preflight-ci.yml"
@@ -67,7 +70,8 @@ jobs:
           )
           subprocess.run([str(interpreter), "-B", "-c", diagnostics],
                          env=variables, check=True, timeout=30)
-          modules = ["tests.unit.test_restauracao_sqlite", "tests.unit.test_backup_sqlite"]
+          modules = ["tests.unit.test_restauracao_sqlite", "tests.unit.test_backup_sqlite",
+                     "tests.unit.test_inspecao_manutencao_sqlite"]
           print("Tests:", ", ".join(modules), flush=True)
           subprocess.run([str(interpreter), "-B", "-W", "error::ResourceWarning",
                           "-m", "unittest", "-v", *modules],
