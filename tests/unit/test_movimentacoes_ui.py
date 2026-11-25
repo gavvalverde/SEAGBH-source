@@ -11,14 +11,17 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 try:
     from PyQt6.QtCore import Qt, QTimer
     from PyQt6.QtTest import QTest
-    from PyQt6.QtWidgets import QApplication, QDialog, QMessageBox, QPushButton
+    from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QMessageBox, QPushButton
 except ImportError:
     raise unittest.SkipTest("PyQt6 indisponível: regressões de movimentação Qt não executadas.")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from core import database
 from core.database import ErroMovimentacao, ResultadoRetorno
-from ui.dialogs import AdicionarEquipEventoDialog, CriarEventoDialog, RetornoDialog
+from ui.dialogs import (
+    AdicionarEquipEventoDialog, CriarEventoDialog, DetalhesEventoDialog,
+    EditarEventoDialog, HistoricoDialog, RetornoDialog,
+)
 from ui.tab_equipamentos import TabEquipamentos
 from ui.tab_eventos import TabEventos
 from ui.tab_manutencao import TabManutencao
@@ -320,6 +323,81 @@ class MovimentacoesUiTest(unittest.TestCase):
         self.assertEqual(ficou_aberto, [True])
         self.assertEqual(validacao.call_args.args[2], "Nome é obrigatório!")
         self.assertEqual(db.obter_equipamento(db.obter_id_por_codigo("007"))[2], "Equipamento 007")
+
+
+    def test_criar_evento_por_botao_rejeita_data_e_aceita_bissexto_com_hora(self):
+        db = self._banco_cadastro()
+        aba = self._mostrar(TabEventos(db))
+        for campo, valor in ((aba.entry_nome, "Evento"), (aba.entry_local, "Galpão"),
+                              (aba.entry_resp, "Equipe"), (aba.entry_inicio, "31/02/2028"),
+                              (aba.entry_fim, "29/02/2028 12:00")):
+            campo.setText(valor)
+        criar = next(b for b in aba.findChildren(QPushButton) if "Criar Evento" in b.text())
+        with patch("ui.tab_eventos.CriarEventoDialog") as dialogo, patch.object(QMessageBox, "warning") as aviso:
+            QTest.mouseClick(criar, Qt.MouseButton.LeftButton)
+        dialogo.assert_not_called()
+        aviso.assert_called_once()
+        self.assertEqual(db.listar_eventos(), [])
+        self.assertIsNone(db.localizar_equipamento("007"))
+        self.assertEqual(aba.entry_inicio.text(), "31/02/2028")
+
+        aba.entry_inicio.setText("29/02/2028 11:30:01")
+
+        def preencher():
+            dlg = self.app.activeModalWidget()
+            self._escanear(dlg.entry_codigo, "007")
+            botao = next(b for b in dlg.findChildren(QPushButton) if "Finalizar" in b.text())
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+
+        QTimer.singleShot(0, preencher)
+        QTest.mouseClick(criar, Qt.MouseButton.LeftButton)
+        evento = db.listar_eventos()[0]
+        self.assertEqual(evento[4:6], ("29/02/2028 11:30:01", "29/02/2028 12:00"))
+        self.assertEqual(db.localizar_equipamento("007")["tipo"], "evento")
+
+    def test_editar_evento_por_botao_nao_salva_periodo_invertido(self):
+        db = self._banco_cadastro()
+        evento = db.criar_evento("Original", "Galpão", "Equipe", "28/02/2027", "01/03/2027",
+                                 [db.obter_id_por_codigo("007")])
+        antes = db.obter_evento(evento)
+        dlg = self._mostrar(EditarEventoDialog(db, evento))
+        botao = next(b for b in dlg.findChildren(QPushButton) if "Salvar Alterações" in b.text())
+        dlg.entry_nome.setText("Editado")
+        dlg.entry_inicio.setText("01/03/2027 12:01")
+        dlg.entry_fim.setText("01/03/2027 12:00")
+        with patch.object(QMessageBox, "warning") as aviso, patch.object(QMessageBox, "information") as info:
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+        aviso.assert_called_once()
+        info.assert_not_called()
+        self.assertTrue(dlg.isVisible())
+        self.assertEqual(db.obter_evento(evento), antes)
+        self.assertEqual(db.pendentes_retorno(evento)[0][0], "007")
+
+        dlg.entry_fim.setText("01/03/2027 12:02")
+        with patch.object(QMessageBox, "information") as info:
+            QTest.mouseClick(botao, Qt.MouseButton.LeftButton)
+        info.assert_called_once()
+        self.assertEqual(dlg.result(), QDialog.DialogCode.Accepted.value)
+        self.assertEqual(db.obter_evento(evento)["nome_evento"], "Editado")
+        self.assertEqual(db.pendentes_retorno(evento)[0][0], "007")
+
+    def test_legado_com_periodo_invalido_e_visivel_sem_status_normal(self):
+        db = self._banco_cadastro()
+        evento = db.criar_evento("Legado", "Galpão", "Equipe", "01/08/2026", "02/08/2026",
+                                 [db.obter_id_por_codigo("007")])
+        db.registrar_retorno(evento, "007")
+        db.cursor.execute("UPDATE eventos SET data_fim = ? WHERE id = ?", ("31/02/2026", evento))
+        db.conn.commit()
+
+        aba = self._mostrar(TabEventos(db))
+        tabela_historica = self._mostrar(HistoricoDialog(db)).tabela
+        detalhes = self._mostrar(DetalhesEventoDialog(db, evento))
+        for tabela in (aba.tabela, tabela_historica):
+            self.assertEqual(tabela.item(0, 6).text(), "Datas a revisar")
+            self.assertIn("Concluído", tabela.item(0, 6).toolTip())
+        self.assertTrue(any("Datas a revisar" in l.text() for l in detalhes.findChildren(QLabel)))
+        self.assertEqual(db.obter_evento(evento)["data_fim"], "31/02/2026")
+        self.assertEqual(db.obter_evento(evento)["status"], "Concluído")
 
 
 if __name__ == "__main__":

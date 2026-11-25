@@ -64,7 +64,7 @@ class _DownloadThread(QThread):
 class _AtrasosThread(ConsultaDatabaseThread):
     """Thread para verificar atrasos sem bloquear a interface."""
     def consultar(self, db):
-        return db.eventos_atrasados()
+        return db.classificar_eventos_com_pendencias()
 
 
 def _resource(filename: str) -> str:
@@ -435,35 +435,43 @@ class MainWindow(QMainWindow):
         self._continuar_encerramento()
 
     @pyqtSlot(object)
-    def _mostrar_atrasos(self, atrasados):
+    def _mostrar_atrasos(self, resultado):
         if self._encerrando or self.sender() is not self._atrasos_thread:
             return
+        atrasados, datas_invalidas = resultado
         self._ultimo_atrasados = atrasados
-        if not atrasados:
+        if not atrasados and not datas_invalidas:
             self._btn_alerta_atrasos.setVisible(False)
             return
 
-        msg = "Eventos vencidos com equipamentos pendentes:\n\n"
-        for eid, nome, dt, pend in atrasados:
-            msg += f"• #{eid} {nome} (fim: {dt}) - {pend} pendente(s)\n"
-
         if self._ultimo_modo_checar_atrasos == "auto":
-            self._mostrar_aviso_atrasos_discreto(len(atrasados))
+            self._mostrar_aviso_atrasos_discreto(len(atrasados), len(datas_invalidas))
             return
 
-        QMessageBox.warning(self, "⚠️ Eventos Atrasados", msg)
+        secoes = []
+        if atrasados:
+            secoes.append("Eventos vencidos com equipamentos pendentes:\n" + "\n".join(
+                f"• #{eid} {nome} (fim: {dt}) - {pend} pendente(s)"
+                for eid, nome, dt, pend in atrasados
+            ))
+        if datas_invalidas:
+            secoes.append("Datas a revisar na aba Eventos; não foi possível determinar o atraso:\n"
+                          + "\n".join(f"• #{eid} {nome} - {pend} pendente(s)"
+                                      for eid, nome, _, pend in datas_invalidas))
+        QMessageBox.warning(self, "⚠️ Atrasos e datas de eventos", "\n\n".join(secoes))
 
-    def _mostrar_aviso_atrasos_discreto(self, total_atrasados: int):
-        """Mostra aviso não-bloqueante para checagem automática de atrasos."""
-        self._btn_alerta_atrasos.setText(f"⚠️ {total_atrasados} atraso(s)")
-        self._btn_alerta_atrasos.setToolTip(
-            "Existem eventos atrasados. Clique para abrir os detalhes."
-        )
+    def _mostrar_aviso_atrasos_discreto(self, total_atrasados: int, total_datas_invalidas: int = 0):
+        """Mostra de forma não bloqueante atrasos e datas sem classificação."""
+        rotulos = []
+        if total_atrasados:
+            rotulos.append(f"{total_atrasados} atraso(s)")
+        if total_datas_invalidas:
+            rotulos.append(f"{total_datas_invalidas} data(s) a revisar")
+        resumo = " e ".join(rotulos)
+        self._btn_alerta_atrasos.setText(f"⚠️ {resumo}")
+        self._btn_alerta_atrasos.setToolTip("Clique para conferir atrasos e datas pendentes de revisão.")
         self._btn_alerta_atrasos.setVisible(True)
-        self.statusBar().showMessage(
-            f"⚠️ {total_atrasados} evento(s) com atraso e pendências. Menu: Utilitários > Checar Atrasos Agora.",
-            12000,
-        )
+        self.statusBar().showMessage(f"⚠️ {resumo}. Menu: Utilitários > Checar Atrasos Agora.", 12000)
 
     @pyqtSlot()
     def _on_erro_checar_atrasos(self):

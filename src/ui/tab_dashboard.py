@@ -9,6 +9,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, pyqtSlot
 
 from core.database import Database
+from core.datas_eventos import problema_periodo_evento
 from ui.consulta_database_thread import ConsultaDatabaseThread
 
 
@@ -54,6 +55,9 @@ class TabDashboard(QWidget):
         root.addWidget(titulo)
         self._status_consulta = QLabel("Carregando dados…")
         root.addWidget(self._status_consulta)
+        self._status_datas_eventos = QLabel()
+        self._status_datas_eventos.hide()
+        root.addWidget(self._status_datas_eventos)
 
         # ── Cards de estatísticas ─────────────────────────────────────────
         cards_layout = QHBoxLayout()
@@ -197,13 +201,19 @@ class TabDashboard(QWidget):
     def _atualizar_com_dados(self, dados: dict):
         """Atualiza a UI com os dados carregados."""
         self.card_equip["valor"].setText(str(dados['total_equip']))
-        self.card_eventos["valor"].setText(str(len(dados['eventos_ativos'])))
+        eventos_ativos = [r for r in dados["eventos_ativos"] if not problema_periodo_evento(r[3], r[4])]
+        total_invalidas = len(dados["eventos_ativos"]) - len(eventos_ativos)
+        self._status_datas_eventos.setText(
+            f"⚠️ {total_invalidas} evento(s) com datas a revisar. Consulte a aba Eventos."
+        )
+        self._status_datas_eventos.setVisible(total_invalidas > 0)
+        self.card_eventos["valor"].setText(str(len(eventos_ativos)))
         self.card_manut["valor"].setText(str(len(dados['em_manut'])))
         self.card_atrasos["valor"].setText(str(len(dados['atrasos'])))
 
         # Tabela eventos ativos
         self.tabela_eventos.setRowCount(0)
-        for row_data in dados['eventos_ativos'][:15]:
+        for row_data in eventos_ativos[:15]:
             row = self.tabela_eventos.rowCount()
             self.tabela_eventos.insertRow(row)
             for col, val in enumerate(row_data):

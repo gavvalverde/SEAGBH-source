@@ -466,7 +466,7 @@ class DatabasePostgresTests(unittest.TestCase):
             db = database.Database()
             self.assertIs(db.conn, conexao)
             self.assertEqual(db.backend, "postgres")
-            self.assertEqual(db.criar_evento("Evento", "Sala", "Equipe", "i", "f", [8, 7]), 73)
+            self.assertEqual(db.criar_evento("Evento", "Sala", "Equipe", "01/03/2026", "02/03/2026", [8, 7]), 73)
             chamadas = cursor.execute.call_args_list
             sqls = [call.args[0] for call in chamadas]
             self.assertTrue(any("id SERIAL PRIMARY KEY" in sql for sql in sqls))
@@ -491,7 +491,7 @@ class DatabasePostgresTests(unittest.TestCase):
 
             cursor.execute.side_effect = falhar_movimentacao
             with self.assertRaisesRegex(RuntimeError, "falha PostgreSQL sintética"):
-                db.criar_evento("Evento", "Sala", "Equipe", "i", "f", [8, 7])
+                db.criar_evento("Evento", "Sala", "Equipe", "01/03/2026", "02/03/2026", [8, 7])
             conexao.rollback.assert_called_once_with()
             self.assertEqual(conexao.commit.call_count, 3)
             db.fechar()

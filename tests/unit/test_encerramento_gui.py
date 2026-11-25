@@ -53,7 +53,10 @@ class BancoSintetico:
         return []
 
     def eventos_atrasados(self):
-        return self._consultar([(7, "Evento sintético", "2000-01-01", 2)])
+        return self.classificar_eventos_com_pendencias()[0]
+
+    def classificar_eventos_com_pendencias(self):
+        return self._consultar(([(7, "Evento sintético", "01/01/2000", 2)], []))
 
     def _consultar(self, resultado):
         self._verificar_dono()
