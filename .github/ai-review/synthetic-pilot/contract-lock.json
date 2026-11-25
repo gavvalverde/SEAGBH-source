@@ -1,0 +1,18 @@
+{
+  "implementation_sha": "fe508a6915ae4c7f6aa7b4c897cebc9b777c5f7e",
+  "model": "moonshotai/kimi-k2.6",
+  "sha256": {
+    "production/contract_v2.py": "311724240bd13f60970a3bf37d6408bdbb400521e174b0a490735d6e47e33692",
+    "production/planning_v2.py": "3380dd03bfe6993bb33d743fe9ffbdd01185fd550080832bfbc9fe9a2c455c67",
+    "production/production_v2.py": "446005cbb25cb9290daaee0ec8a9b715b257cad9e576d11c9984fe6bae95ca7a",
+    "production/runner.py": "02dcd7305f91000a4e381f38051d8e560705d9d99e723717a81207a4b131f248",
+    "production/core.py": "1c4d70795e07496527b8f018d4d0c67270e40b129075f2bcf2cf030b223fd088",
+    "production/evidence.py": "c390a9acbb6b2e72122a2ead68893e282e9c66e8aa1d10ba8ef1fe0ec212c6a1",
+    "production/quality_gate.py": "e4e0a9a48c3c18f8df6e83f5f9c16c5367036e29ff78b9258d5eb4e24e4ab26e",
+    "production/transport.py": "302b7dda7714ace3fc9f426686e466373c4d622e2cc88c1403b59d1cd9f9e391",
+    "benchmarks/harness/prompt_builder.py": "d657ea6f41406cd903ab28437f7c22c0f38de7ef089c3a6a88ec80089fa212fb",
+    "benchmarks/harness/run_bench.py": "76bd91a42d46369fb03b5daf551bb8cc7301c6e799ed7b86e9cd47e3fafd7e2a",
+    "review-schema-v2.json": "87372d1dfa15d05615ef84cb8818695d2e788826e175aa30270b8fb69832d512",
+    "review-schema.json": "056897fac30625fd29b3c717553639c123ae5da2640de094f9b7aff7914ef9b0"
+  }
+}
