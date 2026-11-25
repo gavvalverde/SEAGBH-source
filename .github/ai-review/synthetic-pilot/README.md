@@ -60,7 +60,7 @@ Quatro descobertas, uma por caso, com uma refutação reservada por caso:
 **oito chamadas no pior caso**, sem retries. O teto conservador de produção
 continua **US$ 0,20 por caso**. Usando os limites de US$ 0,42/M entrada,
 US$ 1,80/M saída, 4.096 tokens de conclusão por chamada e a reserva de
-200.000 bytes por refutação, o lote soma **US$ 0,40661304** de preflight.
+200.000 bytes por refutação, o lote soma **US$ 0,40673736** de preflight.
 Não é cotação de faturamento nem autorização. Um teto explícito menor
 rejeita o lote antes da primeira chamada; o offline não precisa de teto
 autorizado por não ter caminho de cobrança.

@@ -59,6 +59,12 @@ class OfflinePilot(unittest.TestCase):
             self.assertEqual(plan.review_plan.coverage["files_omitted"], 0)
             self.assertEqual(set(data["anchors"]), set(plan.review_plan.files))
             self.assertNotIn("ORACLES", json.dumps(data))
+        for plan, domain in zip(self.plans, (
+            "closing hours, inclusive", "only when the parcel is packed",
+            "exactly (name, active) pairs", "or None when empty",
+        )):
+            data = json.loads(plan.discovery[0]["messages"][1]["content"])
+            self.assertIn(domain, data["patch"])
         with pilot.no_network(), self.assertRaisesRegex(AssertionError, "Real network forbidden"):
             socket.create_connection(("example.invalid", 443))
 
@@ -114,7 +120,7 @@ class OfflinePilot(unittest.TestCase):
         bound = pilot.preflight(self.plans)
         self.assertEqual(bound["calls_max"], 8)
         self.assertFalse(bound["budget_supplied"])
-        self.assertEqual(bound["usd_max"], "0.40661304")
+        self.assertEqual(bound["usd_max"], "0.40673736")
         self.assertEqual(pilot.preflight(self.plans, ceiling=Decimal(bound["usd_max"]))["budget_supplied"], True)
         self.assertTrue(all(Decimal(s) <= Decimal("0.20") for s in bound["per_case_usd"].values()))
         mocks = self.mocks()
